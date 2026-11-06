@@ -185,3 +185,19 @@ fn the_manager_stop_that_labs_off_runs_stops_the_sandbox() {
     assert!(!fake.is_running());
     assert_eq!(fake.calls(), vec![Recorded::Start, Recorded::Stop]);
 }
+
+#[test]
+fn the_app_handle_is_given_to_the_sandbox_host_before_the_saved_settings_build_its_manager() {
+    // 1.0.1 set it in `potato::live::start`, after `load_saved_public_settings` had already built the manager on a thread:
+    // on a PC without the source tree the manager froze "no guest files" for the whole run.
+    let lib = include_str!("../lib.rs");
+    let set = lib.find("potato::sandbox_host::set_app(").expect("lib.rs gives the handle");
+    let load = lib.find("settings_store::load_saved_public_settings(").expect("lib.rs applies the saved settings");
+    assert!(set < load, "set_app must come before the saved settings are applied");
+}
+
+#[cfg(not(debug_assertions))]
+#[test]
+fn a_release_build_never_looks_in_the_source_tree_for_the_guest_files() {
+    assert!(super::sandbox_host::guest_root().is_none() || cfg!(test));
+}

@@ -40,6 +40,12 @@ pub fn viewer_dir() -> Option<std::path::PathBuf> {
     VIEWER_DIR.get().cloned().flatten().or_else(dev_viewer_dir)
 }
 
+#[cfg(not(debug_assertions))]
+fn dev_viewer_dir() -> Option<std::path::PathBuf> {
+    None
+}
+
+#[cfg(debug_assertions)]
 fn dev_viewer_dir() -> Option<std::path::PathBuf> {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     [manifest.join("resources").join("potato-sandbox").join("viewer"), manifest.join("..").join("..").join("potato-sandbox").join("viewer")]

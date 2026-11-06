@@ -434,6 +434,10 @@ pub fn run() {
             pane_windows::init(app.handle(), registry_for_panes.clone());
             secrets::migrate_on_startup();
             // What broke it: remove test copies an earlier run left behind (SPEC n33 section 3.4).
+            // The sandbox host builds its manager (and freezes where the guest files are) as soon as the saved settings
+            // are applied, so it must know the app handle first. 1.0.1 set it later and found no files on a clean PC.
+            potato::sandbox_host::set_app(app.handle().clone());
+            potato::sandbox_host::startup_diag();
             #[cfg(not(test))]
             settings_store::load_saved_public_settings(app.handle());
             // With the Labs switch on (known now), each conversation that came back is a chat pane in the pane list.

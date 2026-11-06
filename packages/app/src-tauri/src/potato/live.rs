@@ -224,9 +224,15 @@ impl Host for LiveHost {
         if let Some(dir) = self.app.as_ref().and_then(|app| super::resource_dirs::installed(app, "potato-brain", "brain.mjs")) {
             return Some(dir);
         }
-        // A dev build has no installed resource folder: the generated one in the source tree.
-        let staged = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources").join("potato-brain");
-        staged.is_dir().then_some(staged)
+        // A dev build has no installed resource folder: the generated one in the source tree. A release build never
+        // looks there.
+        #[cfg(debug_assertions)]
+        {
+            let staged = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources").join("potato-brain");
+            return staged.is_dir().then_some(staged);
+        }
+        #[cfg(not(debug_assertions))]
+        None
     }
 
     fn reply_pushed(&self, bot: &str, name: &str, text: &str, on: bool) {

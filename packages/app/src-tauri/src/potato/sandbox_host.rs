@@ -282,12 +282,31 @@ impl Events for LiveEvents {
     }
 }
 
-/// Where the guest files and recipes are: the installed resources, the staged copy of a dev build, or the source tree.
+/// Where the guest files and recipes are: the installed resources; a debug build also tries the staged copy and the
+/// source tree. A release build never looks in the source tree, so it cannot pass by accident on a dev PC.
+/// The app handle is waited for (a few seconds at most) so a manager built at startup never freezes a wrong root.
 pub fn guest_root() -> Option<PathBuf> {
     #[cfg(not(test))]
-    if let Some(dir) = APP.get().and_then(|app| super::resource_dirs::installed(app, "potato-sandbox", "recipes")) {
-        return Some(dir);
+    {
+        let mut waited = 0;
+        while APP.get().is_none() && waited < 100 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            waited += 1;
+        }
+        if let Some(dir) = APP.get().and_then(|app| super::resource_dirs::installed(app, "potato-sandbox", "recipes")) {
+            return Some(dir);
+        }
     }
+    dev_guest_root()
+}
+
+#[cfg(not(debug_assertions))]
+fn dev_guest_root() -> Option<PathBuf> {
+    None
+}
+
+#[cfg(debug_assertions)]
+fn dev_guest_root() -> Option<PathBuf> {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     [manifest.join("resources").join("potato-sandbox"), manifest.join("..").join("..").join("potato-sandbox")]
         .into_iter()
@@ -298,6 +317,7 @@ fn build() -> Arc<Manager> {
     let name = SandboxName::main();
     let layout = Layout::new(&data_root());
     let root = guest_root();
+    write_diag(root.as_deref());
     let sandbox: Arc<dyn Sandbox> = match Wsl::live() {
         _ if fake_requested() => fake(),
         Ok(wsl) => {
@@ -397,4 +417,42 @@ impl Sandbox for NoLinux {
     fn linux_feature(&self) -> bool {
         false
     }
+}
+
+/// Called at start-up (no Windows call, no manager): the same report, for a run that keeps the sandbox off.
+pub fn startup_diag() {
+    if std::env::var_os("PM_SBX_DIAG_FILE").is_some_and(|f| !f.is_empty()) {
+        write_diag(guest_root().as_deref());
+    }
+}
+
+/// With `PM_SBX_DIAG_FILE=<file>` set, writes where the shipped files were found and whether they load: the proof a
+/// release build (not a dev tree) reads its own install folder. Off unless the variable is set; changes nothing else.
+fn write_diag(root: Option<&std::path::Path>) {
+    let Some(file) = std::env::var_os("PM_SBX_DIAG_FILE").filter(|f| !f.is_empty()) else { return };
+    let menu = root.map(|r| super::sandbox::manager::menu(&r.join("recipes")).map(|m| m.len()).map_err(|e| e.code.to_string()));
+    let files = root.map(|r| {
+        let g = GuestFiles::new(r);
+        (g.check().is_ok(), g.tar_stream().map(|t| t.len()).unwrap_or(0))
+    });
+    #[cfg(not(test))]
+    let brain = APP.get().and_then(|app| super::resource_dirs::installed(app, "potato-brain", "brain.mjs"));
+    #[cfg(test)]
+    let brain: Option<PathBuf> = None;
+    let packs: Vec<String> = brain
+        .as_ref()
+        .and_then(|b| std::fs::read_dir(b.join("persona").join("packs")).ok())
+        .map(|d| d.flatten().filter(|e| e.path().join("core.md").is_file()).map(|e| e.file_name().to_string_lossy().to_string()).collect())
+        .unwrap_or_default();
+    let report = serde_json::json!({
+        "guest_root": root.map(|r| r.display().to_string()),
+        "recipes_in_menu": menu.as_ref().and_then(|m| m.as_ref().ok()),
+        "menu_error": menu.as_ref().and_then(|m| m.as_ref().err()),
+        "required_files_ok": files.map(|f| f.0),
+        "guest_tar_bytes": files.map(|f| f.1),
+        "exe": std::env::current_exe().ok().map(|e| e.display().to_string()),
+        "brain_dir": brain.map(|b| b.display().to_string()),
+        "persona_packs": packs,
+    });
+    let _ = std::fs::write(file, report.to_string());
 }
