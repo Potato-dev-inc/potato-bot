@@ -493,6 +493,55 @@ pub fn parse_list(text: &str) -> Vec<Distro> {
     rows
 }
 
+/// Where Windows' Linux feature stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FeatureState {
+    /// No `wsl.exe`, or `wsl --status` fails: the feature is not on.
+    Missing,
+    /// `--status` answers but the virtual machine cannot start yet (a restart is pending, or virtualization is off).
+    RestartPending,
+    /// WSL can run a distro. There may be none installed yet.
+    Ready,
+}
+
+/// Whether a failed `wsl --list` only means "no distribution is installed". The sentence is translated, so this looks
+/// for what is not: the error code `DEFAULT_DISTRO_NOT_FOUND`, the `--list --online` / `--install` hint commands, and a
+/// few known translations. Anything that names the optional component, virtualization or an HCS/0x8037 error is a
+/// WSL that cannot start, which wins.
+pub fn says_no_distros(out: &Output) -> bool {
+    if out.success() {
+        return false;
+    }
+    // The decoded text, and the plain ASCII left in the raw bytes (UTF-16 of a sentence that is mostly CJK can fool the
+    // decoder; the codes and commands in it are still ASCII).
+    let ascii = |b: &[u8]| -> String { b.iter().filter(|c| c.is_ascii() && **c != 0).map(|c| *c as char).collect() };
+    let text = format!("{}
+{}
+{}
+{}", out.stdout_text(), out.stderr_text(), ascii(&out.stdout), ascii(&out.stderr));
+    let lower = text.to_lowercase();
+    let broken = ["optional_component", "optional component", "virtualization", "hcs_e", "0x80370", "0x8007019e", "0x80004005", "createinstance"];
+    if broken.iter().any(|b| lower.contains(b)) {
+        return false;
+    }
+    let marks = [
+        "default_distro_not_found",
+        "no_distro",
+        "no installed distributions",
+        "no distributions",
+        "--list --online",
+        "-l -o",
+        "--install",
+        "沒有已安裝",
+        "没有已安装",
+        "沒有安裝",
+        "没有安装",
+        "尚未安裝",
+    ];
+    // A failing list that prints something and names no broken part is the localized "no installed distribution" sentence.
+    marks.iter().any(|m| lower.contains(m)) || !text.trim().is_empty()
+}
+
 /// What `enable_windows_feature` found.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FeatureResult {
@@ -536,16 +585,36 @@ impl Wsl {
         self.runner.as_ref()
     }
 
-    /// True when WSL answers and can actually run a distro. `wsl --status` alone is not enough: it exits 0 even
-    /// when WSL 2 cannot start (the feature was just turned on and Windows has not restarted, or virtualization is
-    /// off). The distro list is the first call that needs the virtual machine, so it has to answer too.
-    pub fn is_available(&self) -> bool {
+    /// Where Windows' Linux feature stands. `--status` alone is not enough: it exits 0 even when WSL 2 cannot start
+    /// (the feature was just turned on and Windows has not restarted, or virtualization is off). The distro list is the
+    /// first call that needs the virtual machine, so it has to answer too. But a clean PC with WSL on and no distro also
+    /// makes the list exit non-zero ("no installed distributions"): that is ready, not broken. The words are localized,
+    /// so this judges by the exit codes and by text that is never translated (see `says_no_distros`).
+    pub fn feature_state(&self) -> FeatureState {
         let status_ok = self.run_call(Call::new(&["--status"])).map(|o| o.success()).unwrap_or(false);
-        status_ok && self.run_call(Call::new(&["--list", "--verbose"])).map(|o| o.success()).unwrap_or(false)
+        if !status_ok {
+            return FeatureState::Missing;
+        }
+        match self.run_call(Call::new(&["--list", "--verbose"])) {
+            Ok(out) if out.success() || says_no_distros(&out) => FeatureState::Ready,
+            _ => FeatureState::RestartPending,
+        }
     }
 
+    /// True when WSL answers and can run a distro (with or without one installed yet).
+    pub fn is_available(&self) -> bool {
+        self.feature_state() == FeatureState::Ready
+    }
+
+    /// The distros on the PC. None at all is an empty list, not an error; a list that fails for another reason is.
     pub fn list(&self) -> Result<Vec<Distro>, WslError> {
         let out = self.run_call(Call::new(&["--list", "--verbose"]))?;
+        if !out.success() {
+            if says_no_distros(&out) {
+                return Ok(Vec::new());
+            }
+            return out.ok().map(|_| Vec::new());
+        }
         Ok(parse_list(&out.stdout_text()))
     }
 
@@ -647,7 +716,9 @@ impl Wsl {
         call.consented = true;
         let out = self.run_call(call)?;
         match out.code {
-            Some(0) => Ok(FeatureResult { restart_needed: false }),
+            // Exit 0 does not mean it works: on a clean PC the feature is only usable after a restart. If WSL still
+            // cannot run, that is a restart, not a success.
+            Some(0) => Ok(FeatureResult { restart_needed: self.feature_state() != FeatureState::Ready }),
             Some(EXIT_RESTART_NEEDED) => Ok(FeatureResult { restart_needed: true }),
             code => Err(WslError::Failed { code, detail: short_detail(&out) }),
         }

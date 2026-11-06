@@ -24,7 +24,7 @@ use serde_json::Value;
 
 use super::install::{Desktop, InstallError, InstallOptions, Layout, Progress, BASE_SNAPSHOT};
 use super::wsl::SandboxName;
-use super::{Sandbox, SandboxError, SbxResult, State};
+use super::{Sandbox, SandboxError, SbxResult, State, RESTART_PENDING_TEXT};
 
 /// The word the person types to remove the sandbox.
 pub const REMOVE_WORD: &str = "remove";
@@ -87,6 +87,8 @@ pub struct SandboxView {
     pub idle_minutes: u32,
     /// Windows' Linux feature answers. False: setup shows the "turn on" button before anything else.
     pub linux_feature: bool,
+    /// The feature is on (or was just turned on) but the computer must restart before it works.
+    pub restart_pending: bool,
     /// Size of the sandbox's disk file on this computer (it grows as the sandbox is used).
     pub disk_bytes: Option<u64>,
     /// There is a saved reset point (`Reset` goes back to it).
@@ -283,6 +285,8 @@ struct Inner {
     install: InstallView,
     /// (token, asked at ms)
     feature_ask: Option<(String, i64)>,
+    /// The person turned the feature on and Windows needs a restart; kept until the feature answers.
+    restart_asked: bool,
 }
 
 pub struct Manager {
@@ -341,7 +345,7 @@ impl Manager {
             clock,
             mcp_root: Mutex::new(None),
             busy: AtomicBool::new(false),
-            inner: Mutex::new(Inner { install: InstallView::idle(), feature_ask: None }),
+            inner: Mutex::new(Inner { install: InstallView::idle(), feature_ask: None, restart_asked: false }),
         })
     }
 
@@ -387,16 +391,26 @@ impl Manager {
             }
             None => (None, false, None),
         };
+        let linux_feature = self.sandbox.linux_feature();
+        let restart_pending = !linux_feature && (self.sandbox.restart_pending() || self.inner.lock().restart_asked);
+        if linux_feature {
+            self.inner.lock().restart_asked = false;
+        }
+        let mut reason = status.reason;
+        if restart_pending && status.state == State::NotInstalled {
+            reason = Some(RESTART_PENDING_TEXT.to_string());
+        }
         let install_idle = install.state != "running";
         let state = if install.state == "running" { "installing" } else { state_word(status.state) };
         Ok(SandboxView {
             state,
-            reason: status.reason,
+            reason,
             name: status.name,
             desktops: self.sandbox.installed_desktops(),
             active_desktop: self.sandbox.active_desktop(),
             idle_minutes: status.idle_minutes,
-            linux_feature: self.sandbox.linux_feature(),
+            linux_feature,
+            restart_pending,
             disk_bytes,
             has_reset_point,
             reset_point_bytes,
@@ -671,6 +685,11 @@ impl Manager {
                    Nothing else on your computer changes."
                 .to_string(),
         }
+    }
+
+    /// The person turned the feature on and Windows needs a restart before it works.
+    pub fn note_restart_needed(&self) {
+        self.inner.lock().restart_asked = true;
     }
 
     /// Step two: the person pressed the dialog's button. Good once, within ten minutes of the ask, for the token it gave.

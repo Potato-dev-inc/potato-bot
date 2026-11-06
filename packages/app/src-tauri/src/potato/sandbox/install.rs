@@ -680,7 +680,7 @@ impl InstallError {
         match self {
             InstallError::NeedsWindowsFeature => "Needs Windows' Linux feature (admin + restart).".to_string(),
             InstallError::NeedsRestart => {
-                "Windows has to restart before the sandbox can be made. Restart Windows, then try again.".to_string()
+                "Restart your PC to finish, then come back.".to_string()
             }
             InstallError::AlreadyInstalled => "A sandbox with this name is already set up.".to_string(),
             InstallError::BadOptions(why) => format!("These choices cannot be used: {why}."),
@@ -880,8 +880,10 @@ fn run_steps(
         let result = (|| -> Result<(), InstallError> {
             match step {
                 Step::CheckWsl => {
-                    if !env.wsl.is_available() {
-                        return Err(InstallError::NeedsWindowsFeature);
+                    match env.wsl.feature_state() {
+                        super::wsl::FeatureState::Ready => {}
+                        super::wsl::FeatureState::Missing => return Err(InstallError::NeedsWindowsFeature),
+                        super::wsl::FeatureState::RestartPending => return Err(InstallError::NeedsRestart),
                     }
                 }
                 Step::CheckFree => match env.wsl.is_installed(name) {

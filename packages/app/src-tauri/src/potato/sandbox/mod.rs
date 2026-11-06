@@ -174,6 +174,9 @@ pub struct PageHop {
 }
 
 /// The sandbox, as the rest of the app sees it.
+/// What the page says when the feature is on but Windows has not restarted yet.
+pub const RESTART_PENDING_TEXT: &str = "Restart your PC to finish, then come back.";
+
 pub trait Sandbox: Send + Sync {
     fn status(&self) -> SbxResult<Status>;
     /// Makes the sandbox. `progress` gets a step name and a percentage as it goes.
@@ -285,6 +288,10 @@ pub trait Sandbox: Send + Sync {
     /// Whether Windows' Linux feature answers. A sandbox that does not need it always says yes.
     fn linux_feature(&self) -> bool {
         true
+    }
+    /// Windows' Linux feature is turned on but cannot run yet: the computer has to restart first.
+    fn restart_pending(&self) -> bool {
+        false
     }
     /// The idle stop setting. Returns the number that is used (it is kept between 1 and 240).
     fn set_idle_minutes(&self, minutes: u32) -> u32 {
@@ -515,15 +522,19 @@ impl Sandbox for WslSandbox {
     fn status(&self) -> SbxResult<Status> {
         let idle_minutes = self.lifecycle.idle_minutes();
         let make = |state, reason| Status { state, reason, name: self.name.to_string(), idle_minutes };
-        if !self.wsl.is_available() {
-            return Ok(make(State::NotInstalled, Some("Needs Windows' Linux feature (admin + restart).".to_string())));
+        match self.wsl.feature_state() {
+            wsl::FeatureState::Missing => {
+                return Ok(make(State::NotInstalled, Some("Needs Windows' Linux feature (admin + restart).".to_string())));
+            }
+            wsl::FeatureState::RestartPending => return Ok(make(State::NotInstalled, Some(RESTART_PENDING_TEXT.to_string()))),
+            wsl::FeatureState::Ready => {}
         }
         match self.wsl.is_installed(&self.name) {
             Ok(true) => {}
             Ok(false) => return Ok(make(State::NotInstalled, None)),
-            // `--status` answered but the distro list did not: the virtual machine cannot start yet (the feature
-            // is on, but Windows has not restarted). That is not an internal error.
-            Err(_) => return Ok(make(State::NotInstalled, Some("Needs Windows' Linux feature (admin + restart).".to_string()))),
+            // The feature answered but the distro list did not: the virtual machine cannot start yet. That is not an
+            // internal error.
+            Err(_) => return Ok(make(State::NotInstalled, Some(RESTART_PENDING_TEXT.to_string()))),
         }
         let phase = self.lifecycle.phase();
         if !matches!(phase, Phase::Ready | Phase::Starting) && !self.setup_finished() {
@@ -1073,6 +1084,10 @@ impl Sandbox for WslSandbox {
         self.wsl.is_available()
     }
 
+    fn restart_pending(&self) -> bool {
+        self.wsl.feature_state() == wsl::FeatureState::RestartPending
+    }
+
     fn set_idle_minutes(&self, minutes: u32) -> u32 {
         self.lifecycle.set_idle_minutes(minutes);
         self.lifecycle.idle_minutes()
@@ -1130,6 +1145,7 @@ struct FakeState {
     /// `None`: the default. Set by `set_idle_minutes`.
     idle_minutes: Option<u32>,
     no_linux_feature: bool,
+    restart_pending: bool,
     cancelled: bool,
     desktops: Vec<String>,
     active_desktop: Option<String>,
@@ -1238,6 +1254,13 @@ impl FakeSandbox {
     }
 
     /// A PC without Windows' Linux feature: `install` fails with the "needs Windows' Linux feature" error.
+    /// The feature is on but the computer has not restarted.
+    pub fn with_restart_pending(self) -> Self {
+        self.state.lock().no_linux_feature = true;
+        self.state.lock().restart_pending = true;
+        self
+    }
+
     pub fn without_linux_feature(self) -> Self {
         self.state.lock().no_linux_feature = true;
         self
@@ -1571,6 +1594,10 @@ impl Sandbox for FakeSandbox {
 
     fn linux_feature(&self) -> bool {
         !self.state.lock().no_linux_feature
+    }
+
+    fn restart_pending(&self) -> bool {
+        self.state.lock().restart_pending
     }
 
     fn set_idle_minutes(&self, minutes: u32) -> u32 {

@@ -130,7 +130,7 @@ const osRank = (id: string) => {
 
 function statusLine(view: SandboxView): string {
   const parts: string[] = [STATE_WORD[view.state]];
-  if (view.reason && view.state !== 'installing' && view.state !== 'incomplete') parts.push(view.reason);
+  if (view.reason && view.state !== 'installing' && view.state !== 'incomplete' && !view.restartPending) parts.push(view.reason);
   return parts.join('. ').replace(/\.\./g, '.');
 }
 
@@ -176,7 +176,8 @@ function SandboxPanel({ transport, env }: { transport: SandboxTransport; env: Se
       'linux',
       async () => {
         const done = await transport.linuxEnable(current.token);
-        setMessage({ ok: true, text: done.restartNeeded ? "Windows' Linux feature is on. Restart the computer, then set up the sandbox." : "Windows' Linux feature is on." });
+        // A restart is said by the status itself ("Restart your PC to finish, then come back."), never beside "is on".
+        setMessage(done.restartNeeded ? null : { ok: true, text: "Windows' Linux feature is on." });
       },
     );
   };
@@ -320,7 +321,8 @@ function SandboxPanel({ transport, env }: { transport: SandboxTransport; env: Se
 
         {view.state === 'not_installed' && (
           <div className="sbx-buttons">
-            {!view.linuxFeature && (
+            {view.restartPending && <Note role="status">Restart your PC to finish, then come back.</Note>}
+            {!view.linuxFeature && !view.restartPending && (
               <>
                 <Note>Needs Windows' Linux feature (admin + restart).</Note>
                 <Btn disabled={busy !== null} onClick={() => void openAsk()}>

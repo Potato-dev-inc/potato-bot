@@ -501,8 +501,8 @@ fn a_distro_list_that_cannot_answer_is_the_linux_feature_not_a_step_error() {
     rig.guest.st.lock().list_fails = true;
     let (result, progress) = go(&rig, &options(), &AtomicBool::new(false));
     let error = result.unwrap_err();
-    assert_eq!(error, InstallError::NeedsWindowsFeature);
-    assert_eq!(error.code(), "SANDBOX_NEEDS_LINUX_FEATURE");
+    assert_eq!(error, InstallError::NeedsRestart);
+    assert_eq!(error.code(), "SANDBOX_NEEDS_RESTART");
     assert!(progress.iter().all(|p| p.percent < 100));
     assert!(!rig.guest.joined().iter().any(|c| c.contains("--install")), "nothing was installed");
 }
@@ -516,7 +516,7 @@ fn an_install_that_only_turns_on_the_feature_asks_for_a_restart() {
     let error = result.unwrap_err();
     assert_eq!(error, InstallError::NeedsRestart);
     assert_eq!(error.code(), "SANDBOX_NEEDS_RESTART");
-    assert!(error.message().contains("Restart Windows"), "{}", error.message());
+    assert!(error.message().contains("Restart your PC"), "{}", error.message());
     assert!(progress.iter().all(|p| p.percent < 100));
     assert!(!rig.guest.joined().iter().any(|c| c.contains("/bin/tar")), "the copy step never ran");
     assert!(rig.guest.st.lock().installed.is_empty(), "nothing is left half-made");

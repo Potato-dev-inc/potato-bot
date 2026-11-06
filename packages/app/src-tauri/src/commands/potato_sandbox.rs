@@ -225,7 +225,12 @@ pub async fn potato_sandbox_linux_enable(token: String) -> Result<FeatureOutcome
 pub fn enable_linux_feature(manager: &Manager, wsl: &Wsl, token: &str) -> Result<FeatureOutcome, String> {
     manager.take_linux_feature_ask(token).map_err(text)?;
     match wsl.enable_windows_feature(Consent::the_person_pressed_the_button()) {
-        Ok(result) => Ok(FeatureOutcome { restart_needed: result.restart_needed }),
+        Ok(result) => {
+            if result.restart_needed {
+                manager.note_restart_needed();
+            }
+            Ok(FeatureOutcome { restart_needed: result.restart_needed })
+        }
         Err(_) => Err("SANDBOX_FEATURE_FAILED: Windows' Linux feature was not turned on. Was the administrator prompt closed? Nothing was changed.".to_string()),
     }
 }

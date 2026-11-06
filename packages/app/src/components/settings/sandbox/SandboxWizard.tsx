@@ -282,12 +282,16 @@ export function SandboxWizard({ transport, onClose }: { transport: SandboxTransp
       case 'linux':
         return (
           <>
+            {!(restart || status.restartPending) && (
+              <>
             <p>
               The sandbox is a small Linux computer that runs inside Windows. Windows needs its Linux feature (WSL) for that, and it is not turned on yet.
             </p>
             <p>Turning it on needs an administrator's OK and, most likely, a restart of the computer. It only happens when you press the button below.</p>
-            {restart ? (
-              <Note role="status">Windows' Linux feature is on. Restart the computer, then open Set up again.</Note>
+              </>
+            )}
+            {restart || status.restartPending ? (
+              <Note role="status">Restart your PC to finish, then come back.</Note>
             ) : (
               <div className="sbx-actions-inline">
                 <Btn primary disabled={busy} onClick={() => void openAsk()}>

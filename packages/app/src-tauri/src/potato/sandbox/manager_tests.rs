@@ -258,6 +258,27 @@ fn status_tells_what_the_page_needs() {
 }
 
 #[test]
+fn a_restart_pending_is_its_own_message_and_never_says_the_feature_is_missing() {
+    let pending = Arc::new(FakeSandbox::not_installed().with_restart_pending());
+    let view = manager_over(pending, Arc::new(Log::default())).status().unwrap();
+    assert!(!view.linux_feature);
+    assert!(view.restart_pending);
+    assert_eq!(view.reason.as_deref(), Some("Restart your PC to finish, then come back."));
+    // Set up is refused until then.
+    let pending = Arc::new(FakeSandbox::not_installed().with_restart_pending());
+    let m = manager_over(pending, Arc::new(Log::default()));
+    assert_eq!(m.start_install(&answers("ubuntu", &["coding"], &[])).unwrap_err().code, "SANDBOX_NEEDS_LINUX_FEATURE");
+    // The person pressed the button and Windows asked for a restart, though WSL still answers "missing".
+    let missing = Arc::new(FakeSandbox::not_installed().without_linux_feature());
+    let m = manager_over(missing, Arc::new(Log::default()));
+    assert!(!m.status().unwrap().restart_pending);
+    m.note_restart_needed();
+    let view = m.status().unwrap();
+    assert!(view.restart_pending);
+    assert_eq!(view.reason.as_deref(), Some("Restart your PC to finish, then come back."));
+}
+
+#[test]
 fn status_reads_the_disk_and_the_reset_point_from_the_sandbox_folder() {
     let data = Scratch::new("manager-disk");
     let layout = Layout::new(&data.0);

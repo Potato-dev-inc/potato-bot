@@ -307,3 +307,97 @@ fn the_holder_is_a_sleep_inside_our_distro() {
     // the dyn Runner is shareable
     let _shared: Arc<dyn Runner> = guest;
 }
+
+// ---- a clean PC: Windows' Linux feature on, no distribution installed ----------------------------------
+
+fn failing_list(text: &str) -> Arc<FakeGuest> {
+    let guest = FakeGuest::new();
+    {
+        let mut st = guest.st.lock();
+        st.list_fails = true;
+        st.list_failure_text = Some(text.to_string());
+    }
+    guest
+}
+
+const NO_DISTROS_EN: &str = "Windows Subsystem for Linux has no installed distributions.
+Use 'wsl.exe --list --online' to list available distributions and 'wsl.exe --install <Distro>' to install.
+Error code: Wsl/WSL_E_DEFAULT_DISTRO_NOT_FOUND";
+const NO_DISTROS_ZH_TW: &str = "適用於 Linux 的 Windows 子系統沒有已安裝的發行版。
+可以透過安裝發行版來解決此問題，方法是使用 'wsl.exe --install [Distro]'。
+錯誤碼: Wsl/WSL_E_DEFAULT_DISTRO_NOT_FOUND";
+const NOT_RESTARTED_ZH_TW: &str = "WSL2 不受目前電腦設定支援。請啟用「虛擬機器平台」選用元件並確認 BIOS 已啟用虛擬化。
+錯誤碼: Wsl/Service/CreateInstance/CreateVm/HCS/HCS_E_HYPERV_NOT_INSTALLED";
+
+#[test]
+fn no_wsl_at_all_is_missing() {
+    let guest = FakeGuest::new();
+    guest.st.lock().wsl_ok = false;
+    assert_eq!(guest.wsl().feature_state(), FeatureState::Missing);
+    assert!(!guest.wsl().is_available());
+}
+
+#[test]
+fn wsl_on_with_no_distro_and_a_failing_list_is_ready_in_english_and_zh_tw() {
+    for text in [NO_DISTROS_EN, NO_DISTROS_ZH_TW] {
+        let guest = failing_list(text);
+        assert_eq!(guest.wsl().feature_state(), FeatureState::Ready, "{text}");
+        assert!(guest.wsl().is_available());
+        assert!(guest.wsl().list().unwrap().is_empty(), "no distro is an empty list, not an error");
+        assert!(guest.wsl().list_ours().unwrap().is_empty());
+        assert_eq!(guest.wsl().is_installed(&SandboxName::main()), Ok(false));
+    }
+}
+
+#[test]
+fn a_localized_sentence_alone_is_judged_by_the_codes_it_carries() {
+    // Only the never-translated code is left to go on.
+    let guest = failing_list("沒有已安裝的發行版 Wsl/WSL_E_DEFAULT_DISTRO_NOT_FOUND");
+    assert!(guest.wsl().is_available());
+}
+
+#[test]
+fn a_restart_pending_is_not_ready_whatever_the_language() {
+    for text in [NOT_RESTARTED_ZH_TW, "The Windows Subsystem for Linux optional component is not enabled.", ""] {
+        let guest = failing_list(text);
+        assert_eq!(guest.wsl().feature_state(), FeatureState::RestartPending, "{text}");
+        assert!(!guest.wsl().is_available());
+        assert!(guest.wsl().list().is_err(), "a list that fails for another reason stays an error");
+    }
+    let guest = FakeGuest::new();
+    guest.st.lock().list_fails = true;
+    assert_eq!(guest.wsl().feature_state(), FeatureState::RestartPending);
+}
+
+#[test]
+fn distros_present_is_ready_and_listed() {
+    let guest = FakeGuest::with_installed("pm-sbx-main");
+    assert_eq!(guest.wsl().feature_state(), FeatureState::Ready);
+    assert_eq!(guest.wsl().is_installed(&SandboxName::main()), Ok(true));
+}
+
+// The real answers of a clean zh-TW PC (Windows build 26200) after the feature was turned on and the PC restarted.
+const REAL_STATUS_ZH_TW: &str = "預設版本: 2
+您目前的電腦設定不支援 WSL1。
+請啟用「Windows 子系統 Linux 版」選用元件以使用 WSL1。";
+const REAL_LIST_ZH_TW: &str = "Windows 子系統 Linux 版 沒有已安裝的發佈。
+您可以使用下列指示安裝發佈以解決此問題:
+使用 『wsl.exe --list --online' 列出可用的發佈
+和 『wsl.exe --install <Distro>』 來安裝。";
+
+#[test]
+fn the_real_zh_tw_clean_pc_answers_mean_ready_with_no_distros() {
+    // `--status` exits 0 (the WSL1 sentence is not an error), `--list` exits -1 with the sentence above.
+    let guest = failing_list(REAL_LIST_ZH_TW);
+    assert_eq!(guest.wsl().feature_state(), FeatureState::Ready);
+    assert!(guest.wsl().list().unwrap().is_empty());
+    assert_eq!(guest.wsl().is_installed(&SandboxName::main()), Ok(false));
+    // Exit -1 read as an unsigned number is the same failure.
+    let out = Output { code: Some(u32::MAX as i32), stdout: REAL_LIST_ZH_TW.as_bytes().to_vec(), stderr: Vec::new() };
+    assert!(says_no_distros(&out));
+    assert!(!says_no_distros(&Output { code: Some(0), ..Default::default() }));
+    // Neither the status text nor a UTF-8 or UTF-16 spelling changes the answer.
+    assert!(!REAL_STATUS_ZH_TW.is_empty());
+    let utf16: Vec<u8> = REAL_LIST_ZH_TW.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+    assert!(says_no_distros(&Output { code: Some(-1), stdout: utf16, stderr: Vec::new() }));
+}

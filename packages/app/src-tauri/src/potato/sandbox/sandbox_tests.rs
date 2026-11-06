@@ -176,8 +176,9 @@ fn a_status_that_answers_but_a_distro_list_that_fails_is_the_linux_feature_not_a
     rig.guest.st.lock().list_fails = true;
     let status = rig.sandbox.status().unwrap();
     assert_eq!(status.state, State::NotInstalled);
-    assert_eq!(status.reason.as_deref(), Some("Needs Windows' Linux feature (admin + restart)."));
-    assert!(!rig.sandbox.linux_feature(), "the page offers the feature button, not an internal error");
+    assert_eq!(status.reason.as_deref(), Some("Restart your PC to finish, then come back."));
+    assert!(!rig.sandbox.linux_feature(), "Set up stays off, and the page says restart, not an internal error");
+    assert!(rig.sandbox.restart_pending());
 }
 
 #[test]

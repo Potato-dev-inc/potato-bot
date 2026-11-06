@@ -374,7 +374,7 @@ describe("Windows' Linux feature", () => {
     await click(buttonByText(h, 'Turn on'));
     await settle();
     expect(calls(fake, 'linuxEnable').map((c) => c.args)).toEqual([['fake-token']]);
-    expect(hasText(h, 'Restart the computer, then open Set up again.')).toBe(true);
+    expect(hasText(h, 'Restart your PC to finish, then come back.')).toBe(true);
     expect(buttonByText(h, "Turn on Windows' Linux feature…")).toBeUndefined();
   });
 

@@ -39,6 +39,8 @@ pub struct State {
     pub install_registers: bool,
     /// The distro list fails, as when WSL 2 cannot start (a restart is pending, or virtualization is off).
     pub list_fails: bool,
+    /// With `list_fails`: what the failing list prints (UTF-16 on stdout), as `wsl.exe` does.
+    pub list_failure_text: Option<String>,
     /// The next N readiness reads fail with a transient wsl error.
     pub readiness_errors: u32,
     /// `wsl --install` never ends by itself; it ends when the call's cancel flag is set.
@@ -116,6 +118,7 @@ impl FakeGuest {
                 install_code: 0,
                 install_registers: true,
                 list_fails: false,
+                list_failure_text: None,
                 readiness_errors: 0,
                 hang_install: false,
                 hang_apply: false,
@@ -293,7 +296,10 @@ impl Runner for FakeGuest {
         }
         match &call.verb {
             Verb::Status => code(0),
-            Verb::List if st.list_fails => code(1),
+            Verb::List if st.list_fails => match &st.list_failure_text {
+                Some(text) => Ok(Output { code: Some(-1), stdout: utf16(text), stderr: Vec::new() }),
+                None => code(1),
+            },
             Verb::List if call.args.iter().any(|a| a == "--running") => {
                 let names = st.running.join("\r\n");
                 ok(utf16(&names))

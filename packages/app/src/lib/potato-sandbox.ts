@@ -37,6 +37,8 @@ export interface SandboxView {
   idleMinutes: number;
   /** Windows' Linux feature answers. */
   linuxFeature: boolean;
+  /** The feature is on but the computer must restart before it works: say so, keep Set up off, offer no button. */
+  restartPending: boolean;
   diskBytes: number | null;
   hasResetPoint: boolean;
   resetPointBytes: number | null;
@@ -502,6 +504,7 @@ export function fakeSandboxTransport(seed: FakeSandboxSeed = {}): FakeSandboxTra
     activeDesktop: null,
     idleMinutes: 15,
     linuxFeature: true,
+    restartPending: false,
     diskBytes: null,
     hasResetPoint: false,
     resetPointBytes: null,
@@ -644,7 +647,9 @@ export function fakeSandboxTransport(seed: FakeSandboxSeed = {}): FakeSandboxTra
     linuxEnable: (token) =>
       log('linuxEnable', [token], () => {
         if (token !== 'fake-token') throw new Error('SANDBOX_NOT_CONFIRMED: Press the button again.');
-        view.linuxFeature = true;
+        view.linuxFeature = false;
+        view.restartPending = true;
+        view.reason = 'Restart your PC to finish, then come back.';
         return { restartNeeded: true };
       }),
     vercelStatus: () => log('vercelStatus', [], () => ({ installed: false, command: null })),

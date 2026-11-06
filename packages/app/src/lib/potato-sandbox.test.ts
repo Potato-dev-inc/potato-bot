@@ -145,7 +145,8 @@ describe('fakeSandboxTransport', () => {
     await expect(fake.linuxEnable('guess')).rejects.toThrow(/SANDBOX_NOT_CONFIRMED/);
     const ask = await fake.linuxAsk();
     expect(await fake.linuxEnable(ask.token)).toEqual({ restartNeeded: true });
-    expect(fake.view.linuxFeature).toBe(true);
+    expect(fake.view.linuxFeature).toBe(false);
+    expect(fake.view.restartPending).toBe(true);
   });
 
   it('keeps the idle minutes between 1 and 240', async () => {
