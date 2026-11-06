@@ -1,0 +1,279 @@
+/* ---------- WorkSteps: the live step list of a working bot (monochrome; tokens only) ---------- */
+.cockpit .ck-work {
+  margin-top: 10px;
+  list-style: none;
+  font-size: 12px;
+  color: var(--label-2);
+}
+.cockpit .ck-work-owner {
+  display: block;
+  margin: 0 0 2px 4px;
+  font-size: 11px;
+  color: var(--label-3);
+}
+.cockpit .ck-work-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 3px 8px 3px 4px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--label-2);
+  font: inherit;
+  line-height: 1.3;
+  cursor: pointer;
+  transition:
+    background-color 150ms var(--ease),
+    color 150ms var(--ease);
+}
+.cockpit .ck-work.is-settled .ck-work-head {
+  color: var(--label-3);
+}
+.cockpit .ck-work-head:hover {
+  background: var(--fill-hover);
+  color: var(--label);
+}
+.cockpit .ck-work-head:focus-visible {
+  outline: none;
+  box-shadow: var(--focus);
+}
+.cockpit .ck-work-chevron {
+  display: inline-grid;
+  place-items: center;
+  transition: transform 150ms var(--ease);
+}
+.cockpit .ck-work-chevron[data-open] {
+  transform: rotate(90deg);
+}
+.cockpit .ck-work-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cockpit .ck-work.is-failed .ck-work-title {
+  color: var(--label);
+  font-weight: 600;
+}
+.cockpit .ck-work-clock,
+.cockpit .ck-work-time {
+  font-variant-numeric: tabular-nums;
+  color: var(--label-3);
+  font-size: 11px;
+}
+.cockpit .ck-work-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* the list and its rail: the rail fills as steps finish */
+.cockpit .ck-work-list {
+  position: relative;
+  margin: 4px 0 0 10px;
+  padding: 0 0 0 18px;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.cockpit .ck-work-rail {
+  position: absolute;
+  left: 6px;
+  top: 6px;
+  bottom: 6px;
+  width: 1px;
+  background: var(--sep);
+}
+.cockpit .ck-work-rail-fill {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--label-3);
+  transform-origin: top;
+  transition: transform 300ms var(--ease);
+}
+.cockpit .ck-work-step {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: baseline;
+  column-gap: 8px;
+  line-height: 1.4;
+}
+.cockpit .ck-work-step.is-running,
+.cockpit .ck-work-step.is-retry {
+  color: var(--label);
+}
+.cockpit .ck-work-step.is-error {
+  color: var(--label);
+  font-weight: 600;
+}
+.cockpit .ck-work-step.is-pending {
+  color: var(--label-3);
+}
+.cockpit .ck-work-mark {
+  position: absolute;
+  left: -18px;
+  top: 2px;
+  display: grid;
+  place-items: center;
+  width: 13px;
+  height: 13px;
+  background: var(--bg, transparent);
+  color: var(--label-3);
+}
+.cockpit .ck-work-step.is-error .ck-work-mark,
+.cockpit .ck-work-step.is-running .ck-work-mark {
+  color: var(--label);
+}
+.cockpit .ck-work-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--label-4);
+}
+.cockpit .ck-work-arc {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 1.5px solid var(--label-4);
+  border-top-color: var(--label);
+  animation: ck-work-spin 800ms linear infinite;
+}
+.cockpit .ck-work-draw {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 0;
+  animation: ck-work-draw 260ms var(--ease) both;
+}
+.cockpit .ck-work-wave > span {
+  display: inline-block;
+  animation: ck-work-wave 1.6s ease-in-out infinite;
+}
+
+/* the running step's small log: three mono lines, the oldest fading out */
+.cockpit .ck-work-log {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  margin-top: 2px;
+  max-height: 3.9em;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--label-3);
+  -webkit-mask-image: linear-gradient(to bottom, transparent, var(--label) 45%);
+  mask-image: linear-gradient(to bottom, transparent, var(--label) 45%);
+}
+.cockpit .ck-work-logline {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  animation: ck-work-in 200ms var(--ease) both;
+}
+
+/* what a step did: a plain line, its reason, the error line, and the opened details */
+.cockpit .ck-work-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cockpit .ck-work-label-btn {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.cockpit .ck-work-label-btn:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.cockpit .ck-work-label-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus);
+  border-radius: 4px;
+}
+.cockpit .ck-work-why,
+.cockpit .ck-work-error,
+.cockpit .ck-work-meta {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  color: var(--label-3);
+}
+.cockpit .ck-work-error {
+  color: var(--label-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cockpit .ck-work-more {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 2px;
+}
+.cockpit .ck-work-full,
+.cockpit .ck-work-tail {
+  margin: 0;
+  padding: 6px 8px;
+  max-height: 11em;
+  overflow: auto;
+  border-radius: 8px;
+  background: var(--fill);
+  color: var(--label-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.cockpit .ck-work-earlier {
+  list-style: none;
+}
+.cockpit .ck-work-earlier-btn {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--label-3);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.cockpit .ck-work-earlier-btn:hover {
+  color: var(--label);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cockpit .ck-work-head,
+  .cockpit .ck-work-chevron,
+  .cockpit .ck-work-rail-fill {
+    transition: none;
+  }
+  .cockpit .ck-work-arc,
+  .cockpit .ck-work-draw,
+  .cockpit .ck-work-wave > span,
+  .cockpit .ck-work-logline {
+    animation: none;
+  }
+  /* the arc holds still as a three-quarter ring */
+  .cockpit .ck-work-arc {
+    border-color: var(--label);
+    border-right-color: var(--label-4);
+  }
+}

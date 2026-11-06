@@ -1,0 +1,121 @@
+/* The Files section of the Computer tab. */
+.cockpit .ck-potato-files {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--sep);
+  border-radius: 10px;
+}
+.cockpit .ck-potato-files-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cockpit .ck-potato-files-title {
+  flex: 1;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+.cockpit .ck-potato-files-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+.cockpit .ck-potato-files-limits,
+.cockpit .ck-potato-files-asleep {
+  margin: 0;
+}
+.cockpit .ck-potato-files-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.cockpit .ck-potato-files-crumbs {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.cockpit .ck-potato-files-crumbs li + li::before {
+  content: '/';
+  margin-right: 4px;
+  color: var(--label-3);
+}
+.cockpit .ck-potato-files-up {
+  border: 0;
+  background: none;
+  color: var(--label-2);
+  cursor: pointer;
+}
+.cockpit .ck-potato-files-gap {
+  flex: 1;
+}
+.cockpit .ck-potato-files-list {
+  max-height: 240px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+.cockpit .ck-potato-files-row {
+  display: flex;
+  width: 100%;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.cockpit .ck-potato-files-row:hover,
+.cockpit .ck-potato-files-row[aria-pressed='true'] {
+  background: var(--fill-hover);
+}
+.cockpit .ck-potato-files-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cockpit .ck-potato-files-meta {
+  flex: none;
+}
+.cockpit .ck-potato-files-problem {
+  margin: 0;
+  color: var(--label);
+  overflow-wrap: anywhere;
+}
+.cockpit .ck-potato-files-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--sep);
+}
+.cockpit .ck-potato-files-preview-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cockpit .ck-potato-files-text {
+  max-height: 260px;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+.cockpit .ck-potato-files-image {
+  max-width: 100%;
+  max-height: 260px;
+  object-fit: contain;
+}

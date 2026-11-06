@@ -1,0 +1,433 @@
+//! Resolve a writable project directory for PTY cwd and MCP install.
+
+use std::path::{Path, PathBuf};
+
+pub fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+}
+
+/// Expand `~` and `~/…` so paths typed in settings resolve outside `src-tauri` during dev.
+pub fn expand_user_path(path: &Path) -> PathBuf {
+    let raw = path.to_string_lossy();
+    if raw == "~" {
+        return home_dir().unwrap_or_else(|| PathBuf::from("."));
+    }
+    if let Some(rest) = raw.strip_prefix("~/").or_else(|| raw.strip_prefix("~\\")) {
+        if let Some(home) = home_dir() {
+            return home.join(rest);
+        }
+    }
+    path.to_path_buf()
+}
+
+/// GUI macOS apps launched from a DMG often have current_dir `/` — never use that as a project root.
+pub fn is_valid_project_path(path: &Path) -> bool {
+    if path.as_os_str().is_empty() {
+        return false;
+    }
+    if path == Path::new("/") {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        let s = path.to_string_lossy();
+        if s.len() == 2 && s.ends_with(':') {
+            return false;
+        }
+    }
+    true
+}
+
+pub fn default_project_path() -> String {
+    if let Ok(cwd) = std::env::current_dir() {
+        if is_valid_project_path(&cwd) {
+            return cwd.to_string_lossy().to_string();
+        }
+    }
+    home_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| ".".into())
+}
+
+pub fn normalize_project_path(path: &Path) -> Result<PathBuf, String> {
+    let expanded = expand_user_path(path);
+    if !is_valid_project_path(&expanded) {
+        return Err(
+            "Pick a project folder in the header before using Claude, Codex, or OpenCode orchestrators (cannot use /)"
+                .into(),
+        );
+    }
+    Ok(expanded)
+}
+
+/// Why `prepare_project_path_coded` refused a folder.
+#[derive(Debug)]
+pub enum PrepareError {
+    /// The folder's path is longer than Windows can start a program in (`path_limit`).
+    TooLong(crate::path_limit::PathTooLong, PathBuf),
+    /// Anything else: not a folder, cannot be created, no storage.
+    Invalid(String),
+}
+
+impl PrepareError {
+
+    /// The MCP/bridge error: `PATH_TOO_LONG` or `INVALID_PROJECT_PATH`.
+    pub fn into_operation_error(self) -> crate::operations::OperationError {
+        match self {
+            Self::TooLong(found, folder) => found.into_error(&folder),
+            Self::Invalid(text) => crate::operations::OperationError::new("INVALID_PROJECT_PATH", text, false),
+        }
+    }
+}
+
+/// `prepare_project_path` that keeps the reason apart, so a caller can answer with the right code.
+/// A folder longer than Windows can start a program in is refused before anything is created.
+pub fn prepare_project_path_coded(path: &Path) -> Result<PathBuf, PrepareError> {
+    let expanded = normalize_project_path(path).map_err(PrepareError::Invalid)?;
+    let absolute = if expanded.is_absolute() {
+        expanded
+    } else {
+        std::env::current_dir()
+            .map_err(|err| {
+                PrepareError::Invalid(format!(
+                    "could not resolve relative project path {}: current directory unavailable: {err}",
+                    expanded.display()
+                ))
+            })?
+            .join(expanded)
+    };
+    crate::path_limit::check(&absolute).map_err(|found| PrepareError::TooLong(found, absolute.clone()))?;
+    if absolute.exists() && !absolute.is_dir() {
+        return Err(PrepareError::Invalid(format!(
+            "project path is not a directory: {}",
+            absolute.display()
+        )));
+    }
+    if !absolute.exists() {
+        std::fs::create_dir_all(&absolute).map_err(|err| {
+            PrepareError::Invalid(format!(
+                "could not create project directory {}: {err}",
+                absolute.display()
+            ))
+        })?;
+    }
+    let storage = crate::event_log::project_storage_dir(&absolute);
+    std::fs::create_dir_all(&storage).map_err(|err| {
+        PrepareError::Invalid(format!(
+            "could not create project storage at {}: {err}",
+            storage.display()
+        ))
+    })?;
+    Ok(absolute)
+}
+
+pub fn comparable_project_path(path: &Path) -> String {
+    let normalized = normalize_project_path(path).unwrap_or_else(|_| path.to_path_buf());
+    let canon = std::fs::canonicalize(&normalized).unwrap_or(normalized);
+    let text = canon.to_string_lossy().replace('\\', "/");
+    // `\\?\C:\x` (extended-length) and `\\?\UNC\host\share` name the same places as `C:\x` and
+    // `\\host\share`; a trailing separator names the same directory as none.
+    let text = if let Some(rest) = text.strip_prefix("//?/UNC/") {
+        format!("//{rest}")
+    } else if let Some(rest) = text.strip_prefix("//?/").or_else(|| text.strip_prefix("//./")) {
+        rest.to_string()
+    } else {
+        text
+    };
+    let trimmed = text.trim_end_matches('/');
+    let text = if trimmed.is_empty() || trimmed.ends_with(':') {
+        text // a filesystem root keeps its separator
+    } else {
+        trimmed.to_string()
+    };
+    if cfg!(windows) {
+        text.to_ascii_lowercase()
+    } else {
+        text
+    }
+}
+
+/// `\\?\C:\x` -> `C:\x` (and `\\?\UNC\host\share` -> `\\host\share`), the spelling a program's working
+/// directory and the person's own folder list use. `canonicalize` returns the extended-length form on
+/// Windows. A share that was reached through a mapped drive letter keeps the letter: `cmd.exe` cannot
+/// start in a UNC folder.
+fn plain_spelling(canonical: PathBuf, as_given: &Path) -> PathBuf {
+    let text = canonical.to_string_lossy().into_owned();
+    if let Some(share) = text.strip_prefix(r"\\?\UNC\") {
+        let given = as_given.to_string_lossy();
+        let given_is_drive = given.len() >= 2 && given.as_bytes()[1] == b':';
+        return if given_is_drive { as_given.to_path_buf() } else { PathBuf::from(format!(r"\\{share}")) };
+    }
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) if rest.len() >= 2 && rest.as_bytes()[1] == b':' => PathBuf::from(rest),
+        _ => canonical,
+    }
+}
+
+/// The folder a person selected (picker, Recent projects, drag-drop, "open folder") as the working
+/// directory of the agent that starts there: `~` expanded, `..` and trailing separators gone, links
+/// resolved, no `\?\` prefix. A folder that cannot be resolved keeps the spelling it was given.
+pub fn selected_folder(path: &Path) -> PathBuf {
+    let expanded = expand_user_path(path);
+    match std::fs::canonicalize(&expanded) {
+        Ok(canonical) => plain_spelling(canonical, &expanded),
+        Err(_) => expanded,
+    }
+}
+
+/// The working directory for a new agent from the folder the person named (`None` or blank: the
+/// caller's default project). The result is that folder itself, canonical. A path inside a separate
+/// copy (`<project>/.puppet-master/worktrees/<id>`) is mapped back to the project it came from: a
+/// copy is never a project. `Err("FOLDER_MISSING: ...")` when the folder is gone.
+pub fn resolve_selected_folder(raw: Option<&str>) -> Result<Option<String>, String> {
+    let Some(raw) = raw.map(str::trim).filter(|p| !p.is_empty()) else { return Ok(None) };
+    let named = expand_user_path(Path::new(raw));
+    let named_text = named.to_string_lossy().into_owned();
+    let project = crate::worktrees::origin_of_cwd(&named_text).map(PathBuf::from).unwrap_or(named);
+    if !project.is_dir() {
+        return Err("FOLDER_MISSING: that project folder does not exist any more".into());
+    }
+    Ok(Some(selected_folder(&project).to_string_lossy().into_owned()))
+}
+
+/// True when `supplied` is the worker directory or an ancestor of it.
+pub fn workspace_covers(supplied: &Path, worker: &Path) -> bool {
+    let supplied = comparable_project_path(supplied);
+    let worker = comparable_project_path(worker);
+    supplied == worker || worker.starts_with(&(supplied.clone() + "/"))
+}
+
+/// PTY spawn cwd: explicit path when valid, otherwise registry default (also validated).
+pub fn resolve_spawn_cwd(
+    cwd: Option<String>,
+    registry_fallback: String,
+) -> Result<PathBuf, String> {
+    let candidate = cwd
+        .filter(|value| is_valid_project_path(Path::new(value)))
+        .unwrap_or(registry_fallback);
+    let normalized = normalize_project_path(Path::new(&candidate))?;
+    crate::path_limit::check(&normalized).map_err(|found| found.message())?;
+    Ok(normalized)
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test-only copy of the String flavour of `prepare_project_path_coded` (the production wrapper was removed as dead code).
+    fn prepare_project_path(path: &Path) -> Result<PathBuf, String> {
+        prepare_project_path_coded(path).map_err(|error| match error {
+            PrepareError::TooLong(found, _) => found.message(),
+            PrepareError::Invalid(text) => text,
+        })
+    }
+
+    #[test]
+    fn prepare_errors_name_the_path_and_step() {
+        let base = std::env::temp_dir().join(format!("pm-prep-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&base).unwrap();
+        let file = base.join("blocker");
+        std::fs::write(&file, "x").unwrap();
+        let err = prepare_project_path(&file.join("child")).unwrap_err();
+        assert!(err.contains("could not create project directory"), "{err}");
+        assert!(err.contains("blocker"), "{err}");
+        let err = prepare_project_path(&file).unwrap_err();
+        assert!(err.contains("not a directory") && err.contains("blocker"), "{err}");
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn prepare_accepts_trailing_separator_and_nested_missing_dirs() {
+        let base = std::env::temp_dir().join(format!("pm-prep2-{}", uuid::Uuid::new_v4()));
+        let nested = base.join("Roaming").join("scratch ws");
+        let with_sep = format!("{}{}", nested.display(), std::path::MAIN_SEPARATOR);
+        let out = prepare_project_path(Path::new(&with_sep)).unwrap();
+        assert!(out.is_dir());
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    fn long_folder(under: &Path, len: usize) -> PathBuf {
+        let mut text = under.to_string_lossy().into_owned();
+        while text.len() < len {
+            text.push_str("\\segment-of-the-long-path");
+        }
+        text.truncate(len);
+        if text.ends_with('\\') {
+            text.pop();
+            text.push('x');
+        }
+        PathBuf::from(text)
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_folder_too_long_for_windows_is_refused_before_anything_is_created() {
+        let base = std::env::temp_dir().join(format!("pm-long-{}", uuid::Uuid::new_v4().simple()));
+        let long = long_folder(&base, 283);
+        assert_eq!(long.to_string_lossy().len(), 283);
+        let error = prepare_project_path_coded(&long).unwrap_err();
+        assert!(matches!(error, PrepareError::TooLong(..)), "{error:?}");
+        let coded = error.into_operation_error();
+        assert_eq!(coded.code, "PATH_TOO_LONG");
+        assert!(coded.message.starts_with("This folder's path is 283 characters."), "{}", coded.message);
+        // The String flavour says the same thing, and nothing was made on disk.
+        let text = prepare_project_path(&long).unwrap_err();
+        assert!(text.contains("283 characters") && text.contains("259"), "{text}");
+        assert!(!base.exists(), "a refused folder must not be created");
+        // A spawn cwd is judged by the same rule.
+        let spawn = resolve_spawn_cwd(Some(long.to_string_lossy().into_owned()), "C:/".into()).unwrap_err();
+        assert!(spawn.contains("283 characters"), "{spawn}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_folder_at_the_limit_still_prepares() {
+        let base = std::env::temp_dir().join(format!("pm-edge-{}", uuid::Uuid::new_v4().simple()));
+        let edge = long_folder(&base, 259);
+        match prepare_project_path_coded(&edge) {
+            Ok(path) => assert!(path.is_dir()),
+            // The temp folder itself may already be deep on a build machine.
+            Err(PrepareError::TooLong(found, _)) => panic!("259 characters is allowed, got {found:?}"),
+            Err(other) => panic!("{other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn rejects_root() {
+        assert!(!is_valid_project_path(Path::new("/")));
+    }
+
+    #[test]
+    fn default_is_not_root() {
+        let path = default_project_path();
+        assert!(is_valid_project_path(Path::new(&path)));
+    }
+
+    #[test]
+    fn expand_tilde_project_path() {
+        let Some(home) = home_dir() else {
+            return;
+        };
+        let expanded = expand_user_path(Path::new("~/work/puppet-master"));
+        assert_eq!(expanded, home.join("work/puppet-master"));
+    }
+
+    #[test]
+    fn resolve_spawn_cwd_rejects_root_override() {
+        let err = resolve_spawn_cwd(Some("/".into()), "/".into()).unwrap_err();
+        assert!(err.contains("Claude, Codex, or OpenCode"));
+    }
+
+    #[test]
+    fn prepare_project_path_creates_storage_dir() {
+        let root = std::env::temp_dir().join(format!(
+            "pm-prepare-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let prepared = prepare_project_path(&root).expect("absolute path should work");
+        assert!(prepared.is_absolute());
+        assert!(crate::event_log::project_storage_dir(&prepared).is_dir());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn workspace_covers_parent_and_rejects_unrelated() {
+        let root = std::env::temp_dir().join(format!(
+            "pm-workspace-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let child = root.join("packages").join("app");
+        let sibling = root.join("other");
+        let _ = std::fs::create_dir_all(&child);
+        let _ = std::fs::create_dir_all(&sibling);
+        assert!(workspace_covers(&root, &child));
+        assert!(workspace_covers(&child, &child));
+        assert!(!workspace_covers(&sibling, &child));
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[cfg(test)]
+mod persist_tests {
+    use super::*;
+    use serde_json::{json, Value};
+
+    // ---- the folder a person selected is the folder the agent works in
+
+    fn temp_folder(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("pm-sel-{tag}-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn text(path: &Path) -> String {
+        path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn the_extended_length_prefix_is_dropped_from_a_canonical_path() {
+        let plain = |canonical: &str, given: &str| plain_spelling(PathBuf::from(canonical), Path::new(given));
+        assert_eq!(plain(r"\\?\C:\Users\you\proj", r"C:\Users\you\proj"), PathBuf::from(r"C:\Users\you\proj"));
+        assert_eq!(plain(r"\\?\D:\", r"D:\"), PathBuf::from(r"D:\"));
+        // A share keeps its two slashes; reached through a mapped drive it keeps the letter.
+        assert_eq!(plain(r"\\?\UNC\host\share\x", r"\\host\share\x"), PathBuf::from(r"\\host\share\x"));
+        assert_eq!(plain(r"\\?\UNC\host\share\x", r"Z:\x"), PathBuf::from(r"Z:\x"));
+        // Anything else is left alone.
+        assert_eq!(plain(r"C:\Users\you", r"C:\Users\you"), PathBuf::from(r"C:\Users\you"));
+        assert_eq!(plain(r"\\?\Volume{1}\x", r"\\?\Volume{1}\x"), PathBuf::from(r"\\?\Volume{1}\x"));
+    }
+
+    #[test]
+    fn a_selected_folder_is_used_exactly_as_picked() {
+        let dir = temp_folder("exact");
+        let picked = resolve_selected_folder(Some(&text(&dir))).unwrap().expect("a folder");
+        assert!(!picked.contains(".puppet-master"), "{picked}");
+        assert!(!picked.starts_with(r"\\?\"), "no extended-length prefix reaches a program's cwd: {picked}");
+        assert_eq!(comparable_project_path(Path::new(&picked)), comparable_project_path(&dir));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_selected_folder_is_canonical_dots_and_trailing_separators_are_gone() {
+        let dir = temp_folder("canon");
+        std::fs::create_dir_all(dir.join("inner")).unwrap();
+        let sep = std::path::MAIN_SEPARATOR;
+        let messy = format!("{}{sep}inner{sep}..{sep}", text(&dir));
+        let picked = resolve_selected_folder(Some(&messy)).unwrap().unwrap();
+        assert!(!picked.contains(".."), "{picked}");
+        assert!(!picked.ends_with(sep), "{picked}");
+        assert_eq!(comparable_project_path(Path::new(&picked)), comparable_project_path(&dir));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_separate_copys_folder_is_never_where_a_selected_project_starts() {
+        let origin = temp_folder("origin");
+        let copy = origin.join(".puppet-master").join("worktrees").join("pane-1a2b3c4d");
+        std::fs::create_dir_all(&copy).unwrap();
+        let picked = resolve_selected_folder(Some(&text(&copy))).unwrap().unwrap();
+        assert!(!picked.contains("worktrees"), "{picked}");
+        assert_eq!(comparable_project_path(Path::new(&picked)), comparable_project_path(&origin));
+        let _ = std::fs::remove_dir_all(origin);
+    }
+
+    #[test]
+    fn nothing_selected_means_the_default_folder_and_a_missing_folder_is_refused() {
+        assert_eq!(resolve_selected_folder(None).unwrap(), None);
+        assert_eq!(resolve_selected_folder(Some("  ")).unwrap(), None);
+        let gone = std::env::temp_dir().join("pm-sel-does-not-exist-xyz");
+        let err = resolve_selected_folder(Some(&text(&gone))).unwrap_err();
+        assert!(err.starts_with("FOLDER_MISSING"), "{err}");
+    }
+}

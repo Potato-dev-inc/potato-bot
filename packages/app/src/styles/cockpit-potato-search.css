@@ -1,0 +1,114 @@
+/* The Search chats page. It takes the thread's place: a header, the search box, then the results. Grayscale tokens only. */
+.cockpit .ck-search {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.cockpit .ck-search-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 40px;
+  padding: 0 12px 0 16px;
+  border-bottom: 1px solid var(--sep);
+}
+.cockpit .ck-search-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--label);
+}
+.cockpit .ck-search-bar {
+  flex: none;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--sep);
+}
+.cockpit .ck-search-input {
+  width: 100%;
+  max-width: 520px;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--sep);
+  border-radius: 8px;
+  background: var(--bg-raised);
+  color: var(--label);
+  font: inherit;
+  font-size: 13px;
+}
+.cockpit .ck-search-input:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+.cockpit .ck-search-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px 8px 16px;
+}
+.cockpit .ck-search-note {
+  margin: 12px 8px;
+}
+.cockpit .ck-search-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.cockpit .ck-search-hit {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--label);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.cockpit .ck-search-hit:hover {
+  background: var(--fill-hover);
+}
+.cockpit .ck-search-hit:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.cockpit .ck-search-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--label-2);
+}
+.cockpit .ck-search-owner {
+  font-weight: 600;
+  color: var(--label);
+}
+.cockpit .ck-search-kind {
+  padding: 0 6px;
+  border: 1px solid var(--sep);
+  border-radius: 6px;
+  font-size: 11px;
+}
+.cockpit .ck-search-when {
+  margin-left: auto;
+}
+.cockpit .ck-search-snippet {
+  font-size: 13px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.cockpit .ck-search-snippet mark {
+  background: var(--fill-active);
+  color: inherit;
+  border-radius: 3px;
+  padding: 0 1px;
+}

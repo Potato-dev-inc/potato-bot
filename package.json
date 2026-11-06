@@ -1,0 +1,29 @@
+{
+  "name": "puppet-master",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Potato Bot - a chat friend with its own small brain and a Linux computer",
+  "license": "MIT",
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run tauri -- dev",
+    "tauri": "node scripts/with-cargo-path.mjs",
+    "build": "npm run build --workspaces --if-present",
+    "build:rust": "node scripts/with-cargo-path.mjs build",
+    "test": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "clean": "rimraf \"packages/*/dist\" \"packages/*/.turbo\" \"packages/app/src-tauri/target\"",
+    "check:warnings": "node scripts/check-warnings.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.1",
+    "rimraf": "^6.0.1",
+    "typescript": "^5.6.3"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

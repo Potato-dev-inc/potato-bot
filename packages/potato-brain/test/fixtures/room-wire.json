@@ -1,0 +1,48 @@
+{
+  "item": {
+    "v": 1,
+    "type": "room",
+    "id": "l0000000000a1",
+    "roomId": "r0123456789ab",
+    "roomName": "Weekend",
+    "conversationId": "app:room:r0123456789ab",
+    "me": { "kind": "bot", "id": "nimbus", "name": "Nimbus" },
+    "roster": [
+      { "kind": "person", "id": "owner", "name": "You" },
+      { "kind": "bot", "id": "nimbus", "name": "Nimbus" },
+      { "kind": "bot", "id": "mochi", "name": "Mochi" }
+    ],
+    "recent": [
+      { "id": "l0000000000a0", "from": { "kind": "bot", "id": "mochi", "name": "Mochi" }, "text": "morning", "at": 1000, "hop": 1, "inReplyTo": "l0000000000a9" }
+    ],
+    "line": { "id": "l0000000000a1", "from": { "kind": "person", "id": "owner", "name": "You" }, "text": "@Nimbus hi", "at": 2000, "hop": 0, "inReplyTo": null },
+    "tools": "full",
+    "sandboxOnly": false,
+    "capabilities": { "sandbox": true }
+  },
+  "events": [
+    { "v": 1, "type": "typing", "conversationId": "app:room:r0123456789ab", "on": true },
+    { "v": 1, "type": "reply", "conversationId": "app:room:r0123456789ab", "inReplyTo": "l0000000000a1", "segments": ["hello", "there"], "kaomoji": "(^_^)", "tone": "genki" },
+    { "v": 1, "type": "pass", "conversationId": "app:room:r0123456789ab", "inReplyTo": "l0000000000a1", "reason": "low_score" },
+    { "v": 1, "type": "error", "code": "PROVIDER_LIMIT", "conversationId": "app:room:r0123456789ab", "inReplyTo": "l0000000000a1" }
+  ],
+  "personItem": {
+    "v": 1,
+    "type": "room",
+    "id": "l80d6960566e2",
+    "roomId": "r4bb2b9763480",
+    "roomName": "test group",
+    "conversationId": "app:room:r4bb2b9763480",
+    "me": { "kind": "bot", "id": "blank-2", "name": "Blank 2" },
+    "roster": [
+      { "kind": "person", "id": "owner", "name": "You" },
+      { "kind": "bot", "id": "blank", "name": "Blank" },
+      { "kind": "bot", "id": "blank-2", "name": "Blank 2" }
+    ],
+    "recent": [],
+    "line": { "id": "l80d6960566e2", "from": { "kind": "person", "id": "owner", "name": "You" }, "text": "hi", "at": 1793885003778, "hop": 0, "inReplyTo": null },
+    "tools": "full",
+    "sandboxOnly": false,
+    "capabilities": { "sandbox": false }
+  }
+}

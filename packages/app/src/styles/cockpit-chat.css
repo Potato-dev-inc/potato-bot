@@ -1,0 +1,947 @@
+/* Chat tab of a cockpit pane: the agent's session file as a plain list. Monochrome like the Transcript:
+   the person's messages sit on a soft fill, the agent's text is plain, each tool call is one mono row and a
+   failed one is only heavier. These restyle the hook classes SessionChatView adds next to its pm- classes
+   (the classic TerminalPane layout keeps the pm- look). */
+
+.cockpit .ck-chat {
+  height: 100%;
+  min-height: 0;
+  background: transparent;
+  color: var(--label);
+  font: 13px/1.5 var(--font-ui);
+}
+.cockpit .ck-chat-head {
+  gap: 8px;
+  padding: 10px 20px;
+  background: transparent;
+  border-bottom: 1px solid var(--sep);
+  font-size: 12px;
+  color: var(--label-3);
+}
+.cockpit .ck-chat-model {
+  font-weight: 600;
+  color: var(--label);
+}
+.cockpit .ck-chat-cli {
+  font-size: 11px;
+  color: var(--label-3);
+}
+.cockpit .ck-chat-note {
+  padding: 8px 20px;
+  font-size: 11px;
+  color: var(--label-3);
+  border-bottom: 1px solid var(--sep);
+}
+.cockpit .ck-chat-body {
+  padding: 12px 20px 24px;
+}
+.cockpit .ck-chat-bubble {
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: var(--fill);
+  color: var(--label);
+  line-height: 1.45;
+}
+.cockpit .ck-chat-text {
+  color: var(--label);
+}
+.cockpit .ck-chat-tool {
+  min-height: 28px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font: 12px/1.4 var(--font-mono);
+  color: var(--label-2);
+  transition: background 160ms var(--ease);
+}
+.cockpit .ck-chat-tool:hover {
+  background: var(--fill);
+}
+.cockpit .ck-chat-tool:focus-visible {
+  box-shadow: var(--focus);
+}
+.cockpit .ck-chat-tool-name {
+  color: var(--label);
+}
+.cockpit .ck-chat-tool-summary {
+  color: var(--label-3);
+}
+.cockpit .ck-chat-tool-status {
+  font: 500 11px var(--font-ui);
+  color: var(--label-3);
+}
+.cockpit .ck-chat-tool-status--error {
+  color: var(--label);
+  font-weight: 600;
+}
+.cockpit .ck-chat-output {
+  margin: 4px 0 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--sep);
+  border-radius: 8px;
+  background: var(--bg-raised);
+  font: 11.5px/1.5 var(--font-mono);
+  color: var(--label-2);
+}
+.cockpit .ck-chat-end {
+  font-size: 11px;
+  color: var(--label-3);
+}
+.cockpit .ck-chat-rule {
+  background: var(--sep);
+}
+.cockpit .ck-chat-empty {
+  max-width: none;
+  padding: 32px 8px;
+}
+/* What waits on the person, under the conversation: the bottom row of the chat, outside the scrolling
+   conversation, so it stays in view while the conversation scrolls above it. The docked card keeps its place
+   in the flow here (the Terminal tab floats it over the terminal instead). */
+.cockpit .ck-chat-dock {
+  flex: none;
+  background: var(--bg);
+  border-top: 1px solid var(--sep);
+}
+.cockpit .ck-chat-dock:empty {
+  display: none;
+}
+.cockpit .ck-chat-dock .ck-dock {
+  position: relative;
+  top: auto;
+  max-height: 40vh;
+  border-bottom: 0;
+  box-shadow: none;
+}
+.cockpit .ck-chat-dock .ck-dock-bar {
+  margin: 8px 20px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cockpit .ck-chat-tool {
+    transition: none;
+  }
+}
+
+/* The message box and the bubbles of messages the agent has not shown yet. Grayscale: a pending bubble is the
+   person's bubble with a dashed edge and no fill, a failed one only heavier. */
+.cockpit .ck-chat-pending-list {
+  margin-top: 4px;
+}
+.cockpit .ck-chat-pending-body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  min-width: 0;
+}
+.cockpit .ck-chat-bubble--pending {
+  background: transparent;
+  border: 1px dashed var(--label-3);
+  color: var(--label-2);
+}
+.cockpit .ck-chat-pending-body--failed .ck-chat-bubble--pending {
+  border-style: solid;
+  color: var(--label);
+}
+.cockpit .ck-chat-pending-meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px 10px;
+  font-size: 11px;
+  color: var(--label-3);
+}
+.cockpit .ck-chat-pending-body--failed .ck-chat-pending-meta {
+  color: var(--label-2);
+}
+.cockpit .ck-chat-link {
+  padding: 0;
+  font: inherit;
+  color: var(--label-2);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.cockpit .ck-chat-link:hover {
+  color: var(--accent);
+}
+.cockpit .ck-chat-link:focus-visible {
+  box-shadow: var(--focus);
+  border-radius: 3px;
+}
+.cockpit .ck-chat-composer {
+  flex: none;
+  padding: 8px 20px 16px;
+  background: var(--bg);
+}
+/* One rounded card: text on top, the agent's settings and the send button on a footer line. */
+.cockpit .ck-chat-composer-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  padding: 12px 10px 8px 14px;
+  background: var(--bg-raised);
+  border: 1px solid var(--sep);
+  border-radius: 18px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.cockpit .ck-chat-composer-row:focus-within {
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 3px var(--fill-active, rgba(255, 255, 255, 0.05));
+}
+.cockpit .ck-chat-composer-field {
+  flex: 1 1 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 0 0 6px;
+  border: none;
+  outline: none;
+  min-height: 21px;
+  resize: none;
+  background: transparent;
+  color: var(--label);
+  font: 14px/1.5 var(--font-ui);
+}
+.cockpit .ck-chat-composer-field::placeholder {
+  color: var(--label-3);
+}
+.cockpit .ck-chat-composer-field:disabled {
+  color: var(--label-3);
+  cursor: not-allowed;
+}
+.cockpit .ck-chat-composer-toolbar {
+  flex: 1 1 0;
+  min-width: 0;
+}
+/* Accent: the send button, a round arrow. The word stays for screen readers. */
+.ck-chat-send-icon {
+  display: none;
+}
+.cockpit .ck-btn.ck-chat-send {
+  width: 30px;
+  height: 30px;
+  min-width: 30px;
+  padding: 0;
+  margin-left: auto;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+.cockpit .ck-chat-send .ck-chat-send-icon {
+  display: block;
+}
+.cockpit .ck-chat-send .ck-chat-send-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.cockpit .ck-btn.ck-chat-send:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+.cockpit .ck-btn.ck-chat-send:active:not(:disabled) {
+  background: var(--accent-press);
+}
+.cockpit .ck-chat-send:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.cockpit .ck-chat-composer-note {
+  margin: 6px 4px 0;
+  font-size: 11px;
+  color: var(--label-3);
+}
+
+/* Agent text as Markdown (ChatMarkdown): compact and grayscale. Code blocks and tables scroll inside their own
+   box, so the page never scrolls sideways. Code and borders use the pm- tokens, like the tool output above.
+   Spacing order matters (equal specificity, the later rule wins): reset every block, then the gap between
+   siblings, then headings, rules and the first and last block, which add no outer space. */
+.cockpit .ck-chat-md {
+  overflow-wrap: anywhere;
+}
+.cockpit .ck-chat-md-list {
+  padding-left: 18px;
+}
+.cockpit .ck-chat-md :where(p, h1, h2, h3, ul, ol, blockquote, pre, hr) {
+  margin: 0;
+}
+.cockpit .ck-chat-md > * + *,
+.cockpit .ck-chat-md-quote > * + * {
+  margin-top: 6px;
+}
+.cockpit .ck-chat-md .ck-chat-md-h + * {
+  margin-top: 2px;
+}
+.cockpit .ck-chat-md .ck-chat-md-h {
+  margin: 10px 0 2px;
+}
+.cockpit .ck-chat-md .ck-chat-md-rule {
+  margin: 6px 0;
+}
+.cockpit .ck-chat-md > :first-child {
+  margin-top: 0;
+}
+.cockpit .ck-chat-md > :last-child {
+  margin-bottom: 0;
+}
+.cockpit .ck-chat-md-h {
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--label);
+}
+.cockpit .ck-chat-md-h1 {
+  font-size: 15px;
+}
+.cockpit .ck-chat-md-h2 {
+  font-size: 14px;
+}
+.cockpit .ck-chat-md-h3 {
+  font-size: 13px;
+  color: var(--label-2);
+}
+.cockpit .ck-chat-md strong {
+  font-weight: 600;
+  color: var(--label);
+}
+.cockpit .ck-chat-md em {
+  font-style: italic;
+}
+.cockpit .ck-chat-md-code {
+  padding: 0 4px;
+  border-radius: 4px;
+  font: 0.92em/1.4 var(--font-mono);
+  color: var(--label-2);
+}
+.cockpit .ck-chat-md-pre {
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 6px 8px;
+  font: 12px/1.45 var(--font-mono);
+  color: var(--label-2);
+  white-space: pre;
+}
+.cockpit .ck-chat-md-pre code {
+  font: inherit;
+}
+.cockpit .ck-chat-md-ul {
+  list-style: disc;
+}
+.cockpit .ck-chat-md-ol {
+  list-style: decimal;
+}
+.cockpit .ck-chat-md-list li + li {
+  margin-top: 2px;
+}
+.cockpit .ck-chat-md-list .ck-chat-md-list {
+  margin-top: 2px;
+}
+.cockpit .ck-chat-md-quote {
+  padding: 0 0 0 10px;
+  border-left: 2px solid var(--sep);
+  color: var(--label-2);
+}
+.cockpit .ck-chat-md-rule {
+  border: 0;
+  border-top: 1px solid var(--sep);
+}
+.cockpit .ck-chat-md-link {
+  color: var(--label-2);
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+.cockpit .ck-chat-md-link--live {
+  color: var(--label);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.cockpit .ck-chat-md-link--live:hover {
+  text-decoration-thickness: 2px;
+}
+/* A checklist (task items or tick items): a small box with a tick instead of a bullet. */
+.cockpit .ck-chat-md-checklist {
+  list-style: none;
+  padding-left: 0;
+}
+.cockpit .ck-chat-md-task {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.cockpit .ck-chat-md-task-body {
+  flex: 1;
+  min-width: 0;
+}
+.cockpit .ck-chat-md-box {
+  flex: none;
+  position: relative;
+  top: 2px;
+  width: 13px;
+  height: 13px;
+  border: 1.5px solid var(--label-4);
+  border-radius: 4px;
+}
+.cockpit .ck-chat-md-task[data-checked='true'] .ck-chat-md-box {
+  border-color: var(--label-2);
+}
+.cockpit .ck-chat-md-task[data-checked='true'] .ck-chat-md-box::after {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: 0;
+  width: 3px;
+  height: 7px;
+  border: solid var(--label);
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(40deg);
+}
+.cockpit .ck-chat-md-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--sep);
+  border-radius: 6px;
+}
+.cockpit .ck-chat-md-table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.cockpit .ck-chat-md-table th,
+.cockpit .ck-chat-md-table td {
+  max-width: 36ch;
+  padding: 3px 8px;
+  border: 1px solid var(--sep);
+  vertical-align: top;
+  text-align: left;
+}
+.cockpit .ck-chat-md-table th {
+  font-weight: 600;
+  color: var(--label);
+  background: var(--bg-raised);
+}
+.cockpit .ck-chat-md-align-center {
+  text-align: center;
+}
+.cockpit .ck-chat-md-align-right {
+  text-align: right;
+}
+
+/* The header's view switch (Summary | Normal | Verbose): a small segmented control, the pressed one lifted. */
+.cockpit .ck-chat-modes {
+  background: var(--fill);
+}
+.cockpit .ck-chat-mode {
+  min-height: 20px;
+  font-weight: 500;
+  color: var(--label-3);
+  transition: background 160ms var(--ease), color 160ms var(--ease);
+}
+.cockpit .ck-chat-mode:hover {
+  color: var(--label);
+}
+.cockpit .ck-chat-mode[aria-pressed='true'] {
+  background: var(--bg);
+  color: var(--label);
+  box-shadow: 0 0 0 1px var(--sep);
+}
+.cockpit .ck-chat-mode:focus-visible {
+  box-shadow: var(--focus);
+}
+.cockpit .ck-chat-mode-note {
+  margin-top: 2px;
+  color: var(--label-3);
+}
+
+/* Narrow (phone): the switch is one pill that opens a small menu of the three modes. */
+.cockpit .ck-chat-mode-wrap {
+  position: relative;
+}
+.cockpit .ck-chat-mode-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: var(--fill);
+  color: var(--label-2);
+  font-size: 12px;
+  font-weight: 500;
+  transition: background 160ms var(--ease), color 160ms var(--ease);
+}
+.cockpit .ck-chat-mode-pill:hover,
+.cockpit .ck-chat-mode-pill[aria-expanded='true'] {
+  color: var(--label);
+  background: var(--fill-hover);
+}
+.cockpit .ck-chat-mode-pill:focus-visible,
+.cockpit .ck-chat-mode-item:focus-visible {
+  box-shadow: var(--focus);
+}
+.cockpit .ck-chat-mode-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 120px;
+  padding: 4px;
+  border-radius: 10px;
+  background: var(--bg);
+  box-shadow: 0 0 0 1px var(--sep), 0 8px 24px rgba(0, 0, 0, 0.25);
+}
+.cockpit .ck-chat-mode-item {
+  padding: 6px 10px;
+  border-radius: 6px;
+  color: var(--label-2);
+  font-size: 12px;
+  text-align: left;
+}
+.cockpit .ck-chat-mode-item:hover {
+  color: var(--label);
+  background: var(--fill-hover);
+}
+.cockpit .ck-chat-mode-item[aria-checked='true'] {
+  color: var(--label);
+  background: var(--fill);
+}
+
+/* The pinned task card: "Tasks 2/5" and one glyph per task. Monochrome: to do is a ring, in progress a ring with a
+   dot, done a filled disc whose text is dimmed. Not interactive. */
+.cockpit .ck-chat-plan {
+  background: var(--bg);
+}
+.cockpit .ck-chat-plan-head {
+  letter-spacing: 0.01em;
+}
+.cockpit .ck-chat-plan-item {
+  color: var(--label-2);
+  line-height: 1.4;
+}
+.cockpit .ck-chat-plan-item--completed {
+  color: var(--label-3);
+}
+.cockpit .ck-chat-plan-glyph {
+  border: 1px solid var(--label-3);
+}
+.cockpit .ck-chat-plan-glyph--in_progress {
+  border-color: var(--label);
+  background: linear-gradient(var(--label), var(--label)) center / 3px 3px no-repeat;
+}
+.cockpit .ck-chat-plan-glyph--completed {
+  background: var(--label-3);
+}
+
+/* The activity line of a turn: one row of counts and the time, a chevron that turns when open. */
+.cockpit .ck-chat-activity {
+  min-height: 28px;
+  font: 500 12px/1.4 var(--font-ui);
+  color: var(--label-2);
+  transition: background 160ms var(--ease);
+}
+.cockpit .ck-chat-activity:focus-visible {
+  box-shadow: var(--focus);
+}
+.cockpit .ck-chat-activity-text {
+  color: var(--label-2);
+}
+.cockpit .ck-chat-activity[data-live] .ck-chat-activity-text {
+  color: var(--label);
+}
+.cockpit .ck-chat-chevron {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-right: 3px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 160ms var(--ease);
+}
+.cockpit .ck-chat-chevron--open {
+  transform: rotate(45deg);
+}
+.cockpit .ck-chat-activity-rows {
+  min-width: 0;
+}
+
+/* A tool row's detail: file chips, a diff or a command, the output. */
+.cockpit .ck-chat-detail {
+  padding: 0 4px;
+}
+.cockpit .ck-chat-detail-label {
+  margin: 6px 0 2px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--label-3);
+}
+.cockpit .ck-chat-chips {
+  margin: 2px 0 0;
+}
+.cockpit .ck-chat-chip {
+  max-width: 100%;
+  padding: 1px 8px;
+  border: 1px solid var(--sep);
+  border-radius: 999px;
+  color: var(--label-2);
+  background: var(--bg);
+}
+.cockpit .ck-chat-diff {
+  background: var(--bg-raised);
+  border-color: var(--sep);
+  color: var(--label-2);
+  line-height: 1.5;
+}
+.cockpit .ck-chat-diff-line {
+  padding: 0 4px;
+}
+.cockpit .ck-chat-diff-gutter {
+  color: var(--label-3);
+}
+/* Added lines: a subtle fill and a heavier weight. Removed lines: dimmed and struck through. Context: plain. */
+.cockpit .ck-chat-diff-line--add {
+  background: var(--fill);
+  color: var(--label);
+  font-weight: 600;
+}
+.cockpit .ck-chat-diff-line--del {
+  color: var(--label-3);
+  text-decoration: line-through;
+  text-decoration-color: var(--label-3);
+  opacity: 0.8;
+}
+.cockpit .ck-chat-diff-line--head {
+  color: var(--label-3);
+  font-style: italic;
+}
+
+/* A helper agent's row: a thin indent line, its dot face at the start, its own text. */
+.cockpit .ck-chat-helper {
+  border-color: var(--sep);
+}
+.cockpit .ck-chat-helper-row {
+  font: 500 12px/1.4 var(--font-ui);
+}
+.cockpit .ck-chat-helper-text {
+  color: var(--label);
+}
+
+/* A notice of the session: a thin rule each side of its text. An error is heavier. */
+.cockpit .ck-chat-notice-text {
+  color: var(--label-3);
+}
+.cockpit .ck-chat-notice-text--error {
+  color: var(--label);
+  font-weight: 600;
+}
+.cockpit .ck-chat-end-text {
+  white-space: nowrap;
+}
+
+/* The questions of a pane's helpers: the Inbox's own compact cards, one under the other, scrolling on their own. */
+.cockpit .ck-chat-dock .ck-helper-asks {
+  gap: 8px;
+}
+
+/* "Remember for all agents" (components/chat/RememberSelection.tsx): a small monochrome pill over selected text in a
+   message, and the toast under the conversation. Desktop only. */
+.ck-chat {
+  position: relative;
+}
+.ck-chat-remember {
+  position: fixed;
+  z-index: 70;
+  transform: translateX(-50%);
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--sep, rgba(128, 128, 128, 0.35));
+  background: var(--bg-float, rgba(40, 40, 44, 0.92));
+  color: var(--label, inherit);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  box-shadow: var(--float-shadow, 0 6px 18px rgba(0, 0, 0, 0.25));
+  cursor: pointer;
+}
+.ck-chat-remember:hover {
+  background: var(--fill-2, rgba(128, 128, 128, 0.18));
+}
+.ck-chat-remember:focus-visible,
+.ck-chat-remember-action:focus-visible {
+  outline: 2px solid var(--label-2, currentColor);
+  outline-offset: 1px;
+}
+.ck-chat-remember-toast {
+  position: absolute;
+  left: 50%;
+  bottom: 8px;
+  z-index: 60;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100% - 24px);
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--sep, rgba(128, 128, 128, 0.35));
+  background: var(--bg-float, rgba(40, 40, 44, 0.92));
+  color: var(--label, inherit);
+  box-shadow: var(--float-shadow, 0 6px 18px rgba(0, 0, 0, 0.25));
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ck-chat-remember-action {
+  border: 0;
+  background: transparent;
+  color: var(--label-1, inherit);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 6px;
+}
+.ck-chat-remember-action:hover {
+  background: var(--fill-2, rgba(128, 128, 128, 0.18));
+}
+
+/* Side question: a small box over the top of the chat. Grayscale; the answer scrolls inside the box. */
+.cockpit .ck-chat-head-extra + .ck-chat-modes {
+  margin-left: 8px;
+}
+.cockpit .ck-chat-aside {
+  min-height: 20px;
+  font-weight: 500;
+  color: var(--label-3);
+  transition: color 160ms var(--ease);
+}
+.cockpit .ck-chat-aside:hover,
+.cockpit .ck-chat-aside[aria-expanded='true'] {
+  color: var(--label);
+}
+.cockpit .ck-chat-aside:focus-visible {
+  box-shadow: var(--focus);
+}
+.cockpit .ck-sq {
+  position: absolute;
+  top: 40px;
+  left: 50%;
+  z-index: 20;
+  width: min(560px, calc(100% - 24px));
+  max-height: calc(100% - 56px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  transform: translateX(-50%);
+  background: var(--bg-raised);
+  border: 1px solid var(--sep);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.32);
+}
+.cockpit .ck-sq-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cockpit .ck-sq-title {
+  flex: 1;
+  margin: 0;
+  font: 600 13px/1.4 var(--font-ui);
+  color: var(--label);
+}
+.cockpit .ck-sq-close {
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: var(--fill);
+  color: var(--label-3);
+  font: 500 10px/16px var(--font-ui);
+}
+.cockpit .ck-sq-close:hover {
+  color: var(--label);
+}
+.cockpit .ck-sq-note {
+  margin: 0;
+  font-size: 11px;
+  color: var(--label-3);
+}
+.cockpit .ck-sq-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 6px 6px 6px 10px;
+  background: var(--bg);
+  border: 1px solid var(--sep);
+  border-radius: 10px;
+}
+.cockpit .ck-sq-row:focus-within {
+  border-color: var(--label-3);
+}
+.cockpit .ck-sq-field {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 4px 0;
+  border: none;
+  outline: none;
+  resize: none;
+  background: transparent;
+  color: var(--label);
+  font: 13px/1.5 var(--font-ui);
+}
+.cockpit .ck-sq-field::placeholder {
+  color: var(--label-3);
+}
+.cockpit .ck-sq-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--label-2);
+}
+.cockpit .ck-sq-error {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--sep);
+  border-radius: 8px;
+  background: var(--fill);
+  color: var(--label);
+}
+.cockpit .ck-sq-answer {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 8px;
+}
+.cockpit .ck-sq-answer-body {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--bg);
+}
+.cockpit .ck-sq-actions {
+  display: flex;
+  gap: 6px;
+}
+/* "Earlier": the pane's last side answers, newest first. Each question is a row; a click shows its answer. */
+.cockpit .ck-sq-earlier {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.cockpit .ck-sq-earlier-title {
+  margin: 0;
+  color: var(--label-2);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.cockpit .ck-sq-earlier-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.cockpit .ck-sq-earlier-q {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--label);
+  font: 12px/1.4 var(--font-ui);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.cockpit .ck-sq-earlier-q:hover,
+.cockpit .ck-sq-earlier-q:focus-visible {
+  background: var(--fill);
+}
+
+/* The message a search result opened: a soft gray wash that fades out. */
+.cockpit .ck-chat-turn.is-found {
+  border-radius: 8px;
+  animation: ck-chat-found 1800ms var(--ease) both;
+}
+@keyframes ck-chat-found {
+  0%, 60% {
+    background: var(--fill-active);
+  }
+  100% {
+    background: transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cockpit .ck-chat-turn.is-found {
+    animation: none;
+    background: var(--fill);
+  }
+}
+/* "Save as page" preview (ChatExportMenu): a wide sheet with the page in a frame. The frame is white in both themes:
+   the page carries its own colours. */
+.cockpit .ck-chat-export.ck-sheet {
+  width: min(760px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+}
+.cockpit .ck-chat-export-body {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+}
+.cockpit .ck-chat-export-frame {
+  flex: 1;
+  width: 100%;
+  height: min(60vh, 560px);
+  border: 1px solid var(--sep);
+  border-radius: 8px;
+  background: #fff;
+}
+.cockpit .ck-chat-export-switch {
+  margin: 10px 0;
+}
+/* The Markdown preview: the file as plain text, scrolled inside the sheet. */
+.cockpit .ck-chat-export-text {
+  flex: 1;
+  width: 100%;
+  height: min(60vh, 560px);
+  margin: 0;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--sep);
+  border-radius: 8px;
+  background: var(--fill);
+  color: var(--label);
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* How a turn of a chat ended: one grey line, wrapping like a sentence, with plain text buttons after it. */
+.cockpit .ck-chat-end-text.ck-chat-ending {
+  white-space: normal;
+  text-align: center;
+}
+.cockpit .ck-chat-ending-action {
+  white-space: nowrap;
+}
+.cockpit .ck-chat-ending .ck-chat-link:disabled {
+  opacity: 0.6;
+  text-decoration: none;
+}

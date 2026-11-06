@@ -1,0 +1,297 @@
+//! Append-only JSONL event log: per-project and global files, system/bridge event append,
+//! replay into pane timelines and read models. Recent-event queries live in `recent`.
+
+use once_cell::sync::OnceCell;
+use parking_lot::Mutex;
+use std::fs::{self, File, OpenOptions};
+use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::actors::ActorId;
+use crate::events::{CommandId, EventEntry, SystemEvent};
+
+mod recent;
+pub use recent::*;
+
+const EVENT_LOG_FILE_NAME: &str = "events.jsonl";
+const PROJECT_STORAGE_DIR_NAME: &str = ".puppet-master";
+
+static EVENT_LOG: OnceCell<Arc<EventLogManager>> = OnceCell::new();
+
+#[derive(Debug)]
+pub struct EventLog {
+    path: PathBuf,
+    writer: Mutex<File>,
+}
+
+#[derive(Debug)]
+struct EventLogSlot {
+    path: PathBuf,
+    log: Arc<EventLog>,
+}
+
+#[derive(Debug)]
+pub struct EventLogManager {
+    fallback_path: PathBuf,
+    active_project_path: Mutex<Option<PathBuf>>,
+    slot: Mutex<EventLogSlot>,
+}
+
+impl EventLog {
+    pub fn new(path: PathBuf) -> Result<Self, String> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|err| format!("create event log dir {}: {err}", parent.display()))?;
+        }
+        let writer = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|err| format!("open event log {}: {err}", path.display()))?;
+        Ok(Self {
+            path,
+            writer: Mutex::new(writer),
+        })
+    }
+
+    pub fn append(&self, entry: &EventEntry) -> Result<(), String> {
+        let json = serde_json::to_string(entry)
+            .map_err(|err| format!("serialize event log entry: {err}"))?;
+        let mut writer = self.writer.lock();
+        writer
+            .write_all(json.as_bytes())
+            .and_then(|_| writer.write_all(b"\n"))
+            .and_then(|_| writer.flush())
+            .map_err(|err| format!("write event log {}: {err}", self.path.display()))
+    }
+
+    #[allow(dead_code)]
+    pub fn read_all(&self) -> Result<Vec<EventEntry>, String> {
+        read_entries(&self.path)
+    }
+
+    #[allow(dead_code)]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+pub fn event_log_path() -> PathBuf {
+    crate::app_paths::app_data_dir().join(EVENT_LOG_FILE_NAME)
+}
+
+pub fn project_storage_dir(project_path: &Path) -> PathBuf {
+    project_path.join(PROJECT_STORAGE_DIR_NAME)
+}
+
+pub fn project_event_log_path(project_path: &Path) -> PathBuf {
+    project_storage_dir(project_path).join(EVENT_LOG_FILE_NAME)
+}
+
+impl EventLogManager {
+    pub fn new(fallback_path: PathBuf) -> Result<Self, String> {
+        let log = Arc::new(EventLog::new(fallback_path.clone())?);
+        Ok(Self {
+            fallback_path: fallback_path.clone(),
+            active_project_path: Mutex::new(None),
+            slot: Mutex::new(EventLogSlot {
+                path: fallback_path,
+                log,
+            }),
+        })
+    }
+
+    pub fn set_active_project_path(&self, path: Option<PathBuf>) {
+        let normalized =
+            path.and_then(|candidate| crate::project_path::normalize_project_path(&candidate).ok());
+        *self.active_project_path.lock() = normalized;
+    }
+
+    pub fn active_project_path(&self) -> Option<PathBuf> {
+        self.active_project_path.lock().clone()
+    }
+
+    pub fn current_path(&self) -> PathBuf {
+        self.active_project_path()
+            .map(|project_path| project_event_log_path(&project_path))
+            .unwrap_or_else(|| self.fallback_path.clone())
+    }
+
+    fn current_log(&self) -> Result<Arc<EventLog>, String> {
+        let path = self.current_path();
+        let mut slot = self.slot.lock();
+        if slot.path == path {
+            return Ok(slot.log.clone());
+        }
+        if let Some(project) = self.active_project_path() {
+            // The project's events.jsonl must not end up in the user's commits.
+            crate::git_exclude::ensure_project_storage_excluded(&project);
+        }
+        let log = Arc::new(EventLog::new(path.clone())?);
+        *slot = EventLogSlot {
+            path,
+            log: log.clone(),
+        };
+        Ok(log)
+    }
+
+    pub fn append(&self, entry: &EventEntry) -> Result<(), String> {
+        self.current_log()?.append(entry)
+    }
+
+    pub fn read_all(&self) -> Result<Vec<EventEntry>, String> {
+        read_entries(&self.current_path())
+    }
+}
+
+pub fn init_global_event_log(path: PathBuf) -> Result<(), String> {
+    let log = Arc::new(EventLogManager::new(path)?);
+    let _ = EVENT_LOG.set(log);
+    Ok(())
+}
+
+pub fn set_active_project_path(path: Option<PathBuf>) {
+    let Some(log) = EVENT_LOG.get() else {
+        tracing::debug!("event log not initialized; cannot set active project path");
+        return;
+    };
+    log.set_active_project_path(path);
+}
+
+pub fn active_project_path() -> Option<PathBuf> {
+    EVENT_LOG.get().and_then(|log| log.active_project_path())
+}
+
+pub fn append_system_event(payload: SystemEvent) {
+    let Some(log) = EVENT_LOG.get() else {
+        tracing::debug!("event log not initialized; dropping event");
+        return;
+    };
+    let entry = EventEntry::new(ActorId::system(), CommandId::new(), payload);
+    if let Err(err) = log.append(&entry) {
+        tracing::warn!(%err, "append event failed");
+    } else {
+        crate::pane_wait_notify::bump_waiters();
+    }
+}
+
+pub fn append_bridge_event(payload: SystemEvent) {
+    let Some(log) = EVENT_LOG.get() else {
+        tracing::debug!("event log not initialized; dropping bridge event");
+        return;
+    };
+    let entry = EventEntry::new(ActorId::bridge(), CommandId::new(), payload);
+    if let Err(err) = log.append(&entry) {
+        tracing::warn!(%err, "append bridge event failed");
+    } else {
+        crate::pane_wait_notify::bump_waiters();
+    }
+}
+
+pub fn read_global_entries() -> Result<Vec<EventEntry>, String> {
+    let log = EVENT_LOG
+        .get()
+        .ok_or_else(|| "event log not initialized".to_string())?;
+    log.read_all()
+}
+
+pub fn rebuild_read_models() -> Result<crate::projections::ReadModels, String> {
+    Ok(crate::projections::build_read_models(
+        &read_global_entries()?
+    ))
+}
+
+/// Bytes read per step when scanning a log from its end.
+const TAIL_CHUNK_BYTES: usize = 256 * 1024;
+
+/// The newest entry (scanning from the end of the file) that satisfies `want`. Reads the log in
+/// chunks backwards and stops at the first match, so a lookup of a recent event costs a few
+/// hundred KB instead of parsing a multi-MB history (a busy project's log reached 40MB and took
+/// 1.3s to parse on every worker-status call).
+pub fn find_last_entry(want: impl FnMut(&EventEntry) -> bool) -> Result<Option<EventEntry>, String> {
+    let log = EVENT_LOG
+        .get()
+        .ok_or_else(|| "event log not initialized".to_string())?;
+    find_last_entry_in(&log.current_path(), TAIL_CHUNK_BYTES, want)
+}
+
+fn find_last_entry_in(
+    path: &Path,
+    chunk_bytes: usize,
+    mut want: impl FnMut(&EventEntry) -> bool,
+) -> Result<Option<EventEntry>, String> {
+    use std::io::{Read, Seek, SeekFrom};
+    if !path.exists() {
+        return Ok(None);
+    }
+    let mut file =
+        File::open(path).map_err(|err| format!("open event log {}: {err}", path.display()))?;
+    let mut position = file
+        .metadata()
+        .map_err(|err| format!("stat event log {}: {err}", path.display()))?
+        .len();
+    // Bytes read so far that do not yet start at a line boundary (the line continues further up).
+    let mut carry: Vec<u8> = Vec::new();
+    let chunk_bytes = chunk_bytes.max(1);
+    while position > 0 {
+        let step = (chunk_bytes as u64).min(position);
+        position -= step;
+        let mut chunk = vec![0_u8; step as usize];
+        file.seek(SeekFrom::Start(position))
+            .and_then(|_| file.read_exact(&mut chunk))
+            .map_err(|err| format!("read event log {}: {err}", path.display()))?;
+        chunk.extend_from_slice(&carry);
+        let buffer = chunk;
+        // Everything after the first newline is made of whole lines; the head may be a partial
+        // line unless this chunk reaches the start of the file.
+        let (head_len, lines_start) = match buffer.iter().position(|byte| *byte == b'\n') {
+            Some(newline) if position > 0 => (newline, newline + 1),
+            _ if position > 0 => (buffer.len(), buffer.len()),
+            _ => (0, 0),
+        };
+        for line in buffer[lines_start..].split(|byte| *byte == b'\n').rev() {
+            if line.iter().all(u8::is_ascii_whitespace) {
+                continue;
+            }
+            let entry: EventEntry = serde_json::from_slice(line)
+                .map_err(|err| format!("parse event log {}: {err}", path.display()))?;
+            if want(&entry) {
+                return Ok(Some(entry));
+            }
+        }
+        carry = if position > 0 { buffer[..head_len].to_vec() } else { Vec::new() };
+    }
+    Ok(None)
+}
+
+pub fn read_entries(path: &Path) -> Result<Vec<EventEntry>, String> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let file =
+        File::open(path).map_err(|err| format!("open event log {}: {err}", path.display()))?;
+    let reader = BufReader::new(file);
+    let mut entries = Vec::new();
+    for (index, line) in reader.lines().enumerate() {
+        let line = line.map_err(|err| format!("read event log line {}: {err}", index + 1))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let entry = serde_json::from_str::<EventEntry>(&line)
+            .map_err(|err| format!("parse event log line {}: {err}", index + 1))?;
+        entries.push(entry);
+    }
+    Ok(entries)
+}
+
+pub fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests;

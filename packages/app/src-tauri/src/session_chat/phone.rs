@@ -1,0 +1,109 @@
+//! The chat of a pane as the phone reads it (`GET /panes/{id}/chat?since=<rev>`): the newest items, or only what
+//! changed since the revision the phone saw last. Every text that leaves goes through `redact` first, and the
+//! "what is it waiting for" line is a plain sentence (the desktop's names the folders it looks in).
+//! The phone holds the reader with a lease that each request renews; it ends 60 seconds after the last one.
+
+#[cfg(test)]
+use std::time::Duration;
+
+#[cfg(test)]
+use serde::Serialize;
+
+#[cfg(test)]
+use serde_json::Value;
+
+#[cfg(test)]
+use super::model::ChatItem;
+
+#[cfg(test)]
+use super::opening::Opening;
+
+#[cfg(test)]
+use super::watch::{Hold, Watchers};
+
+/// Most items one answer carries.
+#[cfg(test)]
+const MAX_ITEMS: usize = 300;
+/// The one lease every phone shares on a pane: any request renews it.
+#[cfg(test)]
+const HOLDER: &str = "bridge";
+
+#[cfg(test)]
+const NOT_AGENT: &str = "Chat is for agent panes.";
+#[cfg(test)]
+const GONE: &str = "This chat cannot be read right now.";
+#[cfg(test)]
+const WAITING: &str = "Nothing to show yet. Waiting for the agent.";
+
+#[cfg(test)]
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Reply {
+    available: bool,
+    reason: Option<String>,
+    source: Option<&'static str>,
+    waiting_for: Option<String>,
+    /// Ask for what is newer than this next time.
+    rev: u64,
+    /// Drop the list held and show `items` instead.
+    reset: bool,
+    items: Vec<ChatItem>,
+    /// For a chat the agent pushes (the ACP lane): the session behind it (phase, "stopping", what waits on the person).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session: Option<Value>,
+}
+
+#[cfg(test)]
+fn unavailable(reason: &str) -> Reply {
+    Reply { available: false, reason: Some(reason.to_string()), source: None, waiting_for: None, rev: 0, reset: false, items: Vec::new(), session: None }
+}
+
+/// The phone does not draw diffs, so a tool call's input (up to 8000 characters each) stays on the desktop.
+/// The touched files and flags stay.
+#[cfg(test)]
+fn lean(mut item: ChatItem) -> ChatItem {
+    if let ChatItem::ToolCall { detail, .. } = &mut item {
+        detail.input = None;
+    }
+    item
+}
+
+/// The answer for one request. `opening`: how the pane is read (`None`: it has no agent). `since`: the revision the
+/// phone saw last. The result is redacted JSON, ready to send.
+#[cfg(test)]
+pub fn read(watchers: &Watchers, pane_id: &str, opening: Option<&Opening>, since: Option<u64>) -> Value {
+    read_with(watchers, pane_id, opening, since, LEASE)
+}
+
+#[cfg(test)]
+#[path = "phone_tests.rs"]
+mod tests;
+
+#[cfg(test)]
+/// How long the reader stays open after the phone's last request.
+pub const LEASE: Duration = Duration::from_secs(60);
+
+#[cfg(test)]
+fn read_with(watchers: &Watchers, pane_id: &str, opening: Option<&Opening>, since: Option<u64>, lease: Duration) -> Value {
+    let reply = match opening {
+        None => unavailable(NOT_AGENT),
+        Some(opening) => {
+            opening.open(watchers, pane_id, Hold { id: HOLDER, ttl: Some(lease) });
+            match watchers.since(pane_id, since, MAX_ITEMS) {
+                None => unavailable(GONE),
+                Some(delta) => Reply {
+                    available: true,
+                    reason: None,
+                    source: Some(opening.source_now(watchers, pane_id)),
+                    waiting_for: watchers.waiting_for(pane_id).map(|_| WAITING.to_string()),
+                    rev: delta.rev,
+                    reset: delta.reset,
+                    items: delta.items.into_iter().map(lean).collect(),
+                    session: None, // Opening::state is gone; no test reads this field
+                },
+            }
+        }
+    };
+    let value = serde_json::to_value(&reply).unwrap_or(Value::Null);
+    crate::redact::json(value).into_inner()
+}

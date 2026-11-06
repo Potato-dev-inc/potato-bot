@@ -1,0 +1,116 @@
+/* The cards in a thread: the helper card and the "brain cannot answer" card. Grayscale tokens only. */
+
+/* ---------- cards ---------- */
+.cockpit .ck-potato-card-row {
+  margin-top: 10px;
+}
+.cockpit .ck-potato-card {
+  padding: 12px 14px;
+  border: 1px solid var(--sep);
+  border-radius: 12px;
+  background: var(--bg-raised);
+  box-shadow: var(--raise-hi);
+}
+.cockpit .ck-potato-card.is-closed {
+  background: transparent;
+  box-shadow: none;
+}
+.cockpit .ck-potato-card-title {
+  margin: 0 0 6px;
+  font-weight: 600;
+}
+.cockpit .ck-potato-card-task {
+  font-weight: 400;
+  color: var(--label-2);
+  overflow-wrap: anywhere;
+}
+.cockpit .ck-potato-card-fact {
+  font-size: 12px;
+}
+.cockpit .ck-potato-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.cockpit .ck-potato-card-problem,
+.cockpit .ck-potato-state-problem {
+  margin-top: 8px;
+  font-size: 12px;
+}
+.cockpit .ck-potato-state {
+  flex: none;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin: 0 20px 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--sep);
+  border-radius: 10px;
+  background: var(--fill);
+}
+.cockpit .ck-potato-state-text {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  color: var(--label);
+  line-height: 1.4;
+}
+.cockpit .ck-potato-card-folders {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 0;
+}
+.cockpit .ck-potato-card-folders .is-picked {
+  background: var(--fill-active);
+  color: var(--label);
+}
+
+/* ---------- decision cards (Professional mode) ---------- */
+.cockpit .ck-potato-decision.is-closed {
+  background: var(--bg);
+  box-shadow: none;
+}
+.cockpit .ck-potato-decision-action {
+  margin: 0 0 6px;
+  max-width: 100%;
+}
+.cockpit .ck-potato-decision-action code {
+  display: inline-block;
+  max-width: 100%;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--bg-raised);
+  border: 1px solid var(--sep);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--label);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.cockpit .ck-potato-decision-result {
+  margin: 8px 0 0;
+  font-size: 12px;
+}
+
+/* ---------- sign-in card ---------- */
+.cockpit .ck-potato-login-front {
+  margin: 0 0 8px;
+  overflow-wrap: anywhere;
+}
+.cockpit .ck-potato-login-fields {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0;
+}
+.cockpit .ck-potato-login-field {
+  display: grid;
+  gap: 3px;
+}
+.cockpit .ck-potato-login-field .ck-potato-add-input {
+  flex: none;
+  width: 100%;
+  height: 30px;
+}

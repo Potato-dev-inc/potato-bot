@@ -1,0 +1,402 @@
+//! Startup gates: screens a freshly started TUI shows before it takes a prompt (an update notice,
+//! a trust question, a login page; see `TuiProfile::startup_gate`).
+//!
+//! Before a task is typed, a gate that its profile says is safe to close (a "skip" for a notice)
+//! is closed with the keys the profile declares; the user is not asked about an update notice.
+//! A gate without such keys is never answered here: the caller parks the run and shows it.
+//!
+//! The pane I/O is behind [`GateIo`] so the sequence is unit-tested without a PTY.
+//!
+//! Keys are pressed only with a `GatePermit` (`agent_runs::readiness`): issued for a gate the profile
+//! declares, recognised on the latest screen, for exactly that gate's keys.
+//!
+//! Agent-agnostic: nothing here names an agent. Per-agent screens live in `tui/<agent>/screen.rs`.
+
+use std::time::Duration;
+
+use crate::agent_runs::readiness::{self, GatePermit, Observation, Readiness};
+use crate::tui::{StartupGate, TuiProfile};
+
+/// More than this many gates in a row is a loop, not a startup sequence.
+const MAX_GATES: usize = 4;
+/// How long a dismissed screen may take to change, as polls of [`POLL`].
+const CHANGE_POLLS: u32 = 40;
+const POLL: Duration = Duration::from_millis(100);
+/// The screen must hold still this long after it changed before the next step.
+const SETTLE: Duration = Duration::from_millis(300);
+
+pub(crate) trait GateIo {
+    fn screen(&mut self) -> String;
+    /// The screen with the pane's output position and agent process, for a readiness verdict.
+    fn observe(&mut self) -> Observation {
+        Observation::screen_only(self.screen())
+    }
+    /// Presses the permit's keys (`GatePermit::keys`).
+    fn write(&mut self, permit: &GatePermit) -> Result<(), String>;
+    fn pause(&mut self, duration: Duration);
+}
+
+/// What the dismissal pass found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GateReport {
+    /// Gates that were closed, in order (`StartupGate::id`).
+    pub dismissed: Vec<&'static str>,
+    /// The gate still on screen afterwards: one only the user may move past, or one that did not
+    /// react to its dismiss keys.
+    pub blocked: Option<StartupGate>,
+}
+
+/// What one look-and-press found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Press {
+    /// No startup screen is showing (or it is a dialog, a shell prompt or an input box: somebody else's business).
+    Nothing,
+    /// A screen only the user may pass. No key went in.
+    Person(StartupGate),
+    /// The gate's declared dismiss keys went in; `before` is the screen they were pressed on.
+    Pressed { gate: StartupGate, before: String },
+    /// The screen moved between the look and the keys: nothing went in, look again.
+    Stale,
+    /// The pane refused the keys.
+    Refused(StartupGate),
+}
+
+/// One look and, for a gate that declares its own dismiss keys, one press of exactly those keys. The single
+/// place gate keys are pressed for the bridge and the companion keeper (the pane outbox's delivery has its own
+/// copy of the same step inside `delivery::await_ready`). Never Enter, never "update now": only `dismiss`.
+pub(crate) fn press_once(io: &mut dyn GateIo, profile: &dyn TuiProfile) -> Press {
+    let verdict = readiness::assess(profile, io.observe());
+    // Only startup screens are closed here; a dialog (the prompt pseudo-gate), a shell prompt or
+    // an input box is somebody else's business.
+    let gate = match verdict.readiness() {
+        Readiness::Gate(gate) if gate.id != readiness::PROMPT_GATE.id => *gate,
+        _ => return Press::Nothing,
+    };
+    let before = verdict.screen().to_string();
+    let Some(permit) = verdict.gate_permit() else { return Press::Person(gate) };
+    match io.write(&permit) {
+        // Audit: Puppet Master pressed keys on the person's behalf. Only after the write
+        // succeeded, the way delivery does it (`agent_runs/delivery.rs`): a refused or stale
+        // write pressed nothing.
+        Ok(()) => crate::audit::note_gate_dismissal(gate.id, gate.summary, permit.keys()),
+        Err(error) if error.starts_with(readiness::PERMIT_STALE) => return Press::Stale,
+        Err(_) => return Press::Refused(gate),
+    }
+    Press::Pressed { gate, before }
+}
+
+/// Closes every dismissible gate on screen, one at a time, waiting for the screen to change after
+/// each. Types nothing when no gate is showing.
+pub(crate) fn dismiss_startup_gates(io: &mut dyn GateIo, profile: &dyn TuiProfile) -> GateReport {
+    let mut report = GateReport {
+        dismissed: Vec::new(),
+        blocked: None,
+    };
+    for _ in 0..MAX_GATES {
+        let (gate, before) = match press_once(io, profile) {
+            Press::Nothing => return report,
+            Press::Person(gate) | Press::Refused(gate) => {
+                report.blocked = Some(gate);
+                return report;
+            }
+            // The screen moved between the look and the keys: look again (counts as a round).
+            Press::Stale => continue,
+            Press::Pressed { gate, before } => (gate, before),
+        };
+        let mut changed = false;
+        for _ in 0..CHANGE_POLLS {
+            io.pause(POLL);
+            // The same rendering as `before` (`observe`, the full input screen): `screen()` is the
+            // cropped per-row snapshot, which never equals it for a profile with a side panel, so
+            // every poll read as "changed" (review R12 1.6).
+            if io.observe().screen != before {
+                changed = true;
+                break;
+            }
+        }
+        if !changed {
+            report.blocked = Some(gate);
+            return report;
+        }
+        io.pause(SETTLE);
+        report.dismissed.push(gate.id);
+    }
+    // Still a gate after the allowed number of rounds.
+    let last = io.screen();
+    report.blocked = profile.startup_gate(&last);
+    report
+}
+
+struct PaneGateIo<'a> {
+    registry: &'a std::sync::Arc<parking_lot::Mutex<crate::pty::PaneRegistry>>,
+    app: &'a tauri::AppHandle,
+    pane_id: &'a str,
+}
+
+impl GateIo for PaneGateIo<'_> {
+    fn screen(&mut self) -> String {
+        crate::pty::registry_read_snapshot(self.registry, self.pane_id).unwrap_or_default()
+    }
+
+    fn observe(&mut self) -> Observation {
+        crate::agent_runs::delivery::observe_pane(self.registry, self.pane_id)
+    }
+
+    fn write(&mut self, permit: &GatePermit) -> Result<(), String> {
+        crate::pty::registry_write_input(
+            self.registry,
+            self.app,
+            self.pane_id,
+            permit.keys(),
+            false,
+            false,
+            None,
+            crate::pty::WriteOrigin::Gate(permit),
+        )
+    }
+
+    fn pause(&mut self, duration: Duration) {
+        std::thread::sleep(duration);
+    }
+}
+
+/// Whether a startup screen that declares its own dismiss keys is on this live pane (nothing is pressed).
+pub(crate) fn notice_on_pane(
+    registry: &std::sync::Arc<parking_lot::Mutex<crate::pty::PaneRegistry>>,
+    pane_id: &str,
+    agent_type: &str,
+) -> bool {
+    let profile = crate::tui::profile_for(agent_type);
+    let verdict = readiness::assess(profile.as_ref(), crate::agent_runs::delivery::observe_pane(registry, pane_id));
+    matches!(verdict.readiness(), Readiness::Gate(gate) if gate.dismiss.is_some() && gate.id != readiness::PROMPT_GATE.id)
+}
+
+/// One [`press_once`] on a live pane, without waiting for the screen to change (the caller looks again later).
+/// True when the gate's dismiss keys went in.
+pub(crate) fn press_on_pane(
+    registry: &std::sync::Arc<parking_lot::Mutex<crate::pty::PaneRegistry>>,
+    app: &tauri::AppHandle,
+    pane_id: &str,
+    agent_type: &str,
+) -> bool {
+    let profile = crate::tui::profile_for(agent_type);
+    let mut io = PaneGateIo { registry, app, pane_id };
+    matches!(press_once(&mut io, profile.as_ref()), Press::Pressed { .. })
+}
+
+/// [`dismiss_startup_gates`] on a live pane, recording what it closed in the operation transcript.
+pub(super) fn dismiss_for_operation(
+    operation: &crate::operations::OperationSnapshot,
+    registry: &std::sync::Arc<parking_lot::Mutex<crate::pty::PaneRegistry>>,
+    app: &tauri::AppHandle,
+    pane_id: &str,
+    agent_type: &str,
+) -> GateReport {
+    let profile = crate::tui::profile_for(agent_type);
+    let mut io = PaneGateIo {
+        registry,
+        app,
+        pane_id,
+    };
+    let report = dismiss_startup_gates(&mut io, profile.as_ref());
+    if !report.dismissed.is_empty() {
+        crate::agent_runs::transcript::append(
+            &operation.project_path,
+            &operation.operation_id,
+            "startup",
+            &crate::redact::text(&format!(
+                "closed startup screen before the task was typed: {}",
+                report.dismissed.join(", ")
+            )),
+        );
+    }
+    report
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A pane that shows `screens[0]`, then the next one after each accepted write.
+    struct FakePane {
+        screens: Vec<&'static str>,
+        at: usize,
+        written: Vec<String>,
+        ignore_keys: bool,
+        /// Every write is refused (a pane that is gone, a permit the pane no longer accepts).
+        fail_writes: bool,
+    }
+
+    impl GateIo for FakePane {
+        fn screen(&mut self) -> String {
+            self.screens[self.at].to_string()
+        }
+        fn write(&mut self, permit: &GatePermit) -> Result<(), String> {
+            if self.fail_writes {
+                return Err("the pane refused the keys".into());
+            }
+            permit.admit("", permit.keys(), false, None)?;
+            self.written.push(permit.keys().to_string());
+            if !self.ignore_keys && self.at + 1 < self.screens.len() {
+                self.at += 1;
+            }
+            Ok(())
+        }
+        fn pause(&mut self, _duration: Duration) {}
+    }
+
+    /// Profile for the tests: "NOTICE" is skippable with `s`, "TRUST" needs the user.
+    struct Probe;
+    impl TuiProfile for Probe {
+        fn id(&self) -> &'static str {
+            "gate_probe"
+        }
+        fn startup_gate(&self, screen: &str) -> Option<StartupGate> {
+            if screen.contains("NOTICE") {
+                Some(StartupGate {
+                    id: "notice",
+                    summary: "a notice",
+                    dismiss: Some("s"),
+                })
+            } else if screen.contains("TRUST") {
+                Some(StartupGate {
+                    id: "trust",
+                    summary: "trust",
+                    dismiss: None,
+                })
+            } else {
+                None
+            }
+        }
+    }
+
+    fn pane(screens: Vec<&'static str>) -> FakePane {
+        FakePane {
+            screens,
+            at: 0,
+            written: Vec::new(),
+            ignore_keys: false,
+            fail_writes: false,
+        }
+    }
+
+    #[test]
+    fn a_clear_screen_gets_no_keystrokes() {
+        let mut pane = pane(vec!["READY"]);
+        let report = dismiss_startup_gates(&mut pane, &Probe);
+        assert_eq!(
+            report,
+            GateReport {
+                dismissed: vec![],
+                blocked: None
+            }
+        );
+        assert!(pane.written.is_empty());
+    }
+
+    #[test]
+    fn a_notice_is_closed_with_its_declared_keys_and_the_next_gate_is_still_checked() {
+        let mut pane = pane(vec!["NOTICE one", "NOTICE two", "READY"]);
+        let report = dismiss_startup_gates(&mut pane, &Probe);
+        assert_eq!(report.dismissed, vec!["notice", "notice"]);
+        assert_eq!(report.blocked, None);
+        assert_eq!(pane.written, vec!["s", "s"]);
+    }
+
+    #[test]
+    fn a_trust_question_is_never_answered() {
+        let mut pane = pane(vec!["NOTICE", "TRUST dialog", "READY"]);
+        let report = dismiss_startup_gates(&mut pane, &Probe);
+        assert_eq!(report.dismissed, vec!["notice"]);
+        assert_eq!(report.blocked.map(|gate| gate.id), Some("trust"));
+        assert_eq!(pane.written, vec!["s"], "only the notice's own keys were written");
+    }
+
+    #[test]
+    fn press_once_presses_only_the_declared_keys_and_does_not_wait() {
+        let mut pane = pane(vec!["NOTICE", "READY"]);
+        let press = press_once(&mut pane, &Probe);
+        assert!(matches!(&press, Press::Pressed { gate, before } if gate.id == "notice" && before == "NOTICE"), "{press:?}");
+        assert_eq!(pane.written, vec!["s"]);
+        // The caller looks again later; the next look finds no gate and presses nothing.
+        assert_eq!(press_once(&mut pane, &Probe), Press::Nothing);
+        assert_eq!(pane.written.len(), 1);
+    }
+
+    #[test]
+    fn press_once_leaves_a_screen_only_the_person_may_pass_alone() {
+        let mut pane = pane(vec!["TRUST dialog"]);
+        assert!(matches!(press_once(&mut pane, &Probe), Press::Person(gate) if gate.id == "trust"));
+        assert!(pane.written.is_empty());
+    }
+
+    #[test]
+    fn press_once_reports_a_refused_write_and_presses_nothing_more() {
+        let mut pane = pane(vec!["NOTICE"]);
+        pane.fail_writes = true;
+        assert!(matches!(press_once(&mut pane, &Probe), Press::Refused(gate) if gate.id == "notice"));
+        assert!(pane.written.is_empty());
+    }
+
+    #[test]
+    fn a_notice_that_ignores_its_keys_is_reported_as_blocking() {
+        let mut pane = pane(vec!["NOTICE", "READY"]);
+        pane.ignore_keys = true;
+        let report = dismiss_startup_gates(&mut pane, &Probe);
+        assert!(report.dismissed.is_empty());
+        assert_eq!(report.blocked.map(|gate| gate.id), Some("notice"));
+        assert_eq!(pane.written.len(), 1, "one attempt, not a key-mashing loop");
+    }
+
+    #[test]
+    fn a_gate_that_keeps_reappearing_stops_after_a_few_rounds() {
+        let mut pane = pane(vec![
+            "NOTICE 1", "NOTICE 2", "NOTICE 3", "NOTICE 4", "NOTICE 5", "READY",
+        ]);
+        let report = dismiss_startup_gates(&mut pane, &Probe);
+        assert_eq!(report.dismissed.len(), MAX_GATES);
+        assert!(report.blocked.is_some());
+    }
+
+    #[test]
+    fn the_default_profile_has_no_gates() {
+        struct Plain;
+        impl TuiProfile for Plain {
+            fn id(&self) -> &'static str {
+                "plain"
+            }
+        }
+        let mut pane = pane(vec!["NOTICE"]);
+        assert_eq!(dismiss_startup_gates(&mut pane, &Plain).blocked, None);
+        assert!(pane.written.is_empty());
+    }
+
+    /// Review R12 1.6: `before` came from `observe()` (the full input screen) and the change poll from
+    /// `screen()` (cropped, rendered per row). For a pane whose two renderings differ, a gate that
+    /// ignored its keys read as "changed": its keys were pressed again and it was never reported.
+    #[test]
+    fn a_gate_that_ignores_its_keys_is_reported_even_when_the_two_renderings_differ() {
+        struct Cropped(FakePane);
+        impl GateIo for Cropped {
+            fn screen(&mut self) -> String {
+                // The cropped snapshot: the side panel's column is cut off.
+                self.0.screen().replace(" | side panel", "")
+            }
+            fn observe(&mut self) -> Observation {
+                Observation::screen_only(self.0.screen())
+            }
+            fn write(&mut self, permit: &GatePermit) -> Result<(), String> {
+                self.0.write(permit)
+            }
+            fn pause(&mut self, d: Duration) {
+                self.0.pause(d)
+            }
+        }
+        let mut stuck = pane(vec!["NOTICE | side panel", "READY"]);
+        stuck.ignore_keys = true;
+        let mut io = Cropped(stuck);
+        let report = dismiss_startup_gates(&mut io, &Probe);
+        assert_eq!(report.blocked.map(|g| g.id), Some("notice"), "{report:?}");
+        assert_eq!(io.0.written.len(), 1, "the keys were pressed once, not every round: {:?}", io.0.written);
+    }
+}

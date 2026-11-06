@@ -1,0 +1,101 @@
+/* The Skills tab of the bot panel: a list of skills, each opening to its steps, with Edit and Delete. Grayscale tokens only. */
+.cockpit .ck-skills {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 0 16px;
+}
+.cockpit .ck-skills-intro {
+  margin: 0;
+}
+.cockpit .ck-skills-error {
+  margin: 0;
+  color: var(--label);
+}
+.cockpit .ck-skills-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.cockpit .ck-skill {
+  border: 1px solid var(--sep);
+  border-radius: 10px;
+  background: var(--bg-raised);
+  overflow: hidden;
+}
+.cockpit .ck-skill-head {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--label);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.cockpit .ck-skill-head:hover {
+  background: var(--fill-hover);
+}
+.cockpit .ck-skill-head:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.cockpit .ck-skill-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+.cockpit .ck-skill-desc {
+  overflow-wrap: anywhere;
+}
+.cockpit .ck-skill-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 12px 12px;
+  border-top: 1px solid var(--sep);
+}
+.cockpit .ck-skill-steps {
+  margin: 8px 0 0;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--label);
+}
+.cockpit .ck-skill-actions {
+  display: flex;
+  gap: 6px;
+}
+.cockpit .ck-skill-label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--label-2);
+}
+.cockpit .ck-skill-input,
+.cockpit .ck-skill-textarea {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--sep);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--label);
+  font: inherit;
+  font-size: 13px;
+}
+.cockpit .ck-skill-textarea {
+  resize: vertical;
+}
+.cockpit .ck-skill-input:focus-visible,
+.cockpit .ck-skill-textarea:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}

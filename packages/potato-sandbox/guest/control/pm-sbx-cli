@@ -1,0 +1,196 @@
+#!/usr/bin/env python3
+"""A small terminal front for the Potato sandbox desktop, so any agent can use the computer too.
+
+Run it from Windows through WSL, for example:
+  wsl.exe -d pm-sbx-main -u pm --exec /usr/local/bin/pm-sbx-cli status
+  wsl.exe -d pm-sbx-main -u pm --exec /usr/local/bin/pm-sbx-cli run "ls -la ~"
+  wsl.exe -d pm-sbx-main -u pm --exec /usr/local/bin/pm-sbx-cli click 300 200
+  wsl.exe -d pm-sbx-main -u pm --exec /usr/local/bin/pm-sbx-cli type "hello"
+  wsl.exe -d pm-sbx-main -u pm --exec /usr/local/bin/pm-sbx-cli shot /tmp/shot.png
+  wsl.exe -d pm-sbx-main -u pm --exec /usr/local/bin/pm-sbx-cli page
+
+It joins the running desktop session (DISPLAY :99 and its DBus address), starting it when it is not up.
+Every subcommand prints plain text; a failure exits non-zero with one sentence.
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+
+STATE = os.path.expanduser("~/.pm-sbx")
+START = "/usr/local/bin/pm-sbx-start-desktop"
+FOCUS = "/usr/local/bin/pm-sbx-focus-or-launch"
+PAGE = "/usr/local/bin/pm-sbx-page-browser"
+DISPLAY = ":99"
+
+
+def session_env() -> dict[str, str]:
+    env = dict(os.environ)
+    env.setdefault("XDG_RUNTIME_DIR", "/tmp/pm-runtime")
+    env["DISPLAY"] = DISPLAY
+    env["XDG_SESSION_TYPE"] = "x11"
+    env["GDK_BACKEND"] = "x11"
+    env["QT_QPA_PLATFORM"] = "xcb"
+    env.pop("WAYLAND_DISPLAY", None)
+    path = os.path.join(STATE, "env")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line.startswith("export ") or "=" not in line:
+                    continue
+                key, value = line[7:].split("=", 1)
+                env[key.strip()] = value.strip().strip("'\"")
+    except OSError:
+        pass
+    return env
+
+
+def call(argv: list[str], timeout: int = 120) -> int:
+    try:
+        done = subprocess.run(argv, env=session_env(), capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError:
+        print(f"not installed: {argv[0]}", file=sys.stderr)
+        return 127
+    except subprocess.TimeoutExpired:
+        print("the command took too long", file=sys.stderr)
+        return 124
+    sys.stdout.write(done.stdout)
+    sys.stderr.write(done.stderr)
+    return done.returncode
+
+
+def desktop_up() -> bool:
+    try:
+        done = subprocess.run([START, "status"], env=session_env(), capture_output=True, text=True, timeout=20)
+    except OSError:
+        return False
+    return "xvfb running" in (done.stdout + done.stderr).lower()
+
+
+def ensure_desktop() -> int:
+    if desktop_up():
+        return 0
+    done = call([START, "start"], timeout=180)
+    return done
+
+
+def need_desktop() -> bool:
+    code = ensure_desktop()
+    if code != 0:
+        print("the desktop could not be started", file=sys.stderr)
+        return False
+    return True
+
+
+def status() -> int:
+    up = desktop_up()
+    print(f"desktop: {'running' if up else 'stopped'} (display {DISPLAY})")
+    if not up:
+        return 0
+    title = subprocess.run(["xdotool", "getactivewindow", "getwindowname"], env=session_env(), capture_output=True, text=True)
+    if title.returncode == 0 and title.stdout.strip():
+        print(f"front window: {title.stdout.strip()}")
+    pointer = subprocess.run(["xdotool", "getmouselocation", "--shell"], env=session_env(), capture_output=True, text=True)
+    if pointer.returncode == 0:
+        values = dict(line.split("=", 1) for line in pointer.stdout.splitlines() if "=" in line)
+        print(f"pointer: {values.get('X', '?')},{values.get('Y', '?')}")
+    return 0
+
+
+def windows() -> int:
+    if not need_desktop():
+        return 1
+    ids = subprocess.run(["xdotool", "search", "--onlyvisible", "--name", "."], env=session_env(), capture_output=True, text=True)
+    if ids.returncode != 0:
+        print("no windows", file=sys.stderr)
+        return 1
+    for line in ids.stdout.splitlines():
+        name = subprocess.run(["xdotool", "getwindowname", line], env=session_env(), capture_output=True, text=True)
+        if name.returncode == 0 and name.stdout.strip():
+            print(name.stdout.strip())
+    return 0
+
+
+def page() -> int:
+    if not need_desktop():
+        return 1
+    return call([sys.executable, "-I", PAGE, "snapshot"], timeout=60)
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) < 2:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    cmd = argv[1]
+    rest = argv[2:]
+    if cmd in ("-h", "--help", "help"):
+        print(__doc__.strip())
+        return 0
+    if cmd == "status":
+        return status()
+    if cmd == "windows":
+        return windows()
+    if cmd == "page":
+        return page()
+    if cmd == "run":
+        if not rest:
+            print("run needs a command", file=sys.stderr)
+            return 2
+        return call(["/bin/sh", "-lc", " ".join(rest)])
+    if cmd == "open":
+        if not rest:
+            print("open needs an app (chrome, terminal, files, editor or paint)", file=sys.stderr)
+            return 2
+        if not need_desktop():
+            return 1
+        return call([FOCUS, rest[0], " ".join(rest[1:])] if len(rest) > 1 else [FOCUS, rest[0]])
+    if not need_desktop():
+        return 1
+    if cmd == "shot":
+        target = rest[0] if rest else "/tmp/pm-screenshot.png"
+        return call(["/usr/bin/import", "-window", "root", target])
+    if cmd in ("click", "move"):
+        if len(rest) < 2:
+            print(f"{cmd} needs X Y", file=sys.stderr)
+            return 2
+        args = ["xdotool", "mousemove", "--sync", rest[0], rest[1]]
+        if cmd == "click":
+            args += ["click", "1"]
+        return call(args)
+    if cmd == "double":
+        if len(rest) < 2:
+            print("double needs X Y", file=sys.stderr)
+            return 2
+        return call(["xdotool", "mousemove", "--sync", rest[0], rest[1], "click", "--repeat", "2", "1"])
+    if cmd == "drag":
+        if len(rest) < 4:
+            print("drag needs X Y TO_X TO_Y", file=sys.stderr)
+            return 2
+        call(["xdotool", "mousemove", "--sync", rest[0], rest[1]])
+        call(["xdotool", "mousedown", "1"])
+        call(["xdotool", "mousemove", "--sync", rest[2], rest[3]])
+        return call(["xdotool", "mouseup", "1"])
+    if cmd == "type":
+        return call(["xdotool", "type", "--clearmodifiers", "--", " ".join(rest)])
+    if cmd == "key":
+        return call(["xdotool", "key", "--clearmodifiers", " ".join(rest)])
+    if cmd == "scroll":
+        if len(rest) < 2:
+            print("scroll needs X Y [up|down] [N]", file=sys.stderr)
+            return 2
+        direction = rest[2].lower() if len(rest) > 2 else "down"
+        count = int(rest[3]) if len(rest) > 3 and rest[3].isdigit() else 3
+        button = "4" if direction == "up" else "5"
+        call(["xdotool", "mousemove", "--sync", rest[0], rest[1]])
+        for _ in range(max(1, min(count, 20))):
+            call(["xdotool", "click", button])
+        return 0
+    print(f"unknown command: {cmd}", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

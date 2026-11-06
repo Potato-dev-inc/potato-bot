@@ -1,0 +1,20 @@
+{
+  "_source": "Puppet Master. Google Chrome's own .deb (not Chromium), split out of base so base installs only the libraries Chrome needs. Its managed policy (pm-sbx-chrome-policy.json) is written here too, because it only means something once Chrome is installed.",
+  "id": "chrome",
+  "title": "Google Chrome",
+  "description": "The Chrome browser the sandbox shows and drives, with the policy that keeps it inside the sandbox (no password manager, no sign-in, no sync).",
+  "requires": "base",
+  "pre": [],
+  "apt": [],
+  "debs": [
+    {
+      "url": "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb",
+      "sha256": null
+    }
+  ],
+  "post": [
+    "install -d -m 0755 /etc/opt/chrome/policies/managed",
+    "tr -d '\\r' < \"$PM_SBX_ASSETS/pm-sbx-chrome-policy.json\" > /etc/opt/chrome/policies/managed/pm-sbx.json && chmod 0644 /etc/opt/chrome/policies/managed/pm-sbx.json"
+  ],
+  "options": []
+}

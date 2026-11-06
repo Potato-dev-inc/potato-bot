@@ -1,0 +1,260 @@
+#!/usr/bin/env python3
+# Puppet Master: the built-in "computer" MCP server for the Potato sandbox guest. Written for this repo (no upstream
+# code). Python 3 stdlib only. Runs as a stdio child of pm-sbx-mcp-hub, as user pm, with DISPLAY set by the hub.
+"""Stdio MCP server (JSON-RPC 2.0, one JSON object per line) that drives the sandbox desktop with xdotool and import.
+
+Tools: screenshot, click, double_click, type, key, scroll, cursor_position. Every external tool runs from an argv
+list (never a shell string). Protocol: initialize, notifications/*, ping, tools/list, tools/call.
+Logging: nothing is written to stdout except protocol lines; stderr is a file owned by the hub.
+"""
+
+import base64
+import json
+import os
+import re
+import subprocess
+import sys
+
+PROTOCOL_VERSION = "2025-06-18"
+SUPPORTED_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
+SERVER_INFO = {"name": "pm-sbx-computer", "version": "1.0.0"}
+DEFAULT_DISPLAY = ":99"
+DISPLAY_RE = re.compile(r":[0-9]{1,4}")
+KEY_RE = re.compile(r"[A-Za-z0-9_+]{1,64}")
+TEXT_MAX = 4096
+COORD_MAX = 16384
+ACTION_TIMEOUT_SEC = 10
+CAPTURE_TIMEOUT_SEC = 15
+JPEG_SOI = b"\xff\xd8\xff"
+JPEG_QUALITY = "70"
+JPEG_MAX_BYTES = 2_500_000
+MAX_LINE_BYTES = 1024 * 1024
+BUTTONS = {"left": "1", "middle": "2", "right": "3"}
+WHEEL = {"up": "4", "down": "5", "left": "6", "right": "7"}
+CHILD_PINS = {"XDG_RUNTIME_DIR": "/tmp/pm-runtime", "GDK_BACKEND": "x11", "QT_QPA_PLATFORM": "xcb"}
+
+
+class ToolError(Exception):
+    """The tool could not do what was asked. Sent as a tool result with isError true."""
+
+
+def _int_arg(args, key, low, high):
+    value = args.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+        raise ToolError(f"{key} must be an integer from {low} to {high}")
+    return value
+
+
+def _text_arg(args, key):
+    value = args.get(key)
+    if not isinstance(value, str) or not value or len(value) > TEXT_MAX or "\0" in value:
+        raise ToolError(f"{key} must be a non-empty string of at most {TEXT_MAX} characters")
+    return value
+
+
+def _button_arg(args):
+    value = args.get("button", "left")
+    if value not in BUTTONS:
+        raise ToolError("button must be left, middle or right")
+    return BUTTONS[value]
+
+
+def _direction_amount(args):
+    direction = args.get("direction")
+    if direction not in WHEEL:
+        raise ToolError("direction must be up, down, left or right")
+    amount = args.get("amount", 3)
+    if isinstance(amount, bool) or not isinstance(amount, int) or not 1 <= amount <= 20:
+        raise ToolError("amount must be an integer from 1 to 20")
+    return WHEEL[direction], str(amount)
+
+
+def xdotool_steps(tool, args):
+    """The xdotool argv lists one tool call runs, in order. Pure: no process is started here."""
+    if tool == "click":
+        x = _int_arg(args, "x", 0, COORD_MAX)
+        y = _int_arg(args, "y", 0, COORD_MAX)
+        return [["xdotool", "mousemove", "--", str(x), str(y), "click", _button_arg(args)]]
+    if tool == "double_click":
+        x = _int_arg(args, "x", 0, COORD_MAX)
+        y = _int_arg(args, "y", 0, COORD_MAX)
+        return [["xdotool", "mousemove", "--", str(x), str(y), "click", "--repeat", "2", BUTTONS["left"]]]
+    if tool == "type":
+        return [["xdotool", "type", "--clearmodifiers", "--delay", "12", "--", _text_arg(args, "text")]]
+    if tool == "key":
+        combo = args.get("combo")
+        if not isinstance(combo, str) or KEY_RE.fullmatch(combo) is None:
+            raise ToolError("combo must look like ctrl+c or Return (letters, digits, _ and +)")
+        return [["xdotool", "key", "--clearmodifiers", "--", combo]]
+    if tool == "scroll":
+        x = _int_arg(args, "x", 0, COORD_MAX)
+        y = _int_arg(args, "y", 0, COORD_MAX)
+        button, count = _direction_amount(args)
+        move = ["xdotool", "mousemove", "--", str(x), str(y)]
+        return [move, ["xdotool", "click", "--repeat", count, button]]
+    if tool == "cursor_position":
+        return [["xdotool", "getmouselocation", "--shell"]]
+    raise ToolError("unknown tool")
+
+
+def parse_cursor(text):
+    fields = dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
+    try:
+        return {"x": int(fields["X"]), "y": int(fields["Y"])}
+    except (KeyError, ValueError):
+        raise ToolError("cursor position is not available") from None
+
+
+def _run(argv, display, timeout):
+    env = dict(os.environ)
+    env.update(CHILD_PINS)
+    env.pop("WAYLAND_DISPLAY", None)
+    env["DISPLAY"] = display
+    try:
+        result = subprocess.run(argv, env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        raise ToolError("the desktop action failed") from None
+    if result.returncode:
+        raise ToolError("the desktop action failed")
+    return result.stdout
+
+
+def take_screenshot(display):
+    data = _run(["import", "-window", "root", "-quality", JPEG_QUALITY, "jpeg:-"], display, CAPTURE_TIMEOUT_SEC)
+    if not data.startswith(JPEG_SOI):
+        raise ToolError("screen capture failed")
+    if len(data) > JPEG_MAX_BYTES:
+        raise ToolError("the picture is too large")
+    return [{"type": "image", "data": base64.b64encode(data).decode("ascii"), "mimeType": "image/jpeg"}]
+
+
+def call_tool(name, args, display):
+    """Run one tool. Returns the MCP content list. Raises ToolError for a failed or refused action."""
+    if name == "screenshot":
+        return take_screenshot(display)
+    steps = xdotool_steps(name, args)
+    output = b""
+    for argv in steps:
+        output = _run(argv, display, ACTION_TIMEOUT_SEC)
+    if name == "cursor_position":
+        position = parse_cursor(output.decode("utf-8", "replace"))
+        return [{"type": "text", "text": json.dumps(position)}]
+    return [{"type": "text", "text": "ok"}]
+
+
+def _schema(properties, required=()):
+    return {"type": "object", "properties": properties, "required": list(required), "additionalProperties": False}
+
+
+_COORD = {"type": "integer", "minimum": 0, "maximum": COORD_MAX}
+_BUTTON = {"type": "string", "enum": ["left", "middle", "right"]}
+TOOLS = [
+    {"name": "screenshot", "description": "Capture the sandbox desktop as a JPEG picture.",
+     "inputSchema": _schema({})},
+    {"name": "click", "description": "Click at a pixel position on the sandbox desktop.",
+     "inputSchema": _schema({"x": _COORD, "y": _COORD, "button": _BUTTON}, ("x", "y"))},
+    {"name": "double_click", "description": "Double-click with the left button at a pixel position.",
+     "inputSchema": _schema({"x": _COORD, "y": _COORD}, ("x", "y"))},
+    {"name": "type", "description": "Type text into the focused window.",
+     "inputSchema": _schema({"text": {"type": "string", "minLength": 1, "maxLength": TEXT_MAX}}, ("text",))},
+    {"name": "key", "description": "Press a key or key combination, for example ctrl+c or Return.",
+     "inputSchema": _schema({"combo": {"type": "string", "maxLength": 64}}, ("combo",))},
+    {"name": "scroll", "description": "Move to a position and scroll the wheel.",
+     "inputSchema": _schema({"x": _COORD, "y": _COORD,
+                             "direction": {"type": "string", "enum": ["up", "down", "left", "right"]},
+                             "amount": {"type": "integer", "minimum": 1, "maximum": 20}},
+                            ("x", "y", "direction"))},
+    {"name": "cursor_position", "description": "Read the pointer position in pixels.",
+     "inputSchema": _schema({})},
+]
+TOOL_NAMES = {tool["name"] for tool in TOOLS}
+
+
+def _reply(request_id, result=None, error=None):
+    message = {"jsonrpc": "2.0", "id": request_id}
+    if error is not None:
+        message["error"] = error
+    else:
+        message["result"] = result
+    return message
+
+
+def handle(message, display):
+    """The reply for one JSON-RPC message, or None when no reply is due (notifications)."""
+    method = message.get("method")
+    has_id = "id" in message
+    request_id = message.get("id")
+    if not isinstance(method, str):
+        return _reply(request_id, error={"code": -32600, "message": "invalid request"}) if has_id else None
+    if method.startswith("notifications/"):
+        return None
+    if method == "initialize":
+        params = message.get("params") if isinstance(message.get("params"), dict) else {}
+        requested = params.get("protocolVersion")
+        version = requested if requested in SUPPORTED_VERSIONS else PROTOCOL_VERSION
+        result = {"protocolVersion": version, "capabilities": {"tools": {}}, "serverInfo": SERVER_INFO}
+        return _reply(request_id, result)
+    if method == "ping":
+        return _reply(request_id, {})
+    if method == "tools/list":
+        return _reply(request_id, {"tools": TOOLS})
+    if method == "tools/call":
+        params = message.get("params") if isinstance(message.get("params"), dict) else {}
+        name = params.get("name")
+        args = params.get("arguments", {})
+        if name not in TOOL_NAMES or not isinstance(args, dict):
+            return _reply(request_id, error={"code": -32602, "message": "unknown tool or bad arguments"})
+        try:
+            content = call_tool(name, args, display)
+            return _reply(request_id, {"content": content, "isError": False})
+        except ToolError as error:
+            return _reply(request_id, {"content": [{"type": "text", "text": str(error)}], "isError": True})
+    if has_id:
+        return _reply(request_id, error={"code": -32601, "message": "method not found"})
+    return None
+
+
+def _display_from_env(env):
+    value = env.get("DISPLAY", DEFAULT_DISPLAY)
+    return value if DISPLAY_RE.fullmatch(value) else DEFAULT_DISPLAY
+
+
+def _write(stdout, payload):
+    stdout.write((json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8"))
+    stdout.flush()
+
+
+def serve(stdin, stdout, display):
+    while True:
+        raw = stdin.readline(MAX_LINE_BYTES + 1)
+        if not raw:
+            return 0
+        if len(raw) > MAX_LINE_BYTES:
+            _write(stdout, _reply(None, error={"code": -32600, "message": "request too large"}))
+            return 1
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            message = json.loads(line)
+        except ValueError:
+            _write(stdout, _reply(None, error={"code": -32700, "message": "parse error"}))
+            continue
+        if not isinstance(message, dict):
+            _write(stdout, _reply(None, error={"code": -32600, "message": "invalid request"}))
+            continue
+        try:
+            reply = handle(message, display)
+        except Exception:
+            reply = _reply(message.get("id"), error={"code": -32603, "message": "internal error"}) \
+                if "id" in message else None
+        if reply is not None:
+            _write(stdout, reply)
+
+
+def main():
+    return serve(sys.stdin.buffer, sys.stdout.buffer, _display_from_env(os.environ))
+
+
+if __name__ == "__main__":
+    sys.exit(main())

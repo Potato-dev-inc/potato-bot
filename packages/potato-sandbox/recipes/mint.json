@@ -1,0 +1,21 @@
+{
+  "_source": "Puppet Master. Linux Mint's Cinnamon desktop, installed as a desktop recipe on the shared Ubuntu 24.04 sandbox base (like the Zorin look). Cinnamon comes from Ubuntu's universe packages; Mint's own packages are not on Ubuntu's archive, so the menu, panel and window manager are Cinnamon's, with Mint's familiar layout.",
+  "id": "mint",
+  "title": "Linux Mint (Cinnamon desktop)",
+  "description": "Linux Mint's Cinnamon desktop: a modern panel, a start menu, the Nemo file manager and a familiar Mint layout. Heavier than the light desktop, lighter than a full GNOME.",
+  "exclusive": "desktop",
+  "session": "cinnamon",
+  "size_mb": 420,
+  "pre": [],
+  "apt": [
+    "cinnamon",
+    "cinnamon-session",
+    "nemo",
+    "gnome-terminal",
+    "gnome-themes-extra",
+    "adwaita-icon-theme"
+  ],
+  "debs": [],
+  "post": [],
+  "options": []
+}

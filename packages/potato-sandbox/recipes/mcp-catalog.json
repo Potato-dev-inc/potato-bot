@@ -1,0 +1,81 @@
+{
+  "_source": "Puppet Master. One-click MCP entries for the sandbox MCP hub. Plain entries use the npm bin names installed by the base recipe's mcp-tools step. Entries with \"connector\": true are services that need the person's token: each is installed once on connect into /home/pm/.connectors (not part of the image), from a pinned version found in the maker's own docs (see \"docs\").",
+  "entries": [
+    {
+      "name": "filesystem",
+      "title": "Files",
+      "description": "Read and write files under the sandbox home folder.",
+      "command": "mcp-server-filesystem",
+      "args": [
+        "/home/pm"
+      ]
+    },
+    {
+      "name": "memory",
+      "title": "Memory",
+      "description": "A small key-value memory the bot can keep between chats.",
+      "command": "mcp-server-memory",
+      "args": []
+    },
+    {
+      "name": "playwright",
+      "title": "Browser (Playwright)",
+      "description": "Drive the sandbox Chrome with Playwright.",
+      "package": "@playwright/mcp@0.0.83",
+      "command": "playwright-mcp",
+      "args": [
+        "--browser",
+        "chrome",
+        "--headless"
+      ]
+    },
+    {
+      "name": "github",
+      "title": "GitHub",
+      "connector": true,
+      "description": "Repositories, issues, pull requests and code search, through GitHub's own MCP server (MIT licence, run on the bot's computer). Needs a personal access token.",
+      "maker": "GitHub (official)",
+      "docs": "https://github.com/github/github-mcp-server",
+      "args": [
+        "stdio"
+      ],
+      "env": [
+        {
+          "key": "GITHUB_PERSONAL_ACCESS_TOKEN",
+          "label": "Personal access token",
+          "help": "Create a fine-grained token at github.com/settings/tokens with only the repositories and rights you want the bot to have."
+        }
+      ],
+      "install": {
+        "release": {
+          "url": "https://github.com/github/github-mcp-server/releases/download/v2.1.0/github-mcp-server_Linux_x86_64.tar.gz",
+          "sha256": "a442f9db287cea01008bcb55fe6bc0292270301046c3edbd1a8b22d6e4157b2b",
+          "member": "github-mcp-server",
+          "dir": "github"
+        }
+      }
+    },
+    {
+      "name": "notion",
+      "title": "Notion",
+      "connector": true,
+      "description": "Search and edit pages and databases, through Notion's own MCP server package. Notion says that package is no longer actively maintained and points to its hosted server, so treat it as best effort. Needs an integration token.",
+      "maker": "Notion (official, no longer actively maintained)",
+      "docs": "https://github.com/makenotion/notion-mcp-server",
+      "args": [],
+      "env": [
+        {
+          "key": "NOTION_TOKEN",
+          "label": "Integration token",
+          "help": "Create an internal integration at notion.so/profile/integrations, copy its secret, then share the pages you want the bot to see with that integration."
+        }
+      ],
+      "install": {
+        "npm": {
+          "spec": "@notionhq/notion-mcp-server@2.6.1",
+          "bin": "notion-mcp-server"
+        }
+      }
+    }
+  ]
+}

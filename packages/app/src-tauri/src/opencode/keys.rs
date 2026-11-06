@@ -1,0 +1,512 @@
+//! OpenCode API key profiles for rotation (desktop-only storage, never exposed via MCP).
+
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::PathBuf;
+
+/// Version 3: switching to the other key on a rate limit is OPT-IN (it used to be the default).
+const STORE_VERSION: u32 = 3;
+pub const PROFILE_A: &str = "a";
+pub const PROFILE_B: &str = "b";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyAutomationMode {
+    AutoIfBackup,
+    NotifyOnly,
+}
+
+impl KeyAutomationMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AutoIfBackup => "auto_if_backup",
+            Self::NotifyOnly => "notify_only",
+        }
+    }
+
+}
+
+/// Off. Switching to another key when one hits its rate limit is something a person turns on
+/// ("Switch to another of your keys when one hits its rate limit (check your provider's terms)"):
+/// if both keys belong to one provider it is rotating accounts to get past a limit, which provider
+/// terms may forbid. A missing field in a stored file reads as off too.
+fn default_automation_mode() -> KeyAutomationMode {
+    KeyAutomationMode::NotifyOnly
+}
+
+/// Bring a store written by an older version to this one (`load_store`, in memory; the startup
+/// pass `migrate_profiles_to_secret_store` writes it back).
+///
+/// Before version 3 the mode defaulted to `auto_if_backup` and every file stored the mode it held,
+/// so a stored `auto_if_backup` cannot be told from the default: it is read as the default and
+/// turned off. A stored `notify_only` was always a person's own choice (the default was the other
+/// way round) and stays. From version 3 on, `auto_if_backup` in a file is a person's opt-in and is
+/// kept as it is.
+fn migrate_automation_mode(store: &mut KeyProfilesStore) {
+    if store.version >= STORE_VERSION {
+        return;
+    }
+    if store.key_automation_mode == KeyAutomationMode::AutoIfBackup {
+        store.key_automation_mode = KeyAutomationMode::NotifyOnly;
+    }
+    store.version = STORE_VERSION;
+}
+
+fn default_restart_pane_on_rotate() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct KeyProfilesStore {
+    version: u32,
+    active: String,
+    profiles: BTreeMap<String, KeyProfile>,
+    #[serde(default = "default_automation_mode")]
+    key_automation_mode: KeyAutomationMode,
+    #[serde(default = "default_restart_pane_on_rotate")]
+    restart_pane_on_rotate: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct KeyProfile {
+    #[serde(default)]
+    label: String,
+    auth: Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OpenCodeKeyProfileInfo {
+    pub id: String,
+    pub label: String,
+    pub configured: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OpenCodeKeyStatus {
+    pub active_profile: String,
+    pub profiles: Vec<OpenCodeKeyProfileInfo>,
+    pub key_automation_mode: String,
+    pub restart_pane_on_rotate: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RotateTarget {
+    Next,
+}
+
+impl RotateTarget {
+}
+
+pub fn store_path() -> PathBuf {
+    test_paths::store_path_override()
+        .unwrap_or_else(|| crate::app_paths::app_data_dir().join("opencode-key-profiles.json"))
+}
+
+pub fn auth_json_path() -> PathBuf {
+    test_paths::auth_json_path_override().unwrap_or_else(|| {
+        let home = crate::project_path::home_dir().unwrap_or_else(|| PathBuf::from("."));
+        home.join(".local")
+            .join("share")
+            .join("opencode")
+            .join("auth.json")
+    })
+}
+
+pub fn status() -> Result<OpenCodeKeyStatus, String> {
+    let store = load_store()?;
+    Ok(public_status(&store))
+}
+
+pub fn automation_mode() -> Result<KeyAutomationMode, String> {
+    Ok(load_store()?.key_automation_mode)
+}
+
+pub fn restart_pane_on_rotate() -> Result<bool, String> {
+    Ok(load_store()?.restart_pane_on_rotate)
+}
+
+pub fn toggle_profile_id(current: &str) -> String {
+    toggle_active(current)
+}
+
+pub fn rotate(target: RotateTarget) -> Result<OpenCodeKeyStatus, String> {
+    let mut store = load_store()?;
+    ensure_default_profiles(&mut store);
+    let next = match target {
+        RotateTarget::Next => toggle_active(&store.active),
+    };
+    if !profile_configured(&store, &next) {
+        return Err(format!(
+            "OpenCode key profile '{next}' is not configured — set it in Puppet Master settings (desktop only)"
+        ));
+    }
+    store.active = next;
+    save_store(&store)?;
+    apply_active_auth()?;
+    status()
+}
+
+pub fn apply_active_auth() -> Result<(), String> {
+    let store = load_store()?;
+    let profile = store
+        .profiles
+        .get(&store.active)
+        .filter(|profile| profile_configured_value(&profile.auth))
+        .ok_or_else(|| {
+            format!(
+                "active OpenCode key profile '{}' is not configured",
+                store.active
+            )
+        })?;
+    write_auth_json(&profile.auth)
+}
+
+fn load_store() -> Result<KeyProfilesStore, String> {
+    let path = store_path();
+    if !path.is_file() {
+        return Ok(default_store());
+    }
+    let raw = fs::read_to_string(&path).map_err(|err| format!("read {}: {err}", path.display()))?;
+    let mut store: KeyProfilesStore =
+        serde_json::from_str(&raw).map_err(|err| format!("parse {}: {err}", path.display()))?;
+    migrate_automation_mode(&mut store);
+    ensure_default_profiles(&mut store);
+    hydrate_from_secret_store(&mut store);
+    Ok(store)
+}
+
+fn secret_name(profile_id: &str) -> String {
+    format!("opencode_profile_{profile_id}")
+}
+
+/// Profile credentials are kept in the OS credential store; the file only holds the label and
+/// which profile is active. A profile whose credentials are still in the file (older version, or
+/// no credential store) is used as is.
+fn hydrate_from_secret_store(store: &mut KeyProfilesStore) {
+    let backend = crate::secrets::backend();
+    for (id, profile) in store.profiles.iter_mut() {
+        if profile_configured_value(&profile.auth) {
+            continue;
+        }
+        if let Some(auth) = backend
+            .get(&secret_name(id))
+            .ok()
+            .flatten()
+            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        {
+            profile.auth = auth;
+        }
+    }
+}
+
+/// Copy of the store that is safe to write to disk: credentials that verifiably reached the
+/// credential store are blanked, the rest stay (no store means the file is the only copy).
+fn store_for_disk(store: &KeyProfilesStore) -> KeyProfilesStore {
+    let backend = crate::secrets::backend();
+    let mut out = store.clone();
+    for (id, profile) in out.profiles.iter_mut() {
+        let name = secret_name(id);
+        if !profile_configured_value(&profile.auth) {
+            let _ = backend.delete(&name);
+            continue;
+        }
+        let Ok(raw) = serde_json::to_string(&profile.auth) else { continue };
+        if backend.available()
+            && backend.set(&name, &raw).is_ok()
+            && backend.get(&name).ok().flatten().as_deref() == Some(raw.as_str())
+        {
+            profile.auth = json!({});
+        }
+    }
+    out
+}
+
+/// Startup: move OpenCode key profiles that an older version wrote to disk into the credential store.
+pub fn migrate_profiles_to_secret_store() {
+    if store_path().is_file() {
+        if let Ok(store) = load_store() {
+            let _ = save_store(&store);
+        }
+    }
+}
+
+fn save_store(store: &KeyProfilesStore) -> Result<(), String> {
+    crate::app_paths::ensure_app_data_dir()?;
+    let path = store_path();
+    let json = serde_json::to_string_pretty(&store_for_disk(store))
+        .map_err(|err| format!("serialize opencode key profiles: {err}"))?;
+    fs::write(&path, json).map_err(|err| format!("write {}: {err}", path.display()))
+}
+
+fn default_store() -> KeyProfilesStore {
+    let mut profiles = BTreeMap::new();
+    profiles.insert(
+        PROFILE_A.to_string(),
+        KeyProfile {
+            label: "Primary".into(),
+            auth: json!({}),
+        },
+    );
+    profiles.insert(
+        PROFILE_B.to_string(),
+        KeyProfile {
+            label: "Secondary".into(),
+            auth: json!({}),
+        },
+    );
+    KeyProfilesStore {
+        version: STORE_VERSION,
+        active: PROFILE_A.to_string(),
+        profiles,
+        key_automation_mode: default_automation_mode(),
+        restart_pane_on_rotate: default_restart_pane_on_rotate(),
+    }
+}
+
+fn ensure_default_profiles(store: &mut KeyProfilesStore) {
+    store
+        .profiles
+        .entry(PROFILE_A.to_string())
+        .or_insert(KeyProfile {
+            label: "Primary".into(),
+            auth: json!({}),
+        });
+    store
+        .profiles
+        .entry(PROFILE_B.to_string())
+        .or_insert(KeyProfile {
+            label: "Secondary".into(),
+            auth: json!({}),
+        });
+    if store.active != PROFILE_A && store.active != PROFILE_B {
+        store.active = PROFILE_A.to_string();
+    }
+}
+
+fn public_status(store: &KeyProfilesStore) -> OpenCodeKeyStatus {
+    OpenCodeKeyStatus {
+        active_profile: store.active.clone(),
+        profiles: store
+            .profiles
+            .iter()
+            .map(|(id, profile)| OpenCodeKeyProfileInfo {
+                id: id.clone(),
+                label: profile.label.clone(),
+                configured: profile_configured_value(&profile.auth),
+            })
+            .collect(),
+        key_automation_mode: store.key_automation_mode.as_str().to_string(),
+        restart_pane_on_rotate: store.restart_pane_on_rotate,
+    }
+}
+
+fn profile_configured(store: &KeyProfilesStore, id: &str) -> bool {
+    store
+        .profiles
+        .get(id)
+        .is_some_and(|profile| profile_configured_value(&profile.auth))
+}
+
+fn profile_configured_value(auth: &Value) -> bool {
+    auth.as_object().is_some_and(|map| !map.is_empty())
+}
+
+fn toggle_active(current: &str) -> String {
+    if current == PROFILE_A {
+        PROFILE_B.to_string()
+    } else {
+        PROFILE_A.to_string()
+    }
+}
+
+fn write_auth_json(auth: &Value) -> Result<(), String> {
+    let path = auth_json_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| format!("create {}: {err}", parent.display()))?;
+    }
+    let json = serde_json::to_string_pretty(auth)
+        .map_err(|err| format!("serialize opencode auth.json: {err}"))?;
+    fs::write(&path, json).map_err(|err| format!("write {}: {err}", path.display()))
+}
+
+#[cfg(test)]
+mod test_paths {
+    use std::path::PathBuf;
+
+    pub fn store_path_override() -> Option<PathBuf> {
+        std::env::var_os("PUPPET_MASTER_TEST_OPENCODE_KEYS_STORE").map(PathBuf::from)
+    }
+
+    pub fn auth_json_path_override() -> Option<PathBuf> {
+        std::env::var_os("PUPPET_MASTER_TEST_OPENCODE_AUTH").map(PathBuf::from)
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_keys_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[cfg(not(test))]
+mod test_paths {
+    use std::path::PathBuf;
+
+    pub fn store_path_override() -> Option<PathBuf> {
+        None
+    }
+
+    pub fn auth_json_path_override() -> Option<PathBuf> {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test helper, restored: the provider the auth file is keyed by (the production constant was removed).
+    const DEFAULT_PROVIDER: &str = "opencode-go";
+
+    /// Test helper, restored: the auth file shape for one API key.
+    fn auth_json_for_key(api_key: &str) -> Value {
+        serde_json::json!({
+            DEFAULT_PROVIDER: {
+                "type": "api",
+                "key": api_key
+            }
+        })
+    }
+
+    fn lock() -> std::sync::MutexGuard<'static, ()> {
+        test_keys_lock()
+    }
+
+    #[test]
+    fn rotate_toggles_between_profiles() {
+        let _guard = lock();
+        let unique = format!(
+            "pm-opencode-keys-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0)
+        );
+        let dir = std::env::temp_dir().join(unique);
+        let store_file = dir.join("opencode-key-profiles.json");
+        let auth_file = dir.join("auth.json");
+        fs::create_dir_all(&dir).expect("tempdir");
+
+        std::env::set_var("PUPPET_MASTER_TEST_OPENCODE_KEYS_STORE", &store_file);
+        std::env::set_var("PUPPET_MASTER_TEST_OPENCODE_AUTH", &auth_file);
+
+        let mut store = default_store();
+        store.profiles.get_mut(PROFILE_A).unwrap().auth = auth_json_for_key("key-a");
+        store.profiles.get_mut(PROFILE_B).unwrap().auth = auth_json_for_key("key-b");
+        save_store(&store).expect("save");
+
+        let status = rotate(RotateTarget::Next).expect("rotate");
+        assert_eq!(status.active_profile, PROFILE_B);
+        let written: Value =
+            serde_json::from_str(&fs::read_to_string(&auth_file).unwrap()).unwrap();
+        assert_eq!(written[DEFAULT_PROVIDER]["key"].as_str(), Some("key-b"));
+
+        let _ = fs::remove_dir_all(&dir);
+        std::env::remove_var("PUPPET_MASTER_TEST_OPENCODE_KEYS_STORE");
+        std::env::remove_var("PUPPET_MASTER_TEST_OPENCODE_AUTH");
+    }
+
+    /// Point the store at a private file holding `contents`, run `f`, clean up.
+    fn with_store_file<F: FnOnce(&std::path::Path)>(contents: Option<&str>, f: F) {
+        let _guard = lock();
+        let dir = std::env::temp_dir().join(format!("pm-opencode-keys-migrate-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).expect("tempdir");
+        let store_file = dir.join("opencode-key-profiles.json");
+        if let Some(contents) = contents {
+            fs::write(&store_file, contents).expect("write");
+        }
+        std::env::set_var("PUPPET_MASTER_TEST_OPENCODE_KEYS_STORE", &store_file);
+        f(&store_file);
+        let _ = fs::remove_dir_all(&dir);
+        std::env::remove_var("PUPPET_MASTER_TEST_OPENCODE_KEYS_STORE");
+    }
+
+    fn stored_json(version: u32, mode: Option<&str>) -> String {
+        let mode = mode.map(|m| format!(r#","key_automation_mode":"{m}""#)).unwrap_or_default();
+        format!(
+            r#"{{"version":{version},"active":"a","profiles":{{"a":{{"label":"Primary","auth":{{}}}},"b":{{"label":"Secondary","auth":{{}}}}}}{mode},"restart_pane_on_rotate":true}}"#
+        )
+    }
+
+    #[test]
+    fn a_new_install_switches_keys_only_when_the_person_turns_it_on() {
+        with_store_file(None, |_| {
+            assert_eq!(automation_mode().unwrap(), KeyAutomationMode::NotifyOnly);
+            assert_eq!(status().unwrap().key_automation_mode, "notify_only");
+        });
+        assert_eq!(default_store().key_automation_mode, KeyAutomationMode::NotifyOnly);
+    }
+
+    #[test]
+    fn migration_a_file_from_before_the_change_that_holds_the_old_default_is_turned_off() {
+        // Version 2 wrote `auto_if_backup` for everyone who never touched the setting. That is the
+        // old default, not a choice, so it must not carry the feature over.
+        with_store_file(Some(&stored_json(2, Some("auto_if_backup"))), |_| {
+            assert_eq!(automation_mode().unwrap(), KeyAutomationMode::NotifyOnly);
+            // Version 1 files (no mode at all) too.
+        });
+        with_store_file(Some(&stored_json(1, None)), |_| {
+            assert_eq!(automation_mode().unwrap(), KeyAutomationMode::NotifyOnly);
+        });
+    }
+
+    #[test]
+    fn migration_a_choice_the_person_made_is_kept() {
+        // `notify_only` was never the default: it was a choice, and it stays.
+        with_store_file(Some(&stored_json(2, Some("notify_only"))), |_| {
+            assert_eq!(automation_mode().unwrap(), KeyAutomationMode::NotifyOnly);
+        });
+        // From version 3 on, `auto_if_backup` in the file is the person's opt-in: kept.
+        with_store_file(Some(&stored_json(3, Some("auto_if_backup"))), |_| {
+            assert_eq!(automation_mode().unwrap(), KeyAutomationMode::AutoIfBackup);
+            assert_eq!(status().unwrap().key_automation_mode, "auto_if_backup");
+        });
+    }
+
+    #[test]
+    fn public_status_never_includes_key_material() {
+        let mut store = default_store();
+        store.profiles.get_mut(PROFILE_A).unwrap().auth = auth_json_for_key("secret");
+        let status = public_status(&store);
+        let encoded = serde_json::to_string(&status).unwrap();
+        assert!(!encoded.contains("secret"));
+        assert!(!encoded.contains("sk-"));
+    }
+}
+
+/// Every credential string in the stored key profiles (JSON fields named like a key, token, secret,
+/// access or refresh value), for `crate::redact`. Empty when the store cannot be read.
+pub fn secret_values() -> Vec<String> {
+    fn secret_field(name: &str) -> bool {
+        let n = name.to_ascii_lowercase();
+        ["key", "token", "secret", "access", "refresh", "password"].iter().any(|w| n.contains(w))
+    }
+    fn leaves(value: &Value, in_secret_field: bool, out: &mut Vec<String>) {
+        match value {
+            Value::String(s) if in_secret_field && s.len() >= 8 => out.push(s.clone()),
+            Value::Array(items) => items.iter().for_each(|v| leaves(v, in_secret_field, out)),
+            Value::Object(map) => map.iter().for_each(|(k, v)| leaves(v, secret_field(k), out)),
+            _ => {}
+        }
+    }
+    let Ok(store) = load_store() else { return Vec::new() };
+    let mut out = Vec::new();
+    for profile in store.profiles.values() {
+        leaves(&profile.auth, false, &mut out);
+    }
+    out
+}

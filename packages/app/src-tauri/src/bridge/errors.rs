@@ -1,0 +1,119 @@
+//! Error mapping between `OperationError` and the bridge's `(status, json)` HTTP errors.
+
+use serde_json::json;
+
+/// A bridge response: `(status, json body)`.
+pub(super) type HttpResponse = (u16, serde_json::Value);
+
+pub(super) fn operation_http_error(
+    error: crate::operations::OperationError,
+) -> (u16, serde_json::Value) {
+    let status = match error.code.as_str() {
+        "OPERATION_NOT_FOUND" | "AGENT_NOT_FOUND" | "PANE_NOT_FOUND" => 404,
+        "AUTHORIZATION_DENIED" | "COMPANION_LOCAL_ONLY" | "COMPANION_CANNOT_ANSWER" | "COMPANION_ONLY" | "COMPANION_HOME_FOR_HELPERS" => 403,
+        "MODE_MISMATCH"
+        | "BUDGET_EXHAUSTED"
+        | "AGENT_DEF_APPROVAL_STALE"
+        | "AGENT_DEF_UNAPPROVED"
+        | "AGENT_DEF_BINARY_CHANGED" => 409,
+        "AGENT_NOT_INSTALLED" | "AGENT_DEF_SHIM_NEEDS_NATIVE" => 400,
+        "WORKTREE_NOT_FOUND" => 404,
+        "MERGE_CONFLICT"
+        | "ORIGIN_DIRTY_OVERLAP"
+        | "ORIGIN_DETACHED"
+        | "ORIGIN_MERGE_IN_PROGRESS"
+        | "RUN_ACTIVE" => 409,
+        "NOT_A_GIT_REPO" | "NO_COMMITS" | "GIT_UNAVAILABLE" => 400,
+        "INVALID_ARGUMENT"
+        | "INVALID_TIMEOUT"
+        | "INVALID_JSON"
+        | "MISSING_FIELD"
+        | "INVALID_FIELD"
+        | "SESSION_REQUIRED"
+        | "READ_ONLY_UNSUPPORTED"
+        | "AGENT_NOT_DISPATCHABLE"
+        | "WORKER_MCP_TOOLS_UNAVAILABLE" => 400,
+        "RESOURCE_LOCKED"
+        | "IDEMPOTENCY_KEY_CONFLICT"
+        | "OPERATION_CANCELLED"
+        | "DISPATCH_CANCELLED"
+        | "PANE_BUSY"
+        | "ACCOUNT_MISMATCH"
+        | "OPERATION_ALREADY_DISPATCHED"
+        | "CANCELLATION_IN_PROGRESS"
+        | "CANCELLATION_REQUIRES_WORKER_CONTROL"
+        | "PANE_UNAVAILABLE"
+        | "PANE_RESERVATION_LOST"
+        | "INVALID_STATE_TRANSITION" => 409,
+        "INVALID_TASK"
+        | "INVALID_IDEMPOTENCY_KEY"
+        | "INVALID_ACCEPTANCE_CRITERIA"
+        | "INVALID_PROJECT_PATH"
+        | "PATH_TOO_LONG"
+        | "INVALID_OPERATION_ID"
+        | "INVALID_AGENT_TYPE"
+        | "UNKNOWN_AGENT_TYPE"
+        | "INVALID_LOCK"
+        | "COMPLETION_EVIDENCE_REQUIRED" => 400,
+        "PROJECT_PATH_REQUIRED" => 400,
+        _ => 503,
+    };
+    (
+        status,
+        json!({"error": error.message, "message": error.message, "code": error.code, "recoverable": error.recoverable, "retry_after_ms": error.retry_after_ms, "context": error.context}),
+    )
+}
+
+pub(super) fn operation_error_from_http(
+    error: (u16, serde_json::Value),
+) -> crate::operations::OperationError {
+    serde_json::from_value(error.1.clone()).unwrap_or_else(|_| {
+        crate::operations::OperationError::new(
+            "BRIDGE_ERROR",
+            error
+                .1
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("bridge operation failed"),
+            error.0 >= 500,
+        )
+    })
+}
+
+/// What a route handler returns.
+pub(super) type RouteResult = Result<HttpResponse, HttpResponse>;
+
+#[cfg(test)]
+mod budget_tests {
+    use super::operation_http_error;
+    use crate::operations::OperationError;
+
+    #[test]
+    fn budget_exhausted_is_a_conflict_the_caller_can_act_on_not_an_outage() {
+        let mut error = OperationError::new("BUDGET_EXHAUSTED", "paused", true);
+        error.context = serde_json::json!({"reason": "turns"});
+        let (status, body) = operation_http_error(error);
+        assert_eq!(status, 409);
+        assert_eq!(body["code"], "BUDGET_EXHAUSTED");
+        assert_eq!(body["context"]["reason"], "turns");
+    }
+}
+
+#[cfg(test)]
+mod path_limit_tests {
+    use super::operation_http_error;
+
+    #[test]
+    fn path_too_long_is_a_400_the_caller_can_act_on_and_carries_its_numbers() {
+        let long = std::path::Path::new(r"C:\a\very\long\folder");
+        let error = crate::path_limit::PathTooLong { length: 283 }.into_error(long);
+        let (status, body) = operation_http_error(error);
+        assert_eq!(status, 400);
+        assert_eq!(body["code"], "PATH_TOO_LONG");
+        assert_eq!(body["recoverable"], false);
+        assert!(body["message"].as_str().unwrap().starts_with("This folder's path is 283 characters."), "{body}");
+        assert_eq!(body["error"], body["message"]);
+        assert_eq!(body["context"]["length"], 283);
+        assert_eq!(body["context"]["limit"], 259);
+    }
+}

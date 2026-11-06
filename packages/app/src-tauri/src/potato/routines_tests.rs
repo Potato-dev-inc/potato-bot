@@ -1,0 +1,685 @@
+//! Routines: the next-run math, the coalesced catch-up, one-time runs, pause, validation, the file, and the tick
+//! into a bot's brain. The clock is passed in, so these need no real time (the local zone is only used to turn
+//! the instant the store keeps into wall-clock time and back, on dates away from the DST change).
+
+use std::path::PathBuf;
+
+use chrono::{Local, NaiveDateTime, TimeZone};
+use serde_json::Value;
+
+use super::routines::*;
+use super::service_tests::Rig;
+use super::store;
+
+fn naive(text: &str) -> NaiveDateTime {
+    NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S").unwrap()
+}
+
+fn ms(text: &str) -> i64 {
+    Local.from_local_datetime(&naive(text)).earliest().unwrap().timestamp_millis()
+}
+
+fn iso(text: &str) -> String {
+    naive(text).format("%Y-%m-%dT%H:%M:%S").to_string()
+}
+
+fn input(schedule: Schedule) -> RoutineInput {
+    RoutineInput { title: "Morning sweep".into(), prompt: "Sweep the inbox.".into(), schedule, watch: None }
+}
+
+fn routine(schedule: Schedule, next: &str) -> Routine {
+    Routine {
+        id: "r-test".into(),
+        bot: "nimbus".into(),
+        title: "Morning sweep".into(),
+        prompt: "Sweep the inbox.".into(),
+        schedule,
+        paused: false,
+        done: false,
+        last_run_ms: None,
+        next_run: Some(iso(next)),
+        created_ms: 0,
+        watch: None,
+    }
+}
+
+fn daily(time: &str) -> Schedule {
+    Schedule::Daily { time: time.into() }
+}
+
+fn weekdays(time: &str) -> Schedule {
+    Schedule::Weekdays { time: time.into() }
+}
+
+fn temp(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("pm-potato-routines-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    store::add_bot(&dir, "nimbus", "fish", 1).unwrap();
+    dir
+}
+
+// ---- next-run math ------------------------------------------------------------------------------
+
+#[test]
+fn hourly_runs_at_the_next_full_hour_strictly_after_now() {
+    let s = Schedule::Hourly;
+    assert_eq!(next_after(&s, naive("2026-11-02 10:30:00")), Some(naive("2026-11-02 11:00:00")));
+    assert_eq!(next_after(&s, naive("2026-11-02 10:00:00")), Some(naive("2026-11-02 11:00:00")));
+    assert_eq!(next_after(&s, naive("2026-11-02 23:59:59")), Some(naive("2026-11-03 00:00:00")));
+}
+
+#[test]
+fn daily_runs_today_if_the_time_is_still_ahead_and_tomorrow_if_not() {
+    let s = daily("09:00");
+    assert_eq!(next_after(&s, naive("2026-11-02 08:59:00")), Some(naive("2026-11-02 09:00:00")));
+    assert_eq!(next_after(&s, naive("2026-11-02 09:00:00")), Some(naive("2026-11-03 09:00:00")));
+    assert_eq!(next_after(&s, naive("2026-11-02 18:00:00")), Some(naive("2026-11-03 09:00:00")));
+}
+
+#[test]
+fn weekdays_skip_the_weekend_and_wait_for_monday() {
+    let s = weekdays("06:00");
+    // 2026-11-02 is a Monday.
+    assert_eq!(next_after(&s, naive("2026-11-02 05:00:00")), Some(naive("2026-11-02 06:00:00")));
+    assert_eq!(next_after(&s, naive("2026-11-02 06:00:00")), Some(naive("2026-11-03 06:00:00")));
+    // Friday after the run goes to Monday, not Saturday.
+    assert_eq!(next_after(&s, naive("2026-11-06 07:00:00")), Some(naive("2026-11-09 06:00:00")));
+    // Saturday and Sunday both go to Monday.
+    assert_eq!(next_after(&s, naive("2026-11-07 12:00:00")), Some(naive("2026-11-09 06:00:00")));
+    assert_eq!(next_after(&s, naive("2026-11-08 05:00:00")), Some(naive("2026-11-09 06:00:00")));
+}
+
+#[test]
+fn every_n_minutes_lands_on_the_grid_counted_from_midnight() {
+    let s = Schedule::EveryMinutes { minutes: 15 };
+    assert_eq!(next_after(&s, naive("2026-11-02 10:00:00")), Some(naive("2026-11-02 10:15:00")));
+    assert_eq!(next_after(&s, naive("2026-11-02 10:14:59")), Some(naive("2026-11-02 10:15:00")));
+    // The last slot of the day rolls over to midnight of the next day.
+    assert_eq!(next_after(&s, naive("2026-11-02 23:50:00")), Some(naive("2026-11-03 00:00:00")));
+    let thirty = Schedule::EveryMinutes { minutes: 30 };
+    assert_eq!(next_after(&thirty, naive("2026-11-02 10:00:30")), Some(naive("2026-11-02 10:30:00")));
+}
+
+#[test]
+fn an_interval_under_fifteen_minutes_has_no_next_run() {
+    assert_eq!(next_after(&Schedule::EveryMinutes { minutes: 14 }, naive("2026-11-02 10:00:00")), None);
+    assert_eq!(next_after(&Schedule::EveryMinutes { minutes: 1441 }, naive("2026-11-02 10:00:00")), None);
+}
+
+#[test]
+fn a_one_time_run_has_a_next_run_only_while_it_is_in_the_future() {
+    let s = Schedule::Once { at: "2026-11-02T09:00".into() };
+    assert_eq!(next_after(&s, naive("2026-11-02 08:00:00")), Some(naive("2026-11-02 09:00:00")));
+    assert_eq!(next_after(&s, naive("2026-11-02 09:00:00")), None);
+}
+
+#[test]
+fn the_summary_reads_in_plain_words() {
+    assert_eq!(summary(&weekdays("06:00")), "Weekdays 6am");
+    assert_eq!(summary(&daily("18:30")), "Every day 6:30pm");
+    assert_eq!(summary(&daily("00:00")), "Every day 12am");
+    assert_eq!(summary(&Schedule::Hourly), "Every hour");
+    assert_eq!(summary(&Schedule::EveryMinutes { minutes: 15 }), "Every 15 minutes");
+    assert_eq!(summary(&Schedule::Once { at: "2026-11-02T09:00".into() }), "Once on Nov 2 at 9am");
+}
+
+// ---- validation ---------------------------------------------------------------------------------
+
+#[test]
+fn a_form_is_checked_before_it_is_saved() {
+    let now = naive("2026-11-02 08:00:00");
+    assert!(validate(&input(daily("09:00")), now).is_ok());
+    let blank_title = RoutineInput { title: "  ".into(), ..input(daily("09:00")) };
+    assert_eq!(validate(&blank_title, now).unwrap_err().message, "Give the routine a name.");
+    let blank_prompt = RoutineInput { prompt: "".into(), ..input(daily("09:00")) };
+    assert_eq!(validate(&blank_prompt, now).unwrap_err().message, "Write what the bot should do.");
+    let long_title = RoutineInput { title: "x".repeat(81), ..input(daily("09:00")) };
+    assert!(validate(&long_title, now).is_err());
+    let long_prompt = RoutineInput { prompt: "x".repeat(2001), ..input(daily("09:00")) };
+    assert!(validate(&long_prompt, now).is_err());
+    assert!(validate(&input(daily("25:00")), now).is_err());
+    assert!(validate(&input(weekdays("nine")), now).is_err());
+    assert!(validate(&input(Schedule::EveryMinutes { minutes: 14 }), now).is_err());
+    assert!(validate(&input(Schedule::EveryMinutes { minutes: 15 }), now).is_ok());
+}
+
+#[test]
+fn a_one_time_run_must_be_in_the_future() {
+    let now = naive("2026-11-02 08:00:00");
+    assert!(validate(&input(Schedule::Once { at: "2026-11-02T09:00".into() }), now).is_ok());
+    let past = validate(&input(Schedule::Once { at: "2026-11-02T07:00".into() }), now).unwrap_err();
+    assert_eq!(past.message, "Pick a time in the future.");
+    assert!(validate(&input(Schedule::Once { at: "tomorrow".into() }), now).is_err());
+}
+
+// ---- the scheduler step -------------------------------------------------------------------------
+
+#[test]
+fn a_routine_on_time_runs_without_a_late_note() {
+    let mut rs = vec![routine(daily("09:00"), "2026-11-02 09:00:00")];
+    let dues = take_due(&mut rs, naive("2026-11-02 09:00:20"), ms("2026-11-02 09:00:20"));
+    assert_eq!(dues.len(), 1);
+    assert_eq!(dues[0].context, None);
+    assert_eq!(dues[0].prompt, "Sweep the inbox.");
+    assert_eq!(rs[0].next_run.as_deref(), Some("2026-11-03T09:00:00"));
+    assert_eq!(rs[0].last_run_ms, Some(ms("2026-11-02 09:00:20")));
+    assert!(take_due(&mut rs, naive("2026-11-02 09:00:30"), 0).is_empty(), "one run, not two");
+}
+
+#[test]
+fn ten_missed_hours_make_one_catch_up_run_that_says_it_is_late() {
+    let mut rs = vec![routine(Schedule::Hourly, "2026-11-02 10:00:00")];
+    let now = naive("2026-11-02 15:20:00");
+    let dues = take_due(&mut rs, now, ms("2026-11-02 15:20:00"));
+    assert_eq!(dues.len(), 1, "the missed hours are coalesced into one run");
+    let note = dues[0].context.clone().expect("a late note");
+    assert!(note.starts_with("This run is late."), "{note}");
+    assert!(note.contains("Nov 2, 10:00 AM") && note.contains("Nov 2, 3:20 PM"), "{note}");
+    assert_eq!(rs[0].next_run.as_deref(), Some("2026-11-02T16:00:00"), "the next run is the first one after now");
+    assert!(take_due(&mut rs, now, 0).is_empty());
+}
+
+#[test]
+fn a_run_fourteen_minutes_late_is_not_called_late_and_fifteen_is() {
+    let mut on_edge = vec![routine(daily("09:00"), "2026-11-02 09:00:00")];
+    assert_eq!(take_due(&mut on_edge, naive("2026-11-02 09:14:59"), 0)[0].context, None);
+    let mut late = vec![routine(daily("09:00"), "2026-11-02 09:00:00")];
+    assert!(take_due(&mut late, naive("2026-11-02 09:15:00"), 0)[0].context.is_some());
+}
+
+#[test]
+fn a_one_time_routine_runs_once_then_is_done() {
+    let at = "2026-11-02T09:00";
+    let mut rs = vec![routine(Schedule::Once { at: at.into() }, "2026-11-02 09:00:00")];
+    let dues = take_due(&mut rs, naive("2026-11-02 09:00:05"), 0);
+    assert_eq!(dues.len(), 1);
+    assert_eq!(dues[0].context, None);
+    assert!(rs[0].done);
+    assert_eq!(rs[0].next_run, None);
+    assert!(take_due(&mut rs, naive("2026-11-03 09:00:00"), 0).is_empty(), "never again");
+    assert_eq!(view(&rs[0]).status, "done");
+}
+
+#[test]
+fn a_one_time_routine_found_after_its_time_runs_once_and_says_it_is_late() {
+    let mut rs = vec![routine(Schedule::Once { at: "2026-11-02T09:00".into() }, "2026-11-02 09:00:00")];
+    let dues = take_due(&mut rs, naive("2026-11-02 12:00:00"), 0);
+    assert_eq!(dues.len(), 1);
+    assert!(dues[0].context.as_deref().unwrap().contains("late"));
+    assert!(rs[0].done);
+}
+
+#[test]
+fn a_paused_routine_never_runs_and_resuming_does_not_run_the_paused_time() {
+    let root = temp("pause");
+    let made = create(&root, "nimbus", &input(Schedule::Hourly), ms("2026-11-02 08:10:00")).unwrap();
+    assert_eq!(made.next_run_ms, Some(ms("2026-11-02 09:00:00")));
+    let paused = set_paused(&root, &made.id, true, ms("2026-11-02 08:20:00")).unwrap();
+    assert_eq!(paused.status, "paused");
+    assert_eq!(paused.next_run_ms, None);
+    // Eight hours later the paused routine is still quiet: its runs are not owed.
+    let mut stored = store::read_json::<RoutinesFile>(&routines_path(&root), "routines.json").unwrap().unwrap();
+    assert!(take_due(&mut stored.routines, naive("2026-11-02 17:00:00"), 0).is_empty());
+    let resumed = set_paused(&root, &made.id, false, ms("2026-11-02 17:00:00")).unwrap();
+    assert_eq!(resumed.status, "active");
+    assert_eq!(resumed.next_run_ms, Some(ms("2026-11-02 18:00:00")), "resume looks forward, no backlog");
+}
+
+// ---- the file -----------------------------------------------------------------------------------
+
+#[test]
+fn routines_are_created_listed_and_updated_per_bot() {
+    let root = temp("crud");
+    let now = ms("2026-11-02 08:00:00");
+    let made = create(&root, "nimbus", &input(weekdays("06:00")), now).unwrap();
+    assert!(made.id.starts_with("r-"));
+    assert_eq!(made.summary, "Weekdays 6am");
+    assert_eq!(made.status, "active");
+    // Created on Monday at 08:00, so today's 06:00 has passed: the next run is Tuesday 06:00.
+    assert_eq!(made.next_run_ms, Some(ms("2026-11-03 06:00:00")));
+    assert_eq!(list(&root, Some("nimbus")).unwrap().len(), 1);
+    assert_eq!(list(&root, Some("other")).unwrap().len(), 0);
+
+    let renamed = update(&root, &made.id, &RoutineInput { title: "Inbox".into(), ..input(daily("07:30")) }, now).unwrap();
+    assert_eq!(renamed.title, "Inbox");
+    assert_eq!(renamed.summary, "Every day 7:30am");
+
+}
+
+#[test]
+fn a_bot_has_at_most_twenty_routines_and_an_unknown_bot_is_refused() {
+    let root = temp("cap");
+    let now = ms("2026-11-02 08:00:00");
+    for _ in 0..20 {
+        create(&root, "nimbus", &input(Schedule::Hourly), now).unwrap();
+    }
+    assert!(create(&root, "nimbus", &input(Schedule::Hourly), now).is_err());
+    assert_eq!(create(&root, "nobody", &input(Schedule::Hourly), now).unwrap_err().code, "POTATO_BOT_NOT_FOUND");
+}
+
+#[test]
+fn a_one_time_routine_that_ran_can_be_set_to_a_new_future_time() {
+    let root = temp("rearm");
+    let now = ms("2026-11-02 08:00:00");
+    let made = create(&root, "nimbus", &input(Schedule::Once { at: "2026-11-02T09:00".into() }), now).unwrap();
+    let mut stored = store::read_json::<RoutinesFile>(&routines_path(&root), "routines.json").unwrap().unwrap();
+    take_due(&mut stored.routines, naive("2026-11-02 09:00:01"), 0);
+    store::write_json(&routines_path(&root), &stored, "routines.json").unwrap();
+    assert_eq!(list(&root, None).unwrap()[0].status, "done");
+    let again = update(&root, &made.id, &input(Schedule::Once { at: "2026-11-03T09:00".into() }), ms("2026-11-02 10:00:00")).unwrap();
+    assert_eq!(again.status, "active");
+    assert_eq!(again.next_run_ms, Some(ms("2026-11-03 09:00:00")));
+}
+
+#[test]
+fn a_damaged_routines_file_is_an_error_and_is_never_overwritten() {
+    let root = temp("damaged");
+    std::fs::write(routines_path(&root), "{ damaged").unwrap();
+    assert_eq!(list(&root, None).unwrap_err().code, "POTATO_STORE_INVALID");
+    assert!(create(&root, "nimbus", &input(Schedule::Hourly), ms("2026-11-02 08:00:00")).is_err());
+    assert_eq!(std::fs::read_to_string(routines_path(&root)).unwrap(), "{ damaged");
+}
+
+// ---- the tick into the brain ---------------------------------------------------------------------
+
+#[test]
+fn a_due_routine_reaches_the_brain_as_a_message_from_routine_with_the_late_note() {
+    let rig = Rig::new("routine-tick");
+    let made = create(&rig.root, "nimbus", &input(daily("09:00")), ms("2026-11-02 08:00:00")).unwrap();
+    assert_eq!(run_due(&rig.svc, ms("2026-11-02 08:59:59")), 0, "not yet due");
+    // The app was closed until 10:05: one run, late.
+    assert_eq!(run_due(&rig.svc, ms("2026-11-02 10:05:00")), 1);
+    assert_eq!(run_due(&rig.svc, ms("2026-11-02 10:05:30")), 0);
+
+    let (items, _) = rig.inbox(0);
+    let send: &Value = items.iter().find(|i| i["type"] == "send").expect("a send item");
+    assert_eq!(send["from"]["id"], "routine");
+    assert_eq!(send["from"]["trust"], "owner_pc", "trusted like the person at this computer");
+    assert_eq!(send["text"], "Sweep the inbox.");
+    assert!(send["context"].as_str().unwrap().contains("late"));
+    let saved = rig.thread();
+    assert!(saved.iter().any(|m| m.text == "Routine: Morning sweep\n\nSweep the inbox."), "the thread shows the routine");
+    let stored = list(&rig.root, None).unwrap().into_iter().find(|r| r.id == made.id).unwrap();
+    assert_eq!(stored.last_run_ms, Some(ms("2026-11-02 10:05:00")));
+}
+
+#[test]
+fn run_now_sends_the_prompt_and_leaves_the_schedule_alone() {
+    let rig = Rig::new("routine-now");
+    let made = create(&rig.root, "nimbus", &input(daily("09:00")), ms("2026-11-02 08:00:00")).unwrap();
+    run_now(&rig.svc, &made.id, ms("2026-11-02 08:30:00")).unwrap();
+    let (items, _) = rig.inbox(0);
+    let send = items.iter().find(|i| i["type"] == "send").expect("a send item");
+    assert_eq!(send["from"]["id"], "routine");
+    assert!(send.get("context").is_none(), "a manual run is not late");
+    let after = list(&rig.root, None).unwrap().into_iter().find(|r| r.id == made.id).unwrap();
+    assert_eq!(after.next_run_ms, made.next_run_ms, "the next run did not move");
+    assert_eq!(after.last_run_ms, Some(ms("2026-11-02 08:30:00")));
+}
+
+#[test]
+fn nothing_runs_while_potato_bot_is_switched_off() {
+    let rig = Rig::new("routine-off");
+    create(&rig.root, "nimbus", &input(daily("09:00")), ms("2026-11-02 08:00:00")).unwrap();
+    rig.brains.set_enabled(false);
+    assert_eq!(run_due(&rig.svc, ms("2026-11-02 09:30:00")), 0);
+    rig.brains.set_enabled(true);
+    assert_eq!(run_due(&rig.svc, ms("2026-11-02 09:30:00")), 1, "the missed run is still owed, once");
+}
+
+// ---- H6b: a refused routine is recorded, a due-but-untaken run survives a restart, the sandbox follows trust ----
+
+fn h6b_morning() -> RoutineInput {
+    RoutineInput { title: "Morning sweep".into(), prompt: "Sweep the inbox.".into(), schedule: Schedule::Daily { time: "09:00".into() }, watch: None }
+}
+
+#[test]
+fn h6b1_a_routine_refused_by_the_rate_limit_is_recorded_as_skipped_with_the_reason() {
+    let rig = Rig::ready("h6b1-rate");
+    let now = ms("2026-11-02 09:30:00");
+    rig.host.now.store(now, std::sync::atomic::Ordering::SeqCst);
+    for i in 0..20 {
+        rig.svc.send("nimbus", &format!("message {i}")).unwrap();
+    }
+    create(&rig.root, "nimbus", &h6b_morning(), ms("2026-11-02 08:00:00")).unwrap();
+    assert_eq!(run_due(&rig.svc, now), 1);
+    assert!(rig.notes().iter().any(|n| n == "Skipped: too many messages in a minute: Morning sweep"), "{:?}", rig.notes());
+}
+
+#[test]
+fn h6b1_a_routine_refused_by_the_daily_limit_says_skipped_daily_limit_reached() {
+    use super::service::Host;
+    let rig = Rig::ready("h6b1-limit");
+    let now = ms("2026-11-02 09:30:00");
+    store::save_settings(&rig.root, &store::Settings { daily_limit_cents: super::cost::MIN_LIMIT_CENTS, ..store::Settings::default() }).unwrap();
+    // Spend well past the smallest limit today, so the routine is refused at the cap.
+    let day = rig.host.local_day(now);
+    rig.host.now.store(now, std::sync::atomic::Ordering::SeqCst);
+    super::cost::charge(&rig.root, &day, "nimbus", "app", "deepseek-flash", super::cost::Tokens { prompt: 50_000_000, completion: 0, cache_hit: 0, cache_miss: 50_000_000 }, super::cost::MIN_LIMIT_CENTS).unwrap();
+    create(&rig.root, "nimbus", &h6b_morning(), ms("2026-11-02 08:00:00")).unwrap();
+    assert_eq!(run_due(&rig.svc, now), 1);
+    assert!(rig.notes().iter().any(|n| n == "Skipped: daily limit reached: Morning sweep"), "{:?}", rig.notes());
+}
+
+#[test]
+fn h6b2_a_run_handed_to_a_brain_that_never_took_it_is_recorded_as_missed_after_a_restart_and_is_not_run_twice() {
+    let rig = Rig::new("h6b2-restart");
+    create(&rig.root, "nimbus", &h6b_morning(), ms("2026-11-02 08:00:00")).unwrap();
+    assert_eq!(run_due(&rig.svc, ms("2026-11-02 09:30:00")), 1);
+    assert_eq!(pending_count(&rig.root), 1, "due and not yet taken by the brain: written to disk before the queue");
+
+    // The app quits and starts again. Nothing was answered, so the run is written as missed, once.
+    let again = super::service::Service::new(rig.root.clone(), rig.host.clone(), rig.launcher.clone(), rig.brains.clone());
+    recover_pending(&again, ms("2026-11-02 10:00:00"));
+    assert_eq!(pending_count(&rig.root), 0);
+    recover_pending(&again, ms("2026-11-02 10:00:00"));
+    let texts: Vec<String> = again.messages("nimbus", 100).unwrap().into_iter().map(|m| m.text).collect();
+    assert_eq!(texts.iter().filter(|t| t.contains("Missed while the app was closed: Morning sweep")).count(), 1, "{texts:?}");
+}
+
+#[test]
+fn h6b2_a_brain_reply_that_names_the_run_clears_it_so_nothing_is_recorded_as_missed() {
+    let rig = Rig::new("h6b2-ack");
+    create(&rig.root, "nimbus", &h6b_morning(), ms("2026-11-02 08:00:00")).unwrap();
+    assert_eq!(run_due(&rig.svc, ms("2026-11-02 09:30:00")), 1);
+    let id = pending_ids(&rig.root).remove(0);
+    clear_pending(&rig.root, &id);
+    assert_eq!(pending_count(&rig.root), 0);
+    let again = super::service::Service::new(rig.root.clone(), rig.host.clone(), rig.launcher.clone(), rig.brains.clone());
+    recover_pending(&again, ms("2026-11-02 10:00:00"));
+    assert!(again.messages("nimbus", 100).unwrap().iter().all(|m| !m.text.contains("Missed while the app was closed")));
+}
+
+#[test]
+fn schedule_tools_are_the_four_names() {
+    for name in ["schedule_list", "schedule_create", "schedule_update", "schedule_cancel"] {
+        assert!(is_tool(name), "{name} is a schedule tool");
+    }
+    assert!(!is_tool("scratchpad_list"));
+    assert!(!is_tool("update_preferences"), "no preferences tool: nothing safe to change yet");
+}
+
+#[test]
+fn a_schedule_from_a_tool_call_has_the_stored_shape() {
+    let weekdays: Schedule = serde_json::from_value(serde_json::json!({ "kind": "weekdays", "time": "09:00" })).unwrap();
+    assert_eq!(weekdays, Schedule::Weekdays { time: "09:00".into() });
+    let every: Schedule = serde_json::from_value(serde_json::json!({ "kind": "everyMinutes", "minutes": 15 })).unwrap();
+    assert_eq!(every, Schedule::EveryMinutes { minutes: 15 });
+    let cron: Schedule = serde_json::from_value(serde_json::json!({ "kind": "cron", "expr": "0 9 * * mon-fri" })).unwrap();
+    assert_eq!(cron, Schedule::Cron { expr: "0 9 * * mon-fri".into() });
+    assert!(serde_json::from_value::<Schedule>(serde_json::json!({ "kind": "cron" })).is_err(), "a cron needs its text");
+}
+
+// ---- cron schedules -------------------------------------------------------------------------------
+
+fn cron(expr: &str) -> Schedule {
+    Schedule::Cron { expr: expr.into() }
+}
+
+#[test]
+fn a_cron_schedule_has_a_next_run_and_a_plain_summary() {
+    let s = cron("30 6 * * mon-fri");
+    // Friday 6 November 2026, 7:00: the next weekday 6:30 is Monday.
+    assert_eq!(next_after(&s, naive("2026-11-06 07:00:00")), Some(naive("2026-11-09 06:30:00")));
+    assert_eq!(next_after(&s, naive("2026-11-09 06:30:00")), Some(naive("2026-11-10 06:30:00")));
+    assert_eq!(summary(&s), "Cron 30 6 * * mon-fri");
+    assert_eq!(next_after(&cron("not a cron"), naive("2026-11-06 07:00:00")), None);
+}
+
+#[test]
+fn a_cron_is_checked_before_it_is_saved_with_a_plain_sentence() {
+    let now = naive("2026-11-02 08:00:00");
+    assert!(validate(&input(cron("0 9 * * mon-fri")), now).is_ok());
+    let too_often = validate(&input(cron("*/5 * * * *")), now).unwrap_err();
+    assert!(too_often.message.contains("at least 15 minutes"), "{}", too_often.message);
+    assert_eq!(too_often.code, "POTATO_ROUTINE_INVALID");
+    let wrong = validate(&input(cron("0 25 * * *")), now).unwrap_err();
+    assert!(wrong.message.contains("hour") && wrong.message.contains("0 to 23"), "{}", wrong.message);
+    let blank = validate(&input(cron("  ")), now).unwrap_err();
+    assert!(blank.message.contains("5 parts"), "{}", blank.message);
+    let never = validate(&input(cron("0 0 31 2 *")), now).unwrap_err();
+    assert!(never.message.contains("never"), "{}", never.message);
+}
+
+#[test]
+fn a_cron_routine_is_saved_listed_and_read_back_from_the_file() {
+    let root = temp("cron-file");
+    let now = ms("2026-11-06 07:00:00");
+    let made = create(&root, "nimbus", &input(cron("30 6 * * mon-fri")), now).unwrap();
+    assert_eq!(made.summary, "Cron 30 6 * * mon-fri");
+    assert_eq!(made.status, "active");
+    assert_eq!(made.next_run_ms, Some(ms("2026-11-09 06:30:00")));
+    assert_eq!(made.schedule, cron("30 6 * * mon-fri"));
+    // The file holds the same shape the form sends: { "kind": "cron", "expr": "..." }.
+    let raw: Value = serde_json::from_str(&std::fs::read_to_string(routines_path(&root)).unwrap()).unwrap();
+    assert_eq!(raw["routines"][0]["schedule"], serde_json::json!({ "kind": "cron", "expr": "30 6 * * mon-fri" }));
+    let back = list(&root, Some("nimbus")).unwrap();
+    assert_eq!(back.len(), 1);
+    assert_eq!(back[0].schedule, cron("30 6 * * mon-fri"));
+    assert_eq!(back[0].next_run_ms, made.next_run_ms);
+    // Changing a daily routine into a cron moves its next run.
+    let daily_one = create(&root, "nimbus", &input(daily("09:00")), now).unwrap();
+    let changed = update(&root, &daily_one.id, &input(cron("0 12 * * *")), now).unwrap();
+    assert_eq!(changed.summary, "Cron 0 12 * * *");
+    assert_eq!(changed.next_run_ms, Some(ms("2026-11-06 12:00:00")));
+}
+
+#[test]
+fn a_refused_cron_is_not_saved() {
+    let root = temp("cron-refused");
+    let err = create(&root, "nimbus", &input(cron("* * * * *")), ms("2026-11-06 07:00:00")).unwrap_err();
+    assert!(err.message.contains("15 minutes"));
+    assert!(list(&root, None).unwrap().is_empty());
+}
+
+#[test]
+fn a_due_cron_routine_runs_once_and_moves_to_its_next_time() {
+    let mut rs = vec![routine(cron("0 9 * * mon-fri"), "2026-11-06 09:00:00")];
+    let dues = take_due(&mut rs, naive("2026-11-06 09:00:10"), ms("2026-11-06 09:00:10"));
+    assert_eq!(dues.len(), 1);
+    assert_eq!(dues[0].context, None);
+    // Friday's run is done; the next one is Monday (never the weekend).
+    assert_eq!(rs[0].next_run.as_deref(), Some(iso("2026-11-09 09:00:00").as_str()));
+    assert!(take_due(&mut rs, naive("2026-11-07 09:00:10"), 0).is_empty(), "nothing runs on Saturday");
+}
+
+#[test]
+fn a_cron_missed_while_the_app_was_closed_runs_once_and_says_it_is_late() {
+    let mut rs = vec![routine(cron("0 * * * *"), "2026-11-06 09:00:00")];
+    let dues = take_due(&mut rs, naive("2026-11-06 15:20:00"), ms("2026-11-06 15:20:00"));
+    assert_eq!(dues.len(), 1, "six missed hours make one run");
+    assert!(dues[0].context.as_deref().unwrap().contains("late"));
+    assert_eq!(rs[0].next_run.as_deref(), Some(iso("2026-11-06 16:00:00").as_str()));
+}
+
+#[test]
+fn a_due_cron_routine_reaches_the_brain_through_the_tick() {
+    let rig = Rig::new("routine-cron-tick");
+    create(&rig.root, "nimbus", &input(cron("0 9 * * *")), ms("2026-11-02 08:00:00")).unwrap();
+    assert_eq!(run_due(&rig.svc, ms("2026-11-02 08:59:59")), 0);
+    assert_eq!(run_due(&rig.svc, ms("2026-11-02 09:00:05")), 1);
+    assert_eq!(run_due(&rig.svc, ms("2026-11-02 09:00:35")), 0);
+    let (items, _) = rig.inbox(0);
+    assert!(items.iter().any(|i| i["type"] == "send" && i["text"] == "Sweep the inbox."));
+}
+
+#[test]
+fn the_cron_preview_lists_the_next_runs_or_says_what_is_wrong() {
+    let runs = cron_preview("0 9 * * mon-fri", ms("2026-11-06 10:00:00"), 3).unwrap();
+    assert_eq!(runs, vec![ms("2026-11-09 09:00:00"), ms("2026-11-10 09:00:00"), ms("2026-11-11 09:00:00")]);
+    let err = cron_preview("*/5 * * * *", ms("2026-11-06 10:00:00"), 3).unwrap_err();
+    assert!(err.message.contains("15 minutes"));
+    assert!(cron_preview("", ms("2026-11-06 10:00:00"), 3).is_err());
+}
+
+#[test]
+fn a_cron_from_a_bot_tool_call_is_checked_like_the_form() {
+    let root = temp("cron-tool");
+    let now = ms("2026-11-06 07:00:00");
+    let made = call(&root, "nimbus", "schedule_create", &serde_json::json!({
+        "title": "Standup", "prompt": "Summarise the board.", "schedule": { "kind": "cron", "expr": "0 9 * * mon-fri" }
+    }), now).unwrap();
+    assert_eq!(made["routine"]["when"], "Cron 0 9 * * mon-fri");
+    let err = call(&root, "nimbus", "schedule_create", &serde_json::json!({
+        "title": "Spam", "prompt": "Go.", "schedule": { "kind": "cron", "expr": "* * * * *" }
+    }), now).unwrap_err();
+    assert!(err.message.contains("15 minutes"));
+}
+
+// ---- run history ----------------------------------------------------------------------------------
+
+fn record(routine: &str, at: i64, result: RunResult, text: &str) -> RunRecord {
+    RunRecord { routine: routine.into(), bot: "nimbus".into(), at_ms: at, result, text: text.into(), message_id: None, reply_id: None }
+}
+
+#[test]
+fn run_history_keeps_the_last_ten_of_each_routine_newest_first() {
+    let root = temp("runs-cap");
+    for i in 0..13 {
+        record_run(&root, record("r-a", 1000 + i, RunResult::Ok, &format!("run {i}")));
+    }
+    record_run(&root, record("r-b", 5, RunResult::Skipped, "other routine"));
+    let runs = runs_of(&root, "nimbus").unwrap();
+    let a: Vec<&RunView> = runs.iter().filter(|r| r.routine_id == "r-a").collect();
+    assert_eq!(a.len(), MAX_RUNS_PER_ROUTINE);
+    assert_eq!(a[0].text, "run 12", "newest first");
+    assert_eq!(a.last().unwrap().text, "run 3", "the three oldest were dropped");
+    assert_eq!(runs.iter().filter(|r| r.routine_id == "r-b").count(), 1, "another routine keeps its own ten");
+    assert!(runs_of(&root, "someone-else").unwrap().is_empty(), "a bot sees only its own runs");
+}
+
+#[test]
+fn run_history_is_saved_to_its_own_file_and_read_back() {
+    let root = temp("runs-file");
+    let mut one = record("r-a", 42, RunResult::Failed, "The bot could not take it.");
+    one.message_id = Some("m-1".into());
+    record_run(&root, one);
+    let raw: Value = serde_json::from_str(&std::fs::read_to_string(runs_path(&root)).unwrap()).unwrap();
+    assert_eq!(raw["v"], 1);
+    assert_eq!(raw["runs"][0]["result"], "failed");
+    assert_eq!(raw["runs"][0]["atMs"], 42);
+    let back = runs_of(&root, "nimbus").unwrap();
+    assert_eq!(back[0].text, "The bot could not take it.");
+    assert_eq!(back[0].result, RunResult::Failed);
+    assert_eq!(back[0].reply_id, None);
+}
+
+#[test]
+fn a_damaged_history_file_does_not_stop_a_run_and_is_not_overwritten() {
+    let root = temp("runs-damaged");
+    std::fs::write(runs_path(&root), "{ not json").unwrap();
+    record_run(&root, record("r-a", 1, RunResult::Ok, "x"));
+    assert_eq!(std::fs::read_to_string(runs_path(&root)).unwrap(), "{ not json");
+    assert!(runs_of(&root, "nimbus").is_err());
+}
+
+#[test]
+fn a_run_sent_to_the_brain_is_recorded_and_its_reply_message_is_linked() {
+    let rig = Rig::new("runs-reply");
+    let made = create(&rig.root, "nimbus", &h6b_morning(), ms("2026-11-02 08:00:00")).unwrap();
+    assert_eq!(run_due(&rig.svc, ms("2026-11-02 09:00:05")), 1);
+    let waiting = runs_of(&rig.root, "nimbus").unwrap();
+    assert_eq!(waiting.len(), 1);
+    assert_eq!(waiting[0].routine_id, made.id);
+    assert_eq!(waiting[0].at_ms, ms("2026-11-02 09:00:05"));
+    assert_eq!(waiting[0].result, RunResult::Ok);
+    assert!(waiting[0].text.contains("Waiting for the reply"), "{}", waiting[0].text);
+    assert_eq!(waiting[0].reply_id, None);
+
+    // The brain answers the run: the history links to that reply message in the thread.
+    let run_id = pending_ids(&rig.root).remove(0);
+    rig.post(vec![serde_json::json!({"v":1,"type":"reply","conversationId":"app:dm:nimbus","inReplyTo":run_id,"segments":["Nothing new."]})]);
+    let reply_id = rig.thread().into_iter().find(|m| m.text == "Nothing new.").expect("the reply is in the thread").id;
+    let done = runs_of(&rig.root, "nimbus").unwrap();
+    assert_eq!(done.len(), 1, "the same run is updated, not added twice");
+    assert_eq!(done[0].reply_id.as_deref(), Some(reply_id.as_str()));
+    assert_eq!(done[0].result, RunResult::Ok);
+    assert!(done[0].text.contains("replied"), "{}", done[0].text);
+}
+
+#[test]
+fn a_brain_error_for_a_run_is_recorded_as_failed_with_a_plain_sentence_and_no_link() {
+    let rig = Rig::new("runs-error");
+    create(&rig.root, "nimbus", &h6b_morning(), ms("2026-11-02 08:00:00")).unwrap();
+    run_due(&rig.svc, ms("2026-11-02 09:00:05"));
+    let run_id = pending_ids(&rig.root).remove(0);
+    rig.post(vec![serde_json::json!({"v":1,"type":"error","code":"PROVIDER_DOWN","conversationId":"app:dm:nimbus","inReplyTo":run_id})]);
+    let runs = runs_of(&rig.root, "nimbus").unwrap();
+    assert_eq!(runs[0].result, RunResult::Failed);
+    assert!(runs[0].text.contains("not answering"), "{}", runs[0].text);
+    assert_eq!(runs[0].reply_id, None);
+}
+
+#[test]
+fn a_reply_that_beats_the_record_still_ends_up_on_it() {
+    let root = temp("runs-early");
+    record_reply(&root, "m-9", Some("m-10"));
+    assert!(runs_of(&root, "nimbus").unwrap().is_empty(), "no routine yet: nothing to show");
+    let mut late = record("r-a", 7, RunResult::Ok, "Sent. Waiting for the reply.");
+    late.message_id = Some("m-9".into());
+    record_run(&root, late);
+    let runs = runs_of(&root, "nimbus").unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].reply_id.as_deref(), Some("m-10"));
+    assert!(runs[0].text.contains("replied"));
+}
+
+#[test]
+fn refused_runs_are_recorded_as_skipped_with_the_reason() {
+    let rig = Rig::ready("runs-skipped");
+    let now = ms("2026-11-02 09:30:00");
+    rig.host.now.store(now, std::sync::atomic::Ordering::SeqCst);
+    for i in 0..20 {
+        rig.svc.send("nimbus", &format!("message {i}")).unwrap();
+    }
+    create(&rig.root, "nimbus", &h6b_morning(), ms("2026-11-02 08:00:00")).unwrap();
+    assert_eq!(run_due(&rig.svc, now), 1);
+    let runs = runs_of(&rig.root, "nimbus").unwrap();
+    assert_eq!(runs[0].result, RunResult::Skipped);
+    assert!(runs[0].text.contains("too many messages"), "{}", runs[0].text);
+    assert_eq!(runs[0].reply_id, None);
+}
+
+#[test]
+fn a_run_missed_while_the_app_was_closed_is_recorded_as_failed() {
+    let rig = Rig::new("runs-missed");
+    create(&rig.root, "nimbus", &h6b_morning(), ms("2026-11-02 08:00:00")).unwrap();
+    run_due(&rig.svc, ms("2026-11-02 09:30:00"));
+    let again = super::service::Service::new(rig.root.clone(), rig.host.clone(), rig.launcher.clone(), rig.brains.clone());
+    recover_pending(&again, ms("2026-11-02 10:00:00"));
+    let runs = runs_of(&rig.root, "nimbus").unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].result, RunResult::Failed);
+    assert!(runs[0].text.contains("app was closed"), "{}", runs[0].text);
+}
+
+#[test]
+fn run_now_is_recorded_too() {
+    let rig = Rig::new("runs-now");
+    let made = create(&rig.root, "nimbus", &h6b_morning(), ms("2026-11-02 08:00:00")).unwrap();
+    run_now(&rig.svc, &made.id, ms("2026-11-02 08:30:00")).unwrap();
+    let runs = runs_of(&rig.root, "nimbus").unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].at_ms, ms("2026-11-02 08:30:00"));
+    assert_eq!(runs[0].result, RunResult::Ok);
+}
+
+#[test]
+fn a_bot_that_could_not_take_the_run_gets_a_plain_reason() {
+    use super::service::BrainState;
+    let (result, text) = unsent_run(BrainState::DailyLimit);
+    assert_eq!(result, RunResult::Skipped);
+    assert!(text.contains("daily limit"), "{text}");
+    for state in [BrainState::NeedsKey, BrainState::NeedsNode, BrainState::MissingProgram, BrainState::Stopped, BrainState::Agents, BrainState::Off] {
+        let (result, text) = unsent_run(state);
+        assert_eq!(result, RunResult::Failed, "{state:?}");
+        assert!(!text.is_empty() && !text.contains("POTATO_"), "{state:?}: {text}");
+    }
+    assert!(unsent_run(BrainState::NeedsKey).1.contains("key"));
+    // Refusals: the reason is words, never a code.
+    assert_eq!(refused_run("POTATO_PAUSED").0, RunResult::Skipped);
+    assert!(refused_run("POTATO_OFF").1.contains("switched off"));
+    assert_eq!(refused_run("POTATO_BOT_NOT_FOUND").0, RunResult::Failed);
+    assert_eq!(refused_run("SOMETHING_NEW").0, RunResult::Failed);
+}

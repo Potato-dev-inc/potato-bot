@@ -1,0 +1,551 @@
+# Puppet Master: MCP server hub for the Potato sandbox guest. Written for this repo (no upstream code).
+# Python 3 stdlib only. Loaded by pm-sbx-control by path (no shebang, not run directly).
+"""Keeps one stdio child per MCP server and forwards initialize, tools/list and tools/call to it.
+
+Rules:
+- One child per server, started as user pm (when the control server runs as root) with DISPLAY=:99 and a fixed
+  PATH. Commands are exec'd directly, never through a shell.
+- Each child: initialize, notifications/initialized, tools/list at start. Calls time out after call_timeout seconds
+  and the hung child is killed. A child that dies gets one restart; a second death leaves the server failed until
+  the config is replaced.
+- Child stdout is read in a thread; one line is capped at 4 MB (oversize kills the child). Child stderr goes to
+  <log_dir>/<name>.stderr.log (mode 0600). Nothing logs argv values or env values.
+- The built-in "computer" server is always present and cannot be replaced by the config.
+- User servers are saved to config_path (root-only, 0600) and reloaded at start.
+"""
+
+import json
+import os
+import queue
+import re
+import subprocess
+import sys
+import threading
+import time
+from typing import NamedTuple
+
+PROTOCOL_VERSION = "2025-06-18"
+COMPUTER_NAME = "computer"
+NAME_RE = re.compile(r"[a-z0-9_-]{1,32}")
+ENV_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
+COMMAND_RE = re.compile(r"[A-Za-z0-9._/+:\\-]{1,256}")
+BLOCKED_ENV_KEYS = frozenset(("LD_PRELOAD", "LD_LIBRARY_PATH", "PYTHONPATH", "PATH"))
+MAX_USER_SERVERS = 16
+MAX_ARGS = 64
+MAX_ARG_LEN = 4096
+MAX_ENV_KEYS = 64
+MAX_ENV_VALUE_LEN = 4096
+MAX_OUTPUT_BYTES = 4 * 1024 * 1024
+MAX_TOOLS = 256
+MAX_TOOL_PAGES = 10
+CALL_TIMEOUT_SEC = 60
+START_TIMEOUT_SEC = 30
+WRITE_TIMEOUT_SEC = 10
+KILL_WAIT_SEC = 5
+CLOSE_WAIT_SEC = 2
+MAX_RESTARTS = 1
+DEFAULT_DISPLAY = ":99"
+CHILD_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+CHILD_PINS = {
+    "HOME": "/home/pm",
+    "LANG": "C.UTF-8",
+    "XDG_RUNTIME_DIR": "/tmp/pm-runtime",
+    "GDK_BACKEND": "x11",
+    "QT_QPA_PLATFORM": "xcb",
+}
+_EOF = object()
+
+
+class InvalidRequest(Exception):
+    """The request names something that is not allowed (HTTP 400)."""
+
+
+class ServerUnavailable(RuntimeError):
+    """A call cannot run right now (HTTP 500). The message never carries env values."""
+
+
+class _Timeout(Exception):
+    pass
+
+
+class _Gone(Exception):
+    pass
+
+
+class _Failed(Exception):
+    pass
+
+
+class ServerSpec(NamedTuple):
+    name: str
+    argv: tuple
+    env: dict
+
+
+def validate_servers(raw):
+    """Validate the user server list. Returns ServerSpec items or raises InvalidRequest."""
+    if not isinstance(raw, list) or len(raw) > MAX_USER_SERVERS:
+        raise InvalidRequest(f"servers must be a list of at most {MAX_USER_SERVERS} entries")
+    seen = set()
+    specs = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise InvalidRequest("each server must be an object")
+        name = entry.get("name")
+        if not isinstance(name, str) or NAME_RE.fullmatch(name) is None:
+            raise InvalidRequest("server names must match ^[a-z0-9_-]{1,32}$")
+        if name == COMPUTER_NAME:
+            raise InvalidRequest("the computer server is built in and cannot be replaced")
+        if name in seen:
+            raise InvalidRequest("server names must be unique")
+        seen.add(name)
+        command = entry.get("command")
+        if not isinstance(command, str) or COMMAND_RE.fullmatch(command) is None:
+            raise InvalidRequest("command must be a program name or an absolute path without spaces")
+        args = entry.get("args", [])
+        if (
+            not isinstance(args, list)
+            or len(args) > MAX_ARGS
+            or any(not isinstance(item, str) or len(item) > MAX_ARG_LEN or "\0" in item for item in args)
+        ):
+            raise InvalidRequest("args must be a list of strings")
+        env = entry.get("env", {})
+        if not isinstance(env, dict) or len(env) > MAX_ENV_KEYS:
+            raise InvalidRequest("env must be an object of strings")
+        clean_env = {}
+        for key, value in env.items():
+            if not isinstance(key, str) or ENV_KEY_RE.fullmatch(key) is None:
+                raise InvalidRequest("env keys must be plain names")
+            if key in BLOCKED_ENV_KEYS:
+                raise InvalidRequest(f"env key {key} is not allowed")
+            if not isinstance(value, str) or len(value) > MAX_ENV_VALUE_LEN or "\0" in value:
+                raise InvalidRequest("env values must be strings without NUL")
+            clean_env[key] = value
+        specs.append(ServerSpec(name, (command, *args), clean_env))
+    return specs
+
+
+def _pm_ids(run_as):
+    """(uid, gid) of run_as when this process is root and run_as is set; None otherwise."""
+    if not run_as or not hasattr(os, "geteuid") or os.geteuid() != 0:
+        return None
+    import pwd
+
+    entry = pwd.getpwnam(run_as)
+    return entry.pw_uid, entry.pw_gid
+
+
+def _open_log(path, ids):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    if ids is not None:
+        os.fchown(fd, ids[0], ids[1])
+    return os.fdopen(fd, "ab")
+
+
+def load_config(path):
+    """User servers from the config file. A missing file means none; a broken file is ignored with a warning."""
+    if not path or not os.path.exists(path):
+        return []
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+        raw = data.get("servers") if isinstance(data, dict) else None
+        return validate_servers(raw if raw is not None else [])
+    except (OSError, ValueError, InvalidRequest) as error:
+        print(f"pm-sbx-mcp-hub: ignoring the MCP config file ({type(error).__name__})", file=sys.stderr)
+        return []
+
+
+def save_config(path, specs):
+    data = {
+        "servers": [
+            {"name": spec.name, "command": spec.argv[0], "args": list(spec.argv[1:]), "env": spec.env}
+            for spec in specs
+        ]
+    }
+    directory = os.path.dirname(path)
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    temp = path + ".tmp"
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(data, handle, separators=(",", ":"))
+    os.chmod(temp, 0o600)
+    os.replace(temp, path)
+
+
+class _Child:
+    """One running server process: a writer, a reader thread and an inbox of parsed messages."""
+
+    def __init__(self, argv, env, stderr_path, ids, on_exit):
+        self._on_exit = on_exit
+        self._next_id = 0
+        self.inbox = queue.Queue()
+        stderr = _open_log(stderr_path, ids)
+        # Another user also means no supplementary groups of ours (root's, when the secret hub runs this).
+        kwargs = {} if ids is None else {"user": ids[0], "group": ids[1], "extra_groups": []}
+        try:
+            self.proc = subprocess.Popen(
+                list(argv), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr, env=env, **kwargs
+            )
+        finally:
+            stderr.close()
+        threading.Thread(target=self._read_loop, daemon=True).start()
+
+    def _read_loop(self):
+        reason = "exited"
+        while True:
+            try:
+                line = self.proc.stdout.readline(MAX_OUTPUT_BYTES + 1)
+            except (OSError, ValueError):
+                line = b""
+            if not line:
+                break
+            if len(line) > MAX_OUTPUT_BYTES:
+                reason = "sent output that was too large"
+                self.kill()
+                break
+            try:
+                message = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(message, dict):
+                self.inbox.put(message)
+        self.inbox.put(_EOF)
+        self._on_exit(self, reason)
+
+    def send(self, message):
+        data = (json.dumps(message, separators=(",", ":")) + "\n").encode("utf-8")
+        failures = []
+
+        def write():
+            try:
+                self.proc.stdin.write(data)
+                self.proc.stdin.flush()
+            except (OSError, ValueError) as error:
+                failures.append(error)
+
+        writer = threading.Thread(target=write, daemon=True)
+        writer.start()
+        writer.join(WRITE_TIMEOUT_SEC)
+        if writer.is_alive():
+            raise _Timeout()
+        if failures:
+            raise _Gone()
+
+    def notify(self, method, params):
+        self.send({"jsonrpc": "2.0", "method": method, "params": params})
+
+    def request(self, method, params, timeout):
+        self._next_id += 1
+        request_id = self._next_id
+        self.send({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
+        deadline = time.monotonic() + timeout
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise _Timeout()
+            try:
+                message = self.inbox.get(timeout=left)
+            except queue.Empty:
+                raise _Timeout() from None
+            if message is _EOF:
+                raise _Gone()
+            if "method" in message and "id" in message:
+                self.send({"jsonrpc": "2.0", "id": message["id"],
+                           "error": {"code": -32601, "message": "method not found"}})
+                continue
+            if message.get("id") == request_id:
+                return message
+
+    def kill(self):
+        try:
+            self.proc.kill()
+        except OSError:
+            pass
+        try:
+            self.proc.wait(timeout=KILL_WAIT_SEC)
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    def close(self):
+        try:
+            self.proc.stdin.close()
+            self.proc.wait(timeout=CLOSE_WAIT_SEC)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            self.kill()
+
+
+def _describe(error):
+    if isinstance(error, _Timeout):
+        return "timed out while starting"
+    if isinstance(error, _Gone):
+        return "exited while starting"
+    if isinstance(error, _Failed):
+        return str(error)
+    if isinstance(error, OSError):
+        return "could not be started"
+    return "failed to start"
+
+
+class _Server:
+    def __init__(self, hub, spec):
+        self.hub = hub
+        self.spec = spec
+        self.lock = threading.Lock()
+        self.call_lock = threading.Lock()
+        self.ready = threading.Event()
+        self.status = "starting"
+        self.error = ""
+        self.tools = []
+        self.child = None
+        self.crashes = 0
+        self.generation = 0
+        self.stopped = False
+
+    def start(self):
+        with self.lock:
+            self.generation += 1
+            generation = self.generation
+            self.status = "starting"
+            self.error = ""
+            self.ready.clear()
+        threading.Thread(target=self._bring_up, args=(generation,), daemon=True).start()
+
+    def _bring_up(self, generation):
+        child = None
+        try:
+            env = self.hub.child_env(self.spec)
+            child = _Child(self.spec.argv, env, self.hub.log_path(self.spec.name), self.hub.ids_for(self.spec.name),
+                           self._on_exit)
+            with self.lock:
+                if self.stopped or generation != self.generation:
+                    child.kill()
+                    return
+                self.child = child
+            reply = child.request(
+                "initialize",
+                {"protocolVersion": PROTOCOL_VERSION, "capabilities": {},
+                 "clientInfo": {"name": "pm-sbx-mcp-hub", "version": "1.0.0"}},
+                self.hub.start_timeout,
+            )
+            if "result" not in reply:
+                raise _Failed("refused initialize")
+            child.notify("notifications/initialized", {})
+            tools = self._list_tools(child)
+            with self.lock:
+                if generation == self.generation and self.child is child and not self.stopped:
+                    self.status = "ready"
+                    self.tools = tools
+                    self.error = ""
+        except Exception as error:  # noqa: BLE001 - every start failure becomes a status, never a crash
+            with self.lock:
+                if generation == self.generation and not self.stopped and (self.child is None or self.child is child):
+                    self.status = "failed"
+                    self.error = _describe(error)
+                    self.tools = []
+                    self.child = None
+                    self.ready.set()
+            if child is not None:
+                child.kill()
+        finally:
+            with self.lock:
+                if generation == self.generation:
+                    self.ready.set()
+
+    def _list_tools(self, child):
+        tools = []
+        cursor = None
+        for _ in range(MAX_TOOL_PAGES):
+            params = {} if cursor is None else {"cursor": cursor}
+            reply = child.request("tools/list", params, self.hub.start_timeout)
+            result = reply.get("result")
+            if not isinstance(result, dict) or not isinstance(result.get("tools"), list):
+                raise _Failed("tools/list gave no tools")
+            for tool in result["tools"]:
+                if isinstance(tool, dict) and isinstance(tool.get("name"), str):
+                    tools.append({
+                        "name": tool["name"],
+                        "description": tool.get("description") if isinstance(tool.get("description"), str) else "",
+                        "inputSchema": tool.get("inputSchema") if isinstance(tool.get("inputSchema"), dict)
+                        else {"type": "object"},
+                    })
+            if len(tools) > MAX_TOOLS:
+                raise _Failed("tools/list gave too many tools")
+            cursor = result.get("nextCursor")
+            if not isinstance(cursor, str) or not cursor:
+                return tools
+        raise _Failed("tools/list has too many pages")
+
+    def _on_exit(self, child, reason):
+        with self.lock:
+            if self.stopped or self.child is not child:
+                return
+            self.child = None
+            self.tools = []
+            self.crashes += 1
+            restart = self.crashes <= MAX_RESTARTS
+            if not restart:
+                self.status = "failed"
+                self.error = f"server {reason} and was not restarted"
+                self.ready.set()
+        if restart:
+            self.start()
+
+    def _abandon(self, child, reason):
+        """A hung or broken child: count it as a crash (one restart), then kill it."""
+        self._on_exit(child, reason)
+        child.kill()
+
+    def describe(self):
+        with self.lock:
+            return {
+                "name": self.spec.name,
+                "status": self.status,
+                "error": self.error,
+                "tools": [dict(tool) for tool in self.tools],
+            }
+
+    def call(self, tool, arguments):
+        if not self.ready.is_set():
+            self.ready.wait(self.hub.start_timeout + 5)
+        with self.lock:
+            status, error, tools, child = self.status, self.error, self.tools, self.child
+        if status != "ready" or child is None:
+            detail = error or "not ready yet"
+            raise ServerUnavailable(f"server {self.spec.name} is not running ({detail})")
+        if tool not in {entry["name"] for entry in tools}:
+            raise InvalidRequest("unknown tool for this server")
+        if not self.call_lock.acquire(timeout=self.hub.call_timeout + 5):
+            raise ServerUnavailable(f"server {self.spec.name} is busy")
+        try:
+            try:
+                reply = child.request("tools/call", {"name": tool, "arguments": arguments}, self.hub.call_timeout)
+            except _Timeout:
+                self._abandon(child, "timed out a call")
+                raise ServerUnavailable("the tool call timed out") from None
+            except _Gone:
+                raise ServerUnavailable("the server exited during the call") from None
+            except OSError:
+                raise ServerUnavailable("the server could not take the call") from None
+        finally:
+            self.call_lock.release()
+        if "error" in reply:
+            message = reply["error"].get("message") if isinstance(reply["error"], dict) else ""
+            text = message if isinstance(message, str) else "the tool call failed"
+            return {"content": [{"type": "text", "text": text[:300]}], "isError": True}
+        result = reply.get("result")
+        if not isinstance(result, dict):
+            raise ServerUnavailable("the server gave an invalid result")
+        content = result.get("content")
+        return {"content": content if isinstance(content, list) else [], "isError": result.get("isError") is True}
+
+    def stop(self):
+        with self.lock:
+            self.stopped = True
+            child = self.child
+            self.child = None
+            self.status = "failed"
+            self.error = "stopped"
+            self.ready.set()
+        if child is not None:
+            child.close()
+
+
+class McpHub:
+    """The server set. Built with start() and replaced with replace_user_servers(); close() reaps every child."""
+
+    def __init__(self, *, display=DEFAULT_DISPLAY, log_dir, config_path, computer_script, run_as=None,
+                 call_timeout=CALL_TIMEOUT_SEC, start_timeout=START_TIMEOUT_SEC, identity=None):
+        # identity(name) -> ((uid, gid), home): each server runs as its own user with its own home (pm-sbx-secret-hub).
+        self.identity = identity
+        self.display = display
+        self.log_dir = log_dir
+        self.config_path = config_path
+        self.run_as = run_as
+        self.ids = _pm_ids(run_as)
+        self.call_timeout = call_timeout
+        self.start_timeout = start_timeout
+        self._lock = threading.Lock()
+        computer_spec = ServerSpec(COMPUTER_NAME, (sys.executable, "-I", computer_script), {})
+        self._computer = _Server(self, computer_spec)
+        self._user = {}
+
+    def start(self):
+        """Start the built-in server and every saved user server. Returns at once; each child starts in a thread."""
+        self._computer.start()
+        self._install(load_config(self.config_path))
+
+    def _install(self, specs):
+        servers = {spec.name: _Server(self, spec) for spec in specs}
+        with self._lock:
+            old = list(self._user.values())
+            self._user = servers
+        for server in old:
+            server.stop()
+        for server in servers.values():
+            server.start()
+
+    def replace_user_servers(self, raw):
+        specs = validate_servers(raw)
+        if any(spec.env for spec in specs):
+            # This process runs as the bot's own user, so a value held here could be read by the bot. A server that needs one
+            # is owned by pm-sbx-secret-hub (root), which the host talks to over its own pipe.
+            raise InvalidRequest("env values are not accepted here; the app keeps servers with keys in the secret hub")
+        try:
+            save_config(self.config_path, specs)
+        except OSError:
+            raise ServerUnavailable("the MCP config could not be saved") from None
+        self._install(specs)
+        return self.snapshot()
+
+    def snapshot(self):
+        with self._lock:
+            servers = [self._computer, *self._user.values()]
+        return {"servers": [server.describe() for server in servers]}
+
+    def call(self, name, tool, arguments):
+        if not isinstance(name, str) or NAME_RE.fullmatch(name) is None:
+            raise InvalidRequest("server names must match ^[a-z0-9_-]{1,32}$")
+        if not isinstance(tool, str) or not tool or len(tool) > 128:
+            raise InvalidRequest("tool must be a name of at most 128 characters")
+        if not isinstance(arguments, dict):
+            raise InvalidRequest("arguments must be an object")
+        if name == COMPUTER_NAME:
+            server = self._computer
+        else:
+            with self._lock:
+                server = self._user.get(name)
+        if server is None:
+            raise InvalidRequest("unknown server")
+        return server.call(tool, arguments)
+
+    def ids_for(self, name):
+        return self.ids if self.identity is None else self.identity(name)[0]
+
+    def child_env(self, spec):
+        env = {"PATH": CHILD_PATH, "DISPLAY": self.display}
+        if os.name == "nt" and os.environ.get("SYSTEMROOT"):
+            env["SYSTEMROOT"] = os.environ["SYSTEMROOT"]
+        env.update(spec.env)
+        env.update(CHILD_PINS)
+        env["DISPLAY"] = self.display
+        env["PATH"] = CHILD_PATH
+        if self.identity is not None:
+            home = self.identity(spec.name)[1]
+            env["HOME"] = home
+            env["TMPDIR"] = os.path.join(home, "tmp")
+            if not self.display:
+                del env["DISPLAY"]
+        return env
+
+    def log_path(self, name):
+        return os.path.join(self.log_dir, f"{name}.stderr.log")
+
+    def close(self):
+        """Stop every child and reap it. Safe to call twice."""
+        with self._lock:
+            servers = [self._computer, *self._user.values()]
+            self._user = {}
+        for server in servers:
+            server.stop()
