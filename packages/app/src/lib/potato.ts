@@ -416,7 +416,7 @@ export const COPY = {
   limit: (name: string, cents: number) => `${name} has used today's limit (${dollars(cents)}). Raise it in Settings or wait until tomorrow.`,
   stopped: (name: string) => `${name}'s brain stopped.`,
   noKey: (name: string) => `Add this bot's model key in Settings to talk with ${name}.`,
-  needsNode: 'Potato Bot needs Node.js 20 or newer.',
+  needsNode: "Potato Bot's built-in Node.js is missing, so the bot cannot start. Reinstall Potato Bot (or install Node.js 20 or newer), then press Check again.",
   agentsOnly: 'Mood and personas need the DeepSeek or OpenCode Go brain.',
   missingProgram: "Potato Bot's brain is missing from this install. Reinstall Puppet Master to get it back.",
 };

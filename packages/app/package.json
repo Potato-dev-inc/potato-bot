@@ -1,12 +1,12 @@
 {
   "name": "@puppet-master/app",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "private": true,
   "type": "module",
   "scripts": {
     "predev": "node ../../scripts/ensure-workspace-built.mjs",
     "dev": "vite",
-    "build": "tsc -p tsconfig.json && vite build && node ../../scripts/ensure-tauri-resources.mjs && node ../../scripts/check-release-bundle.mjs",
+    "build": "tsc -p tsconfig.json && vite build && node ../../scripts/ensure-tauri-resources.mjs && node ../../scripts/fetch-node.mjs && node ../../scripts/check-release-bundle.mjs",
     "preview": "vite preview",
     "tauri": "tauri",
     "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile ../../node_modules/.cache/pm/tsc-app.tsbuildinfo",

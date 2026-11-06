@@ -14,6 +14,7 @@ import { Btn, FieldSelect, Note, SettingBlock, SettingRow } from '../settings-ui
 import { LabsSwitch } from '../LabsSwitch';
 import { makeSandboxRows } from '../sandbox/SandboxRows';
 import { makePotatoVoiceRows } from './PotatoVoiceRows';
+import { makeUpdateRows } from './UpdateRow';
 import { makePotatoSubPageRows } from '../potato/PotatoSubPages';
 import { RecentlyDeletedRow } from '../potato/RecentlyDeleted';
 import { usePotatoSettings } from '../potato/usePotatoSettings';
@@ -218,4 +219,4 @@ export function makePotatoRows(transport: PotatoTransport = tauriPotatoTransport
 }
 
 /** Potato Bot's rows, then the sandbox's (its switch is in General > Labs; its other rows show only while that is on). */
-export const potatoRows: RowDef[] = [...makePotatoRows(), ...makePotatoVoiceRows(), ...makeSandboxRows()];
+export const potatoRows: RowDef[] = [...makePotatoRows(), ...makePotatoVoiceRows(), ...makeSandboxRows(), ...makeUpdateRows()];

@@ -137,6 +137,7 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppState::new())
         .manage(commands::SessionChatState::default())
         .invoke_handler(tauri::generate_handler![
@@ -247,6 +248,9 @@ pub fn run() {
             commands::potato_helper_start,
             commands::potato_hold_state,
             commands::potato_install_node,
+            commands::app_update_check,
+            commands::app_update_busy,
+            commands::app_update_install,
             commands::potato_log,
             commands::potato_bot_archive,
             commands::potato_mark_read,
@@ -437,7 +441,10 @@ pub fn run() {
             // The sandbox host builds its manager (and freezes where the guest files are) as soon as the saved settings
             // are applied, so it must know the app handle first. 1.0.1 set it later and found no files on a clean PC.
             potato::sandbox_host::set_app(app.handle().clone());
+            #[cfg(not(test))]
+            potato::sidecar::set_bundled_node(potato::resource_dirs::installed(app.handle(), "node", "node.exe"));
             potato::sandbox_host::startup_diag();
+            commands::startup_probe(app.handle().clone());
             #[cfg(not(test))]
             settings_store::load_saved_public_settings(app.handle());
             // With the Labs switch on (known now), each conversation that came back is a chat pane in the pane list.

@@ -62,6 +62,7 @@ packages/app/src-tauri/resources/bin/
 packages/app/src-tauri/resources/potato-brain/
 packages/app/src-tauri/resources/potato-sandbox/
 packages/app/src-tauri/resources/legal/
+packages/app/src-tauri/resources/node/
 plan.md
 .codex
 .docs
@@ -73,3 +74,7 @@ packages/app/src-tauri/pm-dev.local.json
 # end-to-end tests (packages/e2e): results, videos, build output
 e2e-results/
 packages/e2e/.build/
+
+# Signing keys never live in the repository.
+*.key
+updater-key*

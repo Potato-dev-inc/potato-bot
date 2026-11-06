@@ -1,6 +1,6 @@
 [package]
 name = "puppet_master_app"
-version = "1.0.2"
+version = "1.0.3"
 description = "Potato Bot desktop app"
 authors = ["Potato-dev-inc"]
 license = "MIT"
@@ -20,6 +20,8 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-store = "2"
+# One-click updates from the GitHub release (signed MSI, checked against the public key in tauri.conf.json).
+tauri-plugin-updater = "2"
 tauri-plugin-single-instance = "2"
 # "Start Puppet Master when I sign in": Run entry on Windows, Launch Agent on macOS. Official Tauri
 # plugin, MIT OR Apache-2.0 (its auto-launch dependency is MIT). Built against tauri 2.12.

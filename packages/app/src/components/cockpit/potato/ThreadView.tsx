@@ -275,10 +275,6 @@ export function ThreadView(props: ThreadViewProps) {
           await transport.startBot(bot.id);
           onChanged();
         }}
-        onInstallNode={async () => {
-          await transport.installNode();
-          onChanged();
-        }}
         onOpenSettings={onOpenSettings}
       />
 

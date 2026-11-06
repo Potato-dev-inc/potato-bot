@@ -11,12 +11,13 @@ export interface BrainStateCardProps {
   lastError: string | null;
   limitCents: number;
   onStart: () => Promise<void>;
-  onInstallNode: () => Promise<void>;
+  /** No longer used: Node.js comes inside the app. Kept so older callers still compile. */
+  onInstallNode?: () => Promise<void>;
   /** Kept for callers; the buttons open Settings through the opener the cockpit registered (see openSettingsAt). */
   onOpenSettings?: () => void;
 }
 
-export function BrainStateCard({ name, state, lastError, limitCents, onStart, onInstallNode }: BrainStateCardProps) {
+export function BrainStateCard({ name, state, lastError, limitCents, onStart }: BrainStateCardProps) {
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
 
@@ -42,7 +43,8 @@ export function BrainStateCard({ name, state, lastError, limitCents, onStart, on
       break;
     case 'needs_node':
       text = COPY.needsNode;
-      action = { label: 'Install Node.js', run: () => void run(onInstallNode) };
+      // Node.js ships inside the app, so this is a damaged install: one instruction, and a button that looks again.
+      action = { label: 'Check again', run: () => void run(onStart) };
       break;
     case 'daily_limit':
       text = COPY.limit(name, limitCents);

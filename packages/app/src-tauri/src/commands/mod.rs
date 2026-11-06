@@ -8,6 +8,7 @@ mod acp_overlay;
 mod acp_remove;
 mod agents;
 mod app;
+mod app_update;
 mod cockpit;
 mod chat_export;
 mod companion;
@@ -36,6 +37,7 @@ mod session_chat;
 mod terminal_chat_prompt;
 
 pub use acp_chat::*;
+pub use app_update::*;
 pub use acp_conversations::*;
 pub use acp_install::*;
 pub use acp_lane::*;

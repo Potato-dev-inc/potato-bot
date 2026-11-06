@@ -16,6 +16,7 @@ import { PotatoPage } from './components/cockpit/potato/PotatoPage';
 import { totalUnread } from './components/cockpit/potato/model';
 import { SettingsView } from './components/cockpit/SettingsView';
 import { PotatoPaneView } from './components/cockpit/PotatoPaneView';
+import { AppUpdateHost } from './components/updates/AppUpdateHost';
 import './styles/cockpit.css';
 
 type View = 'potato' | 'settings' | 'pane';
@@ -176,6 +177,7 @@ export default function CockpitApp() {
         )}
       </main>
       <Toasts toasts={c.toasts} />
+      <AppUpdateHost />
     </div>
   );
 }

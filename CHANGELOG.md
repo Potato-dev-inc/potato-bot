@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.3
+
+- Node.js is now inside the app (the official 22.20.0 win-x64 build). Nobody has to install Node any more, and the "Install Node.js" button is gone.
+- Fixed: after installing Node the app still said it could not be used and asked again. A running app keeps the PATH it started with, so a Node installed later was never seen. The app now uses its own Node first and, if it ever needs a system one, reads the current PATH from Windows and the usual install folders.
+- New: one-click updates. A quiet "Update available" notice (and Settings > Potato Bot > Updates > Check for updates). Update downloads the signed installer, checks its signature, stops the bots and the bot's computer cleanly, installs over the old version and restarts. Your bots, settings and the bot's computer are kept. If a bot's job is running you are warned first. Nothing installs until you press Update, and a failed update leaves the old version working.
+
 ## 1.0.2
 
 - Fixed: Set up said "The sandbox files that ship with the app are missing." on a PC that is not a development machine. The app built its sandbox manager at start-up from the saved settings, before it had been given its app handle, so it could not find its own install folder and kept "no files" for the whole run (a development PC hid this by finding the source tree). The handle is now set first, the folder lookup waits for it, and release builds no longer look in the source tree at all.

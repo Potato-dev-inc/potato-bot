@@ -64,8 +64,10 @@ for (const f of readdirSync(join(res, 'potato-sandbox/recipes')).filter((n) => n
     problems.push(`recipe does not parse: ${f}`);
   }
 }
+// Node.js, so nobody has to install it (fetch-node.mjs puts it here).
+need('resources/node/node.exe');
 // The licences.
-for (const f of ['LICENSE', 'THIRD-PARTY-NOTICES.md', 'LICENSES/MIT-desktoplab.txt', 'LICENSES/MPL-2.0.txt', 'LICENSES/Apache-2.0.txt']) need(`resources/legal/${f}`);
+for (const f of ['LICENSES/Node.txt', 'LICENSE', 'THIRD-PARTY-NOTICES.md', 'LICENSES/MIT-desktoplab.txt', 'LICENSES/MPL-2.0.txt', 'LICENSES/Apache-2.0.txt']) need(`resources/legal/${f}`);
 
 if (problems.length) {
   console.error('[check-release-bundle] the installer would be missing files:\n  ' + problems.join('\n  '));

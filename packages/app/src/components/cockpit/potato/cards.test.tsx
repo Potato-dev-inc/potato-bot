@@ -141,19 +141,20 @@ describe('BrainStateCard', () => {
     registerSettingsOpener(null);
   });
 
-  it('asks for Node.js 20 and the Install Node.js button runs the install', async () => {
-    const onInstallNode = vi.fn(() => Promise.resolve());
-    show({ state: 'needs_node', onInstallNode });
-    expect(host.textContent).toContain('Potato Bot needs Node.js 20 or newer.');
-    await act(async () => buttonByText(host, 'Install Node.js')!.click());
-    expect(onInstallNode).toHaveBeenCalledTimes(1);
+  it('says the built-in Node.js is missing once, and Check again starts the bot again (no install button)', async () => {
+    const onStart = vi.fn(() => Promise.resolve());
+    show({ state: 'needs_node', onStart });
+    expect(host.textContent).toContain("built-in Node.js is missing");
+    expect(buttonByText(host, 'Install Node.js')).toBeUndefined();
+    await act(async () => buttonByText(host, 'Check again')!.click());
+    expect(onStart).toHaveBeenCalledTimes(1);
   });
 
-  it('says why the install did not start, in the app\'s own words', async () => {
-    show({ state: 'needs_node', onInstallNode: () => Promise.reject(new Error('INSTALL_UNAVAILABLE: This PC cannot install Node.js from here (winget is missing). Download it from its website.')) });
-    await act(async () => buttonByText(host, 'Install Node.js')!.click());
-    expect(host.textContent).toContain('This PC cannot install Node.js from here');
-    expect(buttonByText(host, 'Install Node.js')!.disabled).toBe(false);
+  it('says why a new try did not work, in the apps own words', async () => {
+    show({ state: 'needs_node', onStart: () => Promise.reject(new Error('NODE_MISSING: Still no Node.js.')) });
+    await act(async () => buttonByText(host, 'Check again')!.click());
+    expect(host.textContent).toContain('Still no Node.js.');
+    expect(buttonByText(host, 'Check again')!.disabled).toBe(false);
   });
 
   it('says the day limit with the dollars', () => {

@@ -1,8 +1,15 @@
-/** GitHub releases used for desktop update checks. */
-export const RELEASE_REPO = 'Potato-dev-inc/potato-bot';
-export const RELEASES_LATEST_URL = `https://github.com/${RELEASE_REPO}/releases/latest`;
-export const RELEASES_API_URL = `https://api.github.com/repos/${RELEASE_REPO}/releases/latest`;
+// One-click update. The app asks its own backend (Tauri updater: a signed MSI named in the GitHub release's latest.json);
+// this file is the page's side: what the backend answers, how to read versions, and plain words for what went wrong.
+import { invoke } from '@tauri-apps/api/core';
 
+/** What the backend found when it checked. `null` means this version is the newest. */
+export interface UpdateOffer {
+  currentVersion: string;
+  version: string;
+  notes: string | null;
+}
+
+/** Kept for the Settings panel's props. */
 export interface UpdateCheckResult {
   currentVersion: string;
   latestVersion: string | null;
@@ -11,6 +18,21 @@ export interface UpdateCheckResult {
   releaseNotes: string | null;
   error: string | null;
 }
+
+export interface UpdateTransport {
+  /** Reads the release's latest.json. Rejects with a plain sentence (no network, nothing found). */
+  check(): Promise<UpdateOffer | null>;
+  /** Ids of the bots whose job is running now. */
+  busy(): Promise<string[]>;
+  /** Downloads, checks the signature, stops the bots and the sandbox cleanly, installs. Rejects with a plain sentence. */
+  install(confirmRunning: boolean): Promise<void>;
+}
+
+export const tauriUpdateTransport: UpdateTransport = {
+  check: () => invoke<UpdateOffer | null>('app_update_check'),
+  busy: async () => (await invoke<{ bots: string[] }>('app_update_busy')).bots,
+  install: (confirmRunning) => invoke<void>('app_update_install', { confirmRunning }),
+};
 
 export function normalizeVersion(version: string): string {
   return version.trim().replace(/^v/i, '');
@@ -38,49 +60,18 @@ export function isVersionNewer(latest: string, current: string): boolean {
   return false;
 }
 
-interface GitHubRelease {
-  tag_name?: string;
-  html_url?: string;
-  body?: string | null;
+const FALLBACK = 'The update could not be installed. Your current version keeps working.';
+
+/** A sentence for the page. Backend errors already are sentences; anything else (a code, a stack) becomes the fallback. */
+export function plainUpdateError(error: unknown): string {
+  const raw = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+  const text = raw.replace(/^[A-Z_]{3,}:\s*/, '').trim();
+  if (!text || /[\\/]|Error:|at \w/.test(text)) return FALLBACK;
+  return text;
 }
 
-export async function checkForAppUpdate(currentVersion: string): Promise<UpdateCheckResult> {
-  const base: UpdateCheckResult = {
-    currentVersion,
-    latestVersion: null,
-    updateAvailable: false,
-    releaseUrl: RELEASES_LATEST_URL,
-    releaseNotes: null,
-    error: null,
-  };
-
-  try {
-    const response = await fetch(RELEASES_API_URL, {
-      headers: { Accept: 'application/vnd.github+json' },
-    });
-    if (!response.ok) {
-      return {
-        ...base,
-        error: `Update check failed (${response.status})`,
-      };
-    }
-    const payload = (await response.json()) as GitHubRelease;
-    const latestVersion = payload.tag_name ? normalizeVersion(payload.tag_name) : null;
-    if (!latestVersion) {
-      return { ...base, error: 'Release response did not include a version tag' };
-    }
-    return {
-      currentVersion,
-      latestVersion,
-      updateAvailable: isVersionNewer(latestVersion, currentVersion),
-      releaseUrl: payload.html_url?.trim() || RELEASES_LATEST_URL,
-      releaseNotes: payload.body?.trim() || null,
-      error: null,
-    };
-  } catch (error) {
-    return {
-      ...base,
-      error: error instanceof Error ? error.message : String(error),
-    };
-  }
+/** The sentence when a job is running: the person is told before anything starts. */
+export function runningJobWarning(bots: string[]): string {
+  const who = bots.length === 1 ? 'A bot is' : `${bots.length} bots are`;
+  return `${who} working on a job. Updating stops it for a moment: it is saved and carries on after Potato Bot restarts.`;
 }

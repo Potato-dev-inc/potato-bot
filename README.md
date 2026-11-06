@@ -25,8 +25,7 @@ Not in this version: anything that is not in the list above.
 ## Requirements
 
 - Windows 10 or 11, 64-bit.
-- **Node.js 20 or newer** on your PC. The bot's brain is a Node program; the app does not ship Node.
-  If Node is missing the app shows an "Install Node.js" button, which runs `winget` in a visible window.
+- Nothing else to install for the bot's brain: the installer includes its own Node.js. (Tools you connect yourself, such as a coding agent you already run, may need their own Node.js or npm.)
 - **WSL 2**, only for the bot's computer. The app can run without it, but the bot then has no computer.
   The first set-up installs an Ubuntu 24.04 distro for the bot with `wsl --install`, then builds the
   desktop inside it from recipes. This downloads Ubuntu and many packages, so it needs an internet
@@ -36,12 +35,14 @@ Not in this version: anything that is not in the list above.
 
 ## Install
 
-1. Download `Potato Bot_1.0.0_x64_en-US.msi` from the Releases page of this repository.
+1. Download `Potato-Bot_1.0.3_x64_en-US.msi` from the Releases page of this repository.
 2. Double-click it and follow the installer.
 3. The installer is **not code-signed**, so Windows SmartScreen will warn you. Choose
    **More info**, then **Run anyway**. If you would rather check the file first, compare its SHA-256
-   (shown on the release page) with `Get-FileHash "Potato Bot_1.0.0_x64_en-US.msi"` in PowerShell.
+   (shown on the release page) with `Get-FileHash "Potato-Bot_1.0.3_x64_en-US.msi"` in PowerShell.
 4. Start Potato Bot, open Settings, add your model key, and make your first bot.
+
+Updates: when a new version is out, the app shows a small "Update available" notice. Press Update; it downloads the signed installer, checks it, installs over the old version and restarts. Your bots, settings and the bot's computer are kept, and nothing installs until you press the button.
 
 The app keeps its data under `%APPDATA%\com.puppetmaster.app` (the folder name is from an earlier
 name of the project). Bot chats, settings, memory, artifacts and the sandbox live under `potato/`

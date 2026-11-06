@@ -15,7 +15,7 @@ describe('copy', () => {
     expect(COPY.limit('Fish', 50)).toBe("Fish has used today's limit ($0.50). Raise it in Settings or wait until tomorrow.");
     expect(COPY.stopped('Fish')).toBe("Fish's brain stopped.");
     expect(COPY.noKey('Fish')).toBe("Add this bot's model key in Settings to talk with Fish.");
-    expect(COPY.needsNode).toBe('Potato Bot needs Node.js 20 or newer.');
+    expect(COPY.needsNode).toContain('built-in Node.js is missing');
     expect(COPY.agentsOnly).toBe('Mood and personas need the DeepSeek or OpenCode Go brain.');
   });
 

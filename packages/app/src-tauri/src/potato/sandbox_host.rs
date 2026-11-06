@@ -454,5 +454,11 @@ fn write_diag(root: Option<&std::path::Path>) {
         "brain_dir": brain.map(|b| b.display().to_string()),
         "persona_packs": packs,
     });
+    let mut report = report;
+    if let (Some(all), Some(extra)) = (report.as_object_mut(), super::sidecar::diag().as_object()) {
+        for (k, v) in extra {
+            all.insert(k.clone(), v.clone());
+        }
+    }
     let _ = std::fs::write(file, report.to_string());
 }

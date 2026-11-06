@@ -1,0 +1,38 @@
+/* The update notice: small, quiet, grayscale. Fixed to a corner so it never moves the page. */
+.app-update-notice {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(440px, calc(100vw - 32px));
+  padding: 8px 12px;
+  border: 1px solid var(--sep, rgba(128, 128, 128, 0.3));
+  border-radius: 10px;
+  background: var(--bg-raised, #1c1c1e);
+  color: var(--label, inherit);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.app-update-btn {
+  flex: none;
+  padding: 4px 10px;
+  border: 1px solid var(--sep, rgba(128, 128, 128, 0.4));
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.app-update-btn--quiet {
+  border-color: transparent;
+  opacity: 0.7;
+}
+/* Inside Settings the notice is part of the row, not a floating card. */
+.app-update-row .app-update-notice {
+  position: static;
+  margin-top: 8px;
+  max-width: none;
+}
