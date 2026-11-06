@@ -36,6 +36,32 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import NamedTuple
 
+# Live limits (see pm-sbx-limits). This service itself lives in the "control" cgroup, which has no limit, so the host can always talk
+# to the desktop. Everything it starts is put into the "work" cgroup, which does. The file is pm's (the root script made it so);
+# when it is not there (an older sandbox, no cgroup v2) nothing changes.
+WORK_PROCS = "/sys/fs/cgroup/pm-sbx/work/cgroup.procs"
+
+
+def _join_work(pid):
+    try:
+        with open(WORK_PROCS, "w") as f:
+            f.write(str(pid))
+    except OSError:
+        pass
+
+
+_RealPopen = subprocess.Popen
+
+
+class _WorkPopen(_RealPopen):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if os.path.exists(WORK_PROCS):
+            _join_work(self.pid)
+
+
+subprocess.Popen = _WorkPopen
+
 BIND_HOST = "127.0.0.1"
 DEFAULT_PORT = 47801
 DEFAULT_DISPLAY = ":99"

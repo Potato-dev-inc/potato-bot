@@ -16,7 +16,7 @@ fn ids(list: &[&str]) -> Vec<String> {
 }
 
 fn room(id: &str, bots: &[&str]) -> Room {
-    Room { id: id.into(), name: format!("Room {id}"), bot_ids: ids(bots), created_ms: 1, last_ms: 1, unread: 0 }
+    Room { id: id.into(), name: format!("Room {id}"), bot_ids: ids(bots), created_ms: 1, last_ms: 1, unread: 0, ..Default::default() }
 }
 
 fn line(id: &str, text: &str, at: i64) -> RoomLine {
@@ -28,6 +28,7 @@ fn line(id: &str, text: &str, at: i64) -> RoomLine {
         hop: 0,
         in_reply_to: None,
         file: None,
+        handoff: None,
     }
 }
 
@@ -40,12 +41,12 @@ fn validate_accepts_two_bots_and_trims_the_name() {
 }
 
 #[test]
-fn validate_refuses_one_bot_and_six_bots() {
-    let known: Vec<String> = (0..6).map(|i| format!("bot{i}")).collect();
+fn validate_refuses_one_bot_and_eleven_bots() {
+    let known: Vec<String> = (0..11).map(|i| format!("bot{i}")).collect();
     assert_eq!(validate("x", &ids(&["bot0"]), &known), Err(RoomError::TooFewBots));
     assert_eq!(validate("x", &known, &known), Err(RoomError::TooManyBots));
-    let five: Vec<String> = known[..5].to_vec();
-    assert!(validate("x", &five, &known).is_ok(), "five bots is the most");
+    let ten: Vec<String> = known[..10].to_vec();
+    assert!(validate("x", &ten, &known).is_ok(), "ten bots is the most");
 }
 
 #[test]
@@ -178,4 +179,76 @@ fn every_error_has_a_plain_wire_text() {
         assert!(wire.starts_with("POTATO_ROOM_"), "{wire}");
         assert!(wire.contains(": "), "{wire}");
     }
+}
+
+// ---- group settings ----
+
+#[test]
+fn an_old_group_file_without_the_new_settings_reads_as_listen_with_nothing_set() {
+    let old = r#"{"v":1,"rooms":[{"id":"r0123456789ab","name":"Old","botIds":["a","b"],"createdMs":1,"lastMs":1,"unread":0}]}"#;
+    let dir = temp("old_index");
+    std::fs::create_dir_all(super::store::dir(&dir)).unwrap();
+    std::fs::write(index_path(&dir), old).unwrap();
+    let rooms = load_rooms(&dir).unwrap();
+    assert_eq!((rooms[0].mode, rooms[0].instructions.as_str(), rooms[0].folder.as_str(), rooms[0].off_bots.len()), (RoomMode::Listen, "", "", 0));
+    assert_eq!(rooms[0].folder_path(), "/home/pm/groups/r0123456789ab");
+}
+
+#[test]
+fn settings_are_saved_cleaned_and_come_back() {
+    let dir = temp("settings_roundtrip");
+    let mut r = room("r0123456789ab", &["a", "b", "c"]);
+    apply_settings(&mut r, "  Be brief.\u{0}\nNo emoji.  ", " Trip-2026 ", "Mentions", &ids(&["c", "ghost", "c"])).unwrap();
+    assert_eq!((r.instructions.as_str(), r.folder.as_str(), r.mode, r.off_bots.clone()), ("Be brief.\nNo emoji.", "trip-2026", RoomMode::Mentions, ids(&["c"])));
+    save_rooms(&dir, &[r.clone()]).unwrap();
+    assert_eq!(load_rooms(&dir).unwrap(), vec![r.clone()]);
+    assert_eq!(r.folder_path(), "/home/pm/groups/trip-2026");
+    assert!(r.bot_listens("a") && !r.bot_listens("c"));
+}
+
+#[test]
+fn a_folder_can_never_be_a_path() {
+    for bad in ["../etc", "a/b", r"a\b", "/home", "-x", "_x", "a b", "ünï", &"x".repeat(41), ".hidden", "a..b", "C:"] {
+        assert_eq!(clean_folder(bad), Err(RoomError::BadFolder), "{bad}");
+    }
+    assert_eq!(clean_folder("  "), Ok(String::new()));
+    assert_eq!(clean_folder("Trip_2026-a"), Ok("trip_2026-a".to_string()));
+}
+
+#[test]
+fn one_bad_part_changes_nothing_and_not_every_bot_can_be_off() {
+    let mut r = room("r0123456789ab", &["a", "b"]);
+    let before = r.clone();
+    assert_eq!(apply_settings(&mut r, "x", "../x", "listen", &[]), Err(RoomError::BadFolder));
+    assert_eq!(apply_settings(&mut r, "x", "", "shout", &[]), Err(RoomError::BadMode));
+    assert_eq!(apply_settings(&mut r, "x", "", "listen", &ids(&["a", "b"])), Err(RoomError::AllOff));
+    assert_eq!(r, before);
+}
+
+#[test]
+fn instructions_lose_secrets_control_characters_and_everything_past_2000_characters() {
+    let long = "y".repeat(3000);
+    assert_eq!(clean_instructions(&long).chars().count(), MAX_INSTRUCTIONS);
+    assert!(!clean_instructions("key sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789 end").contains("abcdefghijklmnop"));
+}
+
+#[test]
+fn removing_a_member_also_removes_it_from_the_switched_off_list() {
+    let mut r = room("r0123456789ab", &["a", "b", "c"]);
+    r.off_bots = ids(&["c"]);
+    set_members(&mut r, ids(&["a", "b"]));
+    assert!(r.off_bots.is_empty());
+    assert_eq!(r.bot_ids, ids(&["a", "b"]));
+}
+
+#[test]
+fn a_hand_off_line_is_saved_with_its_card_and_old_lines_have_none() {
+    let dir = temp("handoff_line");
+    let mut l = line("l0000000000a1", "@Mochi look it up", 5);
+    l.handoff = Some(Handoff { to_id: "mochi".into(), to_name: "Mochi".into(), task: "look it up".into(), passed: true });
+    append_line(&dir, "r0123456789ab", l.clone(), None).unwrap();
+    append_line(&dir, "r0123456789ab", line("l0000000000a2", "plain", 6), None).unwrap();
+    let got = read_lines(&dir, "r0123456789ab", 10);
+    assert_eq!(got[0].handoff, l.handoff);
+    assert_eq!(got[1].handoff, None);
 }

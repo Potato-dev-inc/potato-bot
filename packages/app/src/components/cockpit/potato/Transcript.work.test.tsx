@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { fakePotatoTransport } from '../../../lib/potato';
 import type { WorkRunView, WorkStepView } from '../../../lib/potato-work';
 import { Transcript } from './Transcript';
-import { bot } from './test-helpers';
+import { bot, msg, you } from './test-helpers';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 (globalThis as { ResizeObserver?: unknown }).ResizeObserver ??= class {
@@ -74,5 +74,23 @@ describe('Transcript with live steps', () => {
     draw({ typing: false, work: failed });
     expect(title()).toBe('Stopped at: Used the mouse and keyboard');
     expect(host.querySelector('.ck-work-step.is-error')).not.toBeNull();
+  });
+
+  it('shows a message the bot wrote mid-work above the live step list, after the request', () => {
+    const running: WorkRunView = { startedMs: NOW - 5000, steps: [s('a', 'computer_observe', 'done', NOW - 5000, NOW - 3000), s('b', 'browser_navigate', 'running', NOW - 3000)], failed: false, endedMs: null };
+    const mid = msg({ text: 'I will open the page and check the price.' });
+    act(() =>
+      root.render(
+        <Transcript bot={bot({ typing: true, work: running })} messages={[you('find the price'), mid]} agentLabel="Claude" transport={fakePotatoTransport({ bots: [bot()] })} onChanged={() => {}} now={NOW} openLink={() => {}} />,
+      ),
+    );
+    const text = host.textContent ?? '';
+    expect(text.indexOf('find the price')).toBeGreaterThanOrEqual(0);
+    expect(text.indexOf('I will open the page')).toBeGreaterThan(text.indexOf('find the price'));
+    const list = host.querySelector('[data-testid="work-steps"]')!;
+    const line = [...host.querySelectorAll('*')].find((el) => el.children.length === 0 && el.textContent?.includes('I will open the page'))!;
+    // the message comes before the live list in the page
+    expect(line.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(host.textContent).not.toContain('is typing');
   });
 });

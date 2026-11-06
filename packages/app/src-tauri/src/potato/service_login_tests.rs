@@ -84,7 +84,7 @@ fn request_login_makes_a_card_for_the_site_with_three_buttons_and_the_job_waits(
 fn request_login_is_for_the_owner_s_private_chat_only() {
     let (rig, _) = rig("login-where");
     store::add_bot(&rig.root, "mochi", "potato", 2).unwrap();
-    super::rooms::store::save_rooms(&rig.root, &[super::rooms::store::Room { id: "r0123456789ab".into(), name: "Weekend".into(), bot_ids: vec!["nimbus".into(), "mochi".into()], created_ms: 1, last_ms: 1, unread: 0 }]).unwrap();
+    super::rooms::store::save_rooms(&rig.root, &[super::rooms::store::Room { id: "r0123456789ab".into(), name: "Weekend".into(), bot_ids: vec!["nimbus".into(), "mochi".into()], created_ms: 1, last_ms: 1, unread: 0, ..Default::default() }]).unwrap();
     let room = store::app_room_conversation("r0123456789ab");
     let answer = tool(&rig, &room, "l-1", login::TOOL, json!({"site": "login.example.com"}));
     assert_eq!(code(&answer), "TOOL_NOT_ALLOWED", "{answer:?}");

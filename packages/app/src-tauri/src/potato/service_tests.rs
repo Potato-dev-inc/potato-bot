@@ -389,7 +389,7 @@ fn a_bot_speaks_in_a_group_only_when_it_is_a_member() {
     let group = store::app_room_conversation(room);
     super::rooms::store::save_rooms(
         &rig.root,
-        &[super::rooms::store::Room { id: room.into(), name: "Pair".into(), bot_ids: vec!["nimbus".into()], created_ms: 1, last_ms: 1, unread: 0 }],
+        &[super::rooms::store::Room { id: room.into(), name: "Pair".into(), bot_ids: vec!["nimbus".into()], created_ms: 1, last_ms: 1, unread: 0, ..Default::default() }],
     )
     .unwrap();
     let typing = json!({"v":1,"type":"typing","conversationId":group,"on":true});

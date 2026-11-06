@@ -205,11 +205,13 @@ fn data_root() -> PathBuf {
 struct SandboxSettings {
     v: u32,
     idle_minutes: u32,
+    /// `None`: the defaults for this PC (half the CPU, a quarter of the memory).
+    limits: Option<super::sandbox::limits::Limits>,
 }
 
 impl Default for SandboxSettings {
     fn default() -> Self {
-        Self { v: 1, idle_minutes: DEFAULT_IDLE_MINUTES }
+        Self { v: 1, idle_minutes: DEFAULT_IDLE_MINUTES, limits: None }
     }
 }
 
@@ -226,7 +228,32 @@ fn load_idle_minutes() -> u32 {
 
 /// Saves the idle-stop minutes (already clamped by the sandbox) for the next run of the app.
 pub fn save_idle_minutes(minutes: u32) {
-    let _ = store::write_json(&settings_path(), &SandboxSettings { v: 1, idle_minutes: minutes }, "sandbox-settings.json");
+    let mut settings = read_settings();
+    settings.idle_minutes = minutes;
+    let _ = store::write_json(&settings_path(), &settings, "sandbox-settings.json");
+}
+
+fn read_settings() -> SandboxSettings {
+    match store::read_json::<SandboxSettings>(&settings_path(), "sandbox-settings.json") {
+        Ok(Some(settings)) => settings,
+        _ => SandboxSettings::default(),
+    }
+}
+
+/// The limits the person chose, or the defaults for this PC, kept inside what the PC can give.
+pub fn load_limits() -> super::sandbox::limits::Limits {
+    let pc = super::sandbox::limits::pc_memory_mb();
+    super::sandbox::limits::clamp(read_settings().limits.unwrap_or_else(|| super::sandbox::limits::default_limits(pc)), pc)
+}
+
+pub fn save_limits(limits: super::sandbox::limits::Limits) {
+    let mut settings = read_settings();
+    settings.limits = Some(limits);
+    let _ = store::write_json(&settings_path(), &settings, "sandbox-settings.json");
+}
+
+pub fn saved_limits() -> Option<super::sandbox::limits::Limits> {
+    read_settings().limits
 }
 
 // ---- the record of a set up ------------------------------------------------------------------------
@@ -329,6 +356,7 @@ fn build() -> Arc<Manager> {
                     .with_window_check(Arc::new(Msrdc::live())),
             );
             lifecycle.set_idle_minutes(load_idle_minutes());
+            lifecycle.set_limits(load_limits());
             Arc::new(WslSandbox::new(wsl, name.clone(), layout.clone(), files, lifecycle).with_records(Arc::new(FileRecords)))
         }
         Err(_) => Arc::new(NoLinux),

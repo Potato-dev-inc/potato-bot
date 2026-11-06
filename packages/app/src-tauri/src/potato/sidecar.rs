@@ -287,7 +287,7 @@ pub fn diag() -> serde_json::Value {
                 .filter(|s| s.is_file());
             let out = script.and_then(|script| {
                 let mut command = crate::proc_util::hidden_command(path);
-                command.arg(script).env_clear().stdin(Stdio::null());
+                command.arg(script).env_clear().envs(["SystemRoot", "WINDIR"].iter().filter_map(|k| std::env::var(k).ok().map(|v| (*k, v)))).stdin(Stdio::null());
                 command.output().ok().map(|o| format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)).trim().to_string())
             });
             (Some(path.display().to_string()), Some(*major), out)

@@ -32,6 +32,7 @@ pub mod image;
 pub mod install;
 pub mod lease;
 pub mod lifecycle;
+pub mod limits;
 pub mod screen;
 pub mod screen_live;
 pub mod manager;
@@ -292,6 +293,15 @@ pub trait Sandbox: Send + Sync {
     /// Windows' Linux feature is turned on but cannot run yet: the computer has to restart first.
     fn restart_pending(&self) -> bool {
         false
+    }
+    /// Saves new CPU and memory limits for the desktop work and puts them in force now if the sandbox is running. Returns what the
+    /// guest reports (None when it is not running).
+    fn set_limits(&self, _limits: limits::Limits) -> Option<limits::GuestStatus> {
+        None
+    }
+    /// The limits in force and what the work uses, while the sandbox runs.
+    fn limits_status(&self) -> Option<limits::GuestStatus> {
+        None
     }
     /// The idle stop setting. Returns the number that is used (it is kept between 1 and 240).
     fn set_idle_minutes(&self, minutes: u32) -> u32 {
@@ -1088,6 +1098,15 @@ impl Sandbox for WslSandbox {
         self.wsl.feature_state() == wsl::FeatureState::RestartPending
     }
 
+    fn set_limits(&self, limits: limits::Limits) -> Option<limits::GuestStatus> {
+        self.lifecycle.set_limits(limits);
+        self.lifecycle.apply_limits()
+    }
+
+    fn limits_status(&self) -> Option<limits::GuestStatus> {
+        self.lifecycle.limits_status()
+    }
+
     fn set_idle_minutes(&self, minutes: u32) -> u32 {
         self.lifecycle.set_idle_minutes(minutes);
         self.lifecycle.idle_minutes()
@@ -1146,6 +1165,7 @@ struct FakeState {
     idle_minutes: Option<u32>,
     no_linux_feature: bool,
     restart_pending: bool,
+    limits: Option<limits::Limits>,
     cancelled: bool,
     desktops: Vec<String>,
     active_desktop: Option<String>,
@@ -1598,6 +1618,18 @@ impl Sandbox for FakeSandbox {
 
     fn restart_pending(&self) -> bool {
         self.state.lock().restart_pending
+    }
+
+    fn set_limits(&self, new: limits::Limits) -> Option<limits::GuestStatus> {
+        let mut state = self.state.lock();
+        state.limits = Some(new);
+        Some(limits::GuestStatus { ok: true, ready: true, cpus: 8, cpu_percent: Some(new.cpu_percent), memory_mb: Some(new.memory_mb), ..Default::default() })
+    }
+
+    fn limits_status(&self) -> Option<limits::GuestStatus> {
+        let state = self.state.lock();
+        let l = state.limits?;
+        Some(limits::GuestStatus { ok: true, ready: true, cpus: 8, cpu_percent: Some(l.cpu_percent), memory_mb: Some(l.memory_mb), memory_used_mb: 512, ..Default::default() })
     }
 
     fn set_idle_minutes(&self, minutes: u32) -> u32 {

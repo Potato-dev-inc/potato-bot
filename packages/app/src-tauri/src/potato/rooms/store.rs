@@ -15,7 +15,7 @@ use crate::potato::store::{self, STORE_VERSION};
 use crate::secure_file;
 
 pub const MIN_BOTS: usize = 2;
-pub const MAX_BOTS: usize = 5;
+pub const MAX_BOTS: usize = 10;
 pub const MAX_ROOMS: usize = 50;
 pub const MAX_NAME: usize = 60;
 pub const MAX_LINES_KEPT: usize = 5_000;
@@ -23,7 +23,7 @@ pub const MAX_TEXT: usize = 8_000;
 /// The most lines one read returns.
 pub const MAX_READ: usize = 500;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Room {
     pub id: String,
@@ -32,6 +32,86 @@ pub struct Room {
     pub created_ms: i64,
     pub last_ms: i64,
     pub unread: u32,
+    /// What the owner wants every bot in this group to know (`clean_instructions`). Empty: none.
+    #[serde(default)]
+    pub instructions: String,
+    /// The group's shared folder, a name inside the bots' computer (`clean_folder`). Empty: the group's id.
+    #[serde(default)]
+    pub folder: String,
+    /// Who answers a line that calls nobody.
+    #[serde(default)]
+    pub mode: RoomMode,
+    /// Members switched off in this group only: they hear nothing here and are not handed tasks.
+    #[serde(default)]
+    pub off_bots: Vec<String>,
+}
+
+/// `Listen`: a line to nobody is answered by one bot (the default). `Mentions`: a bot speaks only when called with @ or a reply.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RoomMode {
+    #[default]
+    Listen,
+    Mentions,
+}
+
+impl RoomMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RoomMode::Listen => "listen",
+            RoomMode::Mentions => "mentions",
+        }
+    }
+}
+
+/// A task one bot gave another in the group (`hand_off`). `passed` is false when the hop limit stopped it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Handoff {
+    pub to_id: String,
+    pub to_name: String,
+    pub task: String,
+    pub passed: bool,
+}
+
+pub const MAX_INSTRUCTIONS: usize = 2_000;
+pub const MAX_FOLDER: usize = 40;
+/// Where groups keep their shared folders inside every bot's computer.
+pub const FOLDER_ROOT: &str = "/home/pm/groups/";
+
+impl Room {
+    /// The shared folder's path inside the bots' computer: the chosen name, or the group's id.
+    pub fn folder_path(&self) -> String {
+        let name = if self.folder.is_empty() { self.id.as_str() } else { self.folder.as_str() };
+        format!("{FOLDER_ROOT}{name}")
+    }
+
+    /// Whether a bot hears this group's lines at all.
+    pub fn bot_listens(&self, bot: &str) -> bool {
+        !self.off_bots.iter().any(|b| b == bot)
+    }
+}
+
+/// The owner's instructions for a group: control characters out (new lines stay), trimmed, at most 2000 characters.
+pub fn clean_instructions(text: &str) -> String {
+    let kept: String = text.chars().filter(|c| *c == '\n' || *c == '\t' || !c.is_control()).collect();
+    crate::redact::text(kept.trim()).into_inner().chars().take(MAX_INSTRUCTIONS).collect()
+}
+
+/// A folder name: lowercase letters, digits, `-` and `_`, 1 to 40, so it can never be a path. Empty means the default.
+pub fn clean_folder(name: &str) -> Result<String, RoomError> {
+    let name = name.trim().to_lowercase();
+    if name.is_empty() {
+        return Ok(String::new());
+    }
+    let fine = name.chars().count() <= MAX_FOLDER
+        && !name.starts_with(['-', '_'])
+        && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_');
+    if fine {
+        Ok(name)
+    } else {
+        Err(RoomError::BadFolder)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,6 +142,9 @@ pub struct RoomLine {
     /// A file the bot sent into the group (`send_file`). The card is opened with the sending bot's id (`from.id`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file: Option<store::FileCard>,
+    /// A hand-off card: this line is a task one bot gave another (`hand_off`). `text` is `@Name task`, for the bots that read the room.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff: Option<Handoff>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,6 +158,9 @@ pub enum RoomError {
     TooManyRooms,
     NotFound,
     BadId,
+    BadFolder,
+    BadMode,
+    AllOff,
     Io(String),
 }
 
@@ -85,12 +171,15 @@ impl RoomError {
             RoomError::NameEmpty => "POTATO_ROOM_NAME: Give the group a name.".into(),
             RoomError::NameTooLong => "POTATO_ROOM_NAME: Use 60 characters or fewer.".into(),
             RoomError::TooFewBots => "POTATO_ROOM_BOTS: Pick at least 2 bots.".into(),
-            RoomError::TooManyBots => "POTATO_ROOM_BOTS: A group can have up to 5 bots.".into(),
+            RoomError::TooManyBots => "POTATO_ROOM_BOTS: A group can have up to 10 bots.".into(),
             RoomError::DuplicateBot => "POTATO_ROOM_BOTS: Each bot can be in a group once.".into(),
             RoomError::UnknownBot(_) => "POTATO_ROOM_BOTS: One of these bots no longer exists.".into(),
             RoomError::TooManyRooms => "POTATO_ROOM_LIMIT: You can have up to 50 groups.".into(),
             RoomError::NotFound => "POTATO_ROOM_GONE: This group no longer exists.".into(),
             RoomError::BadId => "POTATO_ROOM_ID: That group id is not valid.".into(),
+            RoomError::BadFolder => "POTATO_ROOM_FOLDER: Use letters, numbers, - or _ (up to 40).".into(),
+            RoomError::BadMode => "POTATO_ROOM_MODE: Pick Listen or Mentions.".into(),
+            RoomError::AllOff => "POTATO_ROOM_BOTS: Keep at least one bot on in this group.".into(),
             RoomError::Io(_) => "POTATO_ROOM_IO: Could not save the group. Try again.".into(),
         }
     }
@@ -125,7 +214,38 @@ pub fn lines_path(root: &Path, room_id: &str) -> Option<PathBuf> {
     valid_id('r', room_id).then(|| dir(root).join(format!("{room_id}.jsonl")))
 }
 
-/// The name and the bots of a new group, checked: the name trimmed and cleaned, 1 to 60 characters; 2 to 5
+/// The group settings screen's Save: the instructions, the shared folder, who answers a line to nobody, and which members are
+/// switched off here. Nothing is changed unless every part is valid. Only members can be switched off, and at least one stays on.
+pub fn apply_settings(room: &mut Room, instructions: &str, folder: &str, mode: &str, off_bots: &[String]) -> Result<(), RoomError> {
+    let folder = clean_folder(folder)?;
+    let mode = match mode.trim().to_lowercase().as_str() {
+        "listen" => RoomMode::Listen,
+        "mentions" => RoomMode::Mentions,
+        _ => return Err(RoomError::BadMode),
+    };
+    let mut off: Vec<String> = Vec::new();
+    for bot in &room.bot_ids {
+        if off_bots.contains(bot) && !off.contains(bot) {
+            off.push(bot.clone());
+        }
+    }
+    if off.len() >= room.bot_ids.len() {
+        return Err(RoomError::AllOff);
+    }
+    room.instructions = clean_instructions(instructions);
+    room.folder = folder;
+    room.mode = mode;
+    room.off_bots = off;
+    Ok(())
+}
+
+/// The bots of a group after a member was added or removed: the new list, and a bot that left is no longer switched off.
+pub fn set_members(room: &mut Room, bot_ids: Vec<String>) {
+    room.off_bots.retain(|b| bot_ids.contains(b));
+    room.bot_ids = bot_ids;
+}
+
+/// The name and the bots of a new group, checked: the name trimmed and cleaned, 1 to 60 characters; 2 to 10
 /// bots, each once, each in `known_bots`, in the order given.
 pub fn validate(name: &str, bot_ids: &[String], known_bots: &[String]) -> Result<(String, Vec<String>), RoomError> {
     let name = store::clean_text(name.trim(), None).trim().to_string();

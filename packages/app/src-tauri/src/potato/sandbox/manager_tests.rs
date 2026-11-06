@@ -524,3 +524,14 @@ fn the_manager_never_turns_the_feature_on_by_itself() {
     let _ = m.ask_linux_feature();
     assert!(fake.calls().is_empty(), "nothing reached the sandbox");
 }
+
+#[test]
+fn limits_are_passed_to_the_sandbox_and_read_back() {
+    use super::limits::Limits;
+    let fake = Arc::new(FakeSandbox::new());
+    let m = manager_over(fake, Arc::new(Log::default()));
+    assert!(m.limits_status().is_none(), "nothing saved yet");
+    let status = m.set_limits(Limits { cpu_percent: 30, memory_mb: 2_500 }).unwrap();
+    assert_eq!((status.cpu_percent, status.memory_mb), (Some(30), Some(2_500)));
+    assert_eq!(m.limits_status().unwrap().memory_mb, Some(2_500));
+}

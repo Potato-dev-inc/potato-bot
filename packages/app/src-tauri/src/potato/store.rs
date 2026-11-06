@@ -435,6 +435,19 @@ pub struct Message {
     /// A note that says the bot changed one of its own settings (`self_settings.rs`): the card with Undo.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub change: Option<SettingChange>,
+    /// A peer card: this bot wrote to, or was written to by, another of the owner's bots (`service/peer_flow.rs`). The row is a note; `text` is the message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer: Option<PeerCard>,
+}
+
+/// What a peer card needs. `dir` is `out` (this bot asked), `in` (this bot was asked) or `reply` (the other bot answered).
+/// `bot_id` and `bot_name` are the other bot.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerCard {
+    pub dir: String,
+    pub bot_id: String,
+    pub bot_name: String,
 }
 
 /// What a settings-change card needs. `undone` is not in the conversation file: `service` adds it when listing.
@@ -535,6 +548,7 @@ impl Message {
             queued: false,
             reactions: Vec::new(),
             change: None,
+            peer: None,
         }
     }
 }

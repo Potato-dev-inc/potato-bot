@@ -65,6 +65,7 @@
     "tr -d '\\r' < \"$PM_SBX_GUEST/control/pm-sbx-computer-mcp\" > /usr/local/bin/pm-sbx-computer-mcp && chmod 0755 /usr/local/bin/pm-sbx-computer-mcp",
     "tr -d '\\r' < \"$PM_SBX_GUEST/control/pm-sbx-mcp-hub\" > /usr/local/bin/pm-sbx-mcp-hub && chmod 0755 /usr/local/bin/pm-sbx-mcp-hub",
     "tr -d '\\r' < \"$PM_SBX_GUEST/control/pm-sbx-secret-hub\" > /usr/local/sbin/pm-sbx-secret-hub && chmod 0750 /usr/local/sbin/pm-sbx-secret-hub",
+    "tr -d '\\r' < \"$PM_SBX_GUEST/control/pm-sbx-limits\" > /usr/local/sbin/pm-sbx-limits && chmod 0750 /usr/local/sbin/pm-sbx-limits",
     "install -d -m 0755 /opt/pm-connectors",
     "tr -d '\\r' < \"$PM_SBX_GUEST/page-browser/pm-sbx-page-browser\" > /usr/local/bin/pm-sbx-page-browser && chmod 0755 /usr/local/bin/pm-sbx-page-browser",
     "install -d -o pm -g pm -m 0700 /home/pm/.browser-profiles",

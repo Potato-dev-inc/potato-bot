@@ -44,6 +44,7 @@ mod job_flow;
 mod login_flow;
 mod room_flow;
 mod self_flow;
+mod peer_flow;
 mod wait_flow;
 pub use card_flow::AnswerOutcome;
 pub use login_flow::{ForgetOutcome, LoginOrigin};
@@ -238,6 +239,9 @@ pub(super) enum Origin<'a> {
     /// A message of the person that was already in the thread when the app was closed, sent to the brain again with its own
     /// id (`jobs::QueuedSend`). Not saved a second time.
     Queued { id: &'a str },
+    /// Another of the owner's bots wrote to this bot (`message_bot`, `peer_flow.rs`). Shown as a peer card. It runs as a turn nobody trusted
+    /// (no owner tools, no computer, no memory), whatever the message says.
+    Peer { from_id: &'a str, from_name: &'a str },
 }
 
 impl<'a> Origin<'a> {
@@ -253,26 +257,33 @@ impl<'a> Origin<'a> {
                 message.id = id.to_string();
                 message
             }
+            Origin::Peer { from_id, from_name } => {
+                let mut message = Message::new(at, FromKind::Note, Some("peer"), MsgKind::Note, text);
+                message.peer = Some(store::PeerCard { dir: "in".into(), bot_id: from_id.to_string(), bot_name: from_name.to_string() });
+                message
+            }
         }
     }
 
-    fn from_id(self) -> &'static str {
+    fn from_id(self) -> &'a str {
         match self {
             Origin::Person | Origin::Job { .. } | Origin::Answer | Origin::Queued { .. } => "owner",
             Origin::Routine { .. } => "routine",
+            Origin::Peer { from_id, .. } => from_id,
         }
     }
 
-    fn from_name(self) -> &'static str {
+    fn from_name(self) -> &'a str {
         match self {
             Origin::Person | Origin::Job { .. } | Origin::Answer | Origin::Queued { .. } => "you",
             Origin::Routine { .. } => "routine",
+            Origin::Peer { from_name, .. } => from_name,
         }
     }
 
     fn context(self) -> Option<&'a str> {
         match self {
-            Origin::Person | Origin::Answer | Origin::Queued { .. } => None,
+            Origin::Person | Origin::Answer | Origin::Queued { .. } | Origin::Peer { .. } => None,
             Origin::Routine { context, .. } => context,
             Origin::Job { context } => Some(context),
         }
@@ -382,6 +393,9 @@ struct BotRt {
     turn_tainted: HashSet<String>,
     /// A change was made in a turn that needs the brain to start again: it stops when the turn's usage comes in.
     restart_after_turn: bool,
+    /// Messages another bot wrote to this one that have not been answered: this bot's saved message id to the bot that wrote it.
+    /// The answer is copied to that bot's chat as a peer card (`peer_flow.rs`).
+    peer_asks: HashMap<String, String>,
 }
 
 /// One accepted send's hold on the day's limit.
@@ -436,6 +450,7 @@ impl BotRt {
             last_status_note_ms: i64::MIN / 2,
             turn_tainted: HashSet::new(),
             restart_after_turn: false,
+            peer_asks: HashMap::new(),
         }
     }
 }
@@ -932,7 +947,10 @@ impl Service {
         };
         let decision = rules::decide(&facts, &rules::Config::default(), &caps);
         let (trust, tools) = match decision {
-            Decision::Send { trust, tools, .. } => (trust, tools),
+            Decision::Send { trust, tools, .. } => {
+                // Another bot's message is a turn nobody trusted: no owner tools, no computer, no memory, whatever it says.
+                if matches!(origin, Origin::Peer { .. }) { (Trust::Others, Tools::NoMemory) } else { (trust, tools) }
+            }
             Decision::Drop(rules::Why::Disabled) => return Err(err("POTATO_OFF", "Potato Bot is switched off.")),
             Decision::Drop(rules::Why::Empty) => return Err(err("POTATO_EMPTY", "Write a message first.")),
             Decision::Drop(rules::Why::Paused) => return Err(err("POTATO_PAUSED", "Bots are paused. Press Start bots again to resume.")),
@@ -948,7 +966,7 @@ impl Service {
                 let saved = if matches!(origin, Origin::Job { .. } | Origin::Answer) { mine } else { self.save(bot, &conversation, mine)? };
                 match origin {
                     Origin::Routine { title, .. } => self.note(bot, &format!("Skipped: daily limit reached: {title}")),
-                    Origin::Person | Origin::Job { .. } | Origin::Answer | Origin::Queued { .. } => self.note(bot, &format!("{name} has used today's limit ({}). Raise it in Settings or wait until tomorrow.", cost::dollars(settings.daily_limit_cents))),
+                    Origin::Person | Origin::Job { .. } | Origin::Answer | Origin::Queued { .. } | Origin::Peer { .. } => self.note(bot, &format!("{name} has used today's limit ({}). Raise it in Settings or wait until tomorrow.", cost::dollars(settings.daily_limit_cents))),
                 }
                 self.host.changed(bot);
                 return Ok(SendOutcome { id: saved.id, state: BrainState::DailyLimit, delivered: false });
@@ -1030,6 +1048,9 @@ impl Service {
         let running_now = rt.typing.contains_key(&conversation) || rt.session.as_ref().is_some_and(|s| s.in_flight.values().any(|c| *c == conversation));
         if !running_now {
             rt.turn_tainted.remove(&conversation);
+        }
+        if let Origin::Peer { from_id, .. } = origin {
+            rt.peer_asks.insert(saved.id.clone(), from_id.to_string());
         }
         rt.turn_trust.insert(conversation.clone(), trust);
         if matches!(origin, Origin::Routine { .. }) {
@@ -1855,6 +1876,9 @@ impl Service {
                 if !note {
                     self.job_turn_ended(bot, Some(&in_reply_to), false, now);
                 }
+                if !note {
+                    self.relay_peer_reply(bot, &in_reply_to, &said, now);
+                }
                 self.host.reply_pushed(bot, &name, &said, super::notify::pushes_replies(&self.root, bot));
                 true
             }
@@ -2178,6 +2202,10 @@ impl Service {
                     Err(e) => protocol::sandbox_result_err(&call_id, e.code, &e.message, false),
                 }
             }
+        } else if tool == "hand_off" {
+            self.hand_off_item(&ctx, &call_id, &args)
+        } else if tool == "message_bot" {
+            self.message_bot_item(&ctx, &call_id, &args)
         } else if super::self_settings::is_tool(&tool) {
             self.self_setting_item(&ctx, &call_id, &args)
         } else if history::is_tool(&tool) {

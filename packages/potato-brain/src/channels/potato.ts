@@ -42,6 +42,7 @@ import { requestLoginTool, REQUEST_LOGIN_NAME } from "../core/login-tools.ts";
 import { addMcpServerTool, requestConnectorTool, ADD_MCP_SERVER_NAME, REQUEST_CONNECTOR_NAME } from "../core/mcp-tools.ts";
 import { ASK_USER_NAME, REQUEST_APPROVAL_NAME, askUserTool, requestApprovalTool } from "../core/question-tools.ts";
 import { messageUserTool } from "../core/message-user-tools.ts";
+import { HAND_OFF_NAME, MESSAGE_BOT_NAME, handOffTool, messageBotTool } from "../core/bot-talk-tools.ts";
 import type { HelperRequest } from "../core/helper-tool.ts";
 import type { Agent, ExtraTool, StepEvent, ToolLevel, TurnResult } from "../core/loop.ts";
 import type { SteerItem } from "../core/steer.ts";
@@ -585,7 +586,13 @@ export class PotatoChannel {
     const selfSettings = conversationId.startsWith("app:dm:")
       ? [selfSettingsTool({ call: (name, args) => this.callSandbox(conversationId, name, args, false) })]
       : [];
-    const agent = this.opts.agentFor(conversationId, [tool, ...computer, ...todo, ...jobs, ...schedule, ...waits, ...history, plot, mcpAdd, connector, signIn, ask, approval, note, ...selfSettings]);
+    // Work for another bot: hand_off in a group (the line it answers is the channel's); message_bot in the owner's private chat.
+    const talk = inRoom
+      ? [handOffTool({ call: (name, args) => this.callSandbox(conversationId, name, args, false), replyTo: () => (this.current?.conversationId === conversationId ? this.current.replyTo : null) })]
+      : conversationId.startsWith("app:dm:")
+        ? [messageBotTool({ call: (name, args) => this.callSandbox(conversationId, name, args, false) })]
+        : [];
+    const agent = this.opts.agentFor(conversationId, [tool, ...computer, ...todo, ...jobs, ...schedule, ...waits, ...history, plot, mcpAdd, connector, signIn, ask, approval, note, ...selfSettings, ...talk]);
     this.agents.set(conversationId, agent);
     return agent;
   }
@@ -643,7 +650,7 @@ export class PotatoChannel {
   /** Sends one sandbox_call and waits for the app's answer. Never rejects: every failure is an error reply. */
   private callSandbox(
     conversationId: string,
-    tool: SandboxToolName | ScratchpadToolName | JobToolName | ScheduleToolName | WaitToolName | HistoryToolName | typeof SELF_SETTINGS_TOOL_NAME | typeof PLOT_TOOL_NAME | typeof ADD_MCP_SERVER_NAME | typeof REQUEST_CONNECTOR_NAME | typeof REQUEST_LOGIN_NAME | typeof ASK_USER_NAME | typeof REQUEST_APPROVAL_NAME,
+    tool: typeof HAND_OFF_NAME | typeof MESSAGE_BOT_NAME | SandboxToolName | ScratchpadToolName | JobToolName | ScheduleToolName | WaitToolName | HistoryToolName | typeof SELF_SETTINGS_TOOL_NAME | typeof PLOT_TOOL_NAME | typeof ADD_MCP_SERVER_NAME | typeof REQUEST_CONNECTOR_NAME | typeof REQUEST_LOGIN_NAME | typeof ASK_USER_NAME | typeof REQUEST_APPROVAL_NAME,
     args: Record<string, unknown>,
     image: boolean,
   ): Promise<SandboxReply> {

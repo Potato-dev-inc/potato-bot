@@ -524,3 +524,50 @@ fn failed_reads_spread_out_do_not_add_up() {
     let lifecycle = lifecycle.with_timing(Timing { poll: std::time::Duration::ZERO, boot_polls: MAX_READ_ERRORS + 3, ready_polls: MAX_READ_ERRORS + 3 });
     lifecycle.ensure_ready(1_000).unwrap();
 }
+
+#[test]
+fn the_saved_limits_are_applied_at_every_start_and_changed_live_without_a_restart() {
+    use super::limits::Limits;
+    let (guest, lifecycle) = rig();
+    lifecycle.set_limits(Limits { cpu_percent: 40, memory_mb: 3_000 });
+    lifecycle.ensure_ready(1_000).unwrap();
+    assert_eq!(guest.st.lock().limits_applied, Some((40, 3_000)), "applied at start, before the desktop is judged ready");
+    let calls_before = guest.st.lock().calls.len();
+    // a live change: the same running sandbox, one more call to the guest script, no start or stop
+    lifecycle.set_limits(Limits { cpu_percent: 20, memory_mb: 2_000 });
+    let status = lifecycle.apply_limits().expect("a running sandbox answers");
+    assert_eq!((status.cpu_percent, status.memory_mb), (Some(20), Some(2_000)));
+    assert_eq!(guest.st.lock().limits_applied, Some((20, 2_000)));
+    let joined: Vec<String> = guest.st.lock().calls[calls_before..].iter().map(|c| c.args.join(" ")).collect();
+    assert!(joined.iter().all(|c| !c.contains("--terminate") && !c.contains("--shutdown") && !c.contains("pm-sbx-start-desktop")), "{joined:?}");
+    assert!(lifecycle.limits_status().is_some());
+    lifecycle.stop().unwrap();
+    assert!(lifecycle.apply_limits().is_none(), "nothing is applied to a sandbox that is not running");
+    // the next start applies them again
+    lifecycle.ensure_ready(9_000).unwrap();
+    assert_eq!(guest.st.lock().limits_applied, Some((20, 2_000)));
+}
+
+#[test]
+fn no_saved_limits_means_the_guest_script_is_not_called_at_start() {
+    let (guest, lifecycle) = rig();
+    lifecycle.ensure_ready(1_000).unwrap();
+    assert!(guest.st.lock().limits_applied.is_none());
+}
+
+#[test]
+fn a_quiet_sandbox_gives_its_cached_memory_back_once_per_quiet_spell_and_never_while_in_use() {
+    use super::lifecycle::RECLAIM_AFTER_MS;
+    let (guest, lifecycle) = rig();
+    lifecycle.ensure_ready(1_000).unwrap();
+    lifecycle.idle_check(1_000 + RECLAIM_AFTER_MS - 1).unwrap();
+    assert_eq!(guest.st.lock().reclaims, 0, "not quiet long enough");
+    lifecycle.idle_check(1_000 + RECLAIM_AFTER_MS).unwrap();
+    assert_eq!(guest.st.lock().reclaims, 1);
+    lifecycle.idle_check(1_000 + RECLAIM_AFTER_MS + 30_000).unwrap();
+    assert_eq!(guest.st.lock().reclaims, 1, "once per quiet spell");
+    // new use, then quiet again: once more
+    lifecycle.touch(1_000_000);
+    lifecycle.idle_check(1_000_000 + RECLAIM_AFTER_MS).unwrap();
+    assert_eq!(guest.st.lock().reclaims, 2);
+}

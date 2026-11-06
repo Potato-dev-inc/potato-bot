@@ -719,3 +719,46 @@
   outline-offset: 2px;
   transition: outline-color 0.4s;
 }
+
+/* Cards for bots giving work to bots: a hand-off in a group, a peer message in a private chat. Grey, quiet, no colour. */
+.cockpit .ck-potato-botcard-row {
+  display: flex;
+  justify-content: center;
+  margin: 10px 0 2px;
+  list-style: none;
+}
+.cockpit .ck-potato-botcard {
+  max-width: min(420px, 86%);
+  padding: 8px 12px;
+  border: 1px solid var(--sep);
+  border-radius: 10px;
+  background: var(--bg-raised);
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--label-2);
+}
+.cockpit .ck-potato-botcard p {
+  margin: 0;
+}
+.cockpit .ck-potato-botcard-head {
+  font-size: 11px;
+  color: var(--label-3);
+}
+.cockpit .ck-potato-botcard-who {
+  font-weight: 600;
+  color: var(--label-2);
+}
+.cockpit .ck-potato-botcard-body {
+  margin-top: 4px !important;
+  color: var(--label);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.cockpit .ck-potato-botcard-state {
+  margin-top: 4px !important;
+  font-size: 11px;
+  color: var(--label-3);
+}
+.cockpit .ck-potato-botcard.is-stopped {
+  border-style: dashed;
+}

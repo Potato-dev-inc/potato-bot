@@ -38,6 +38,8 @@ export const CORE_EXTRA_TOOLS: ReadonlySet<string> = new Set([
   "ask_user",
   "request_approval",
   "message_user",
+  "hand_off",
+  "message_bot",
   "job_log",
   "job_done",
   "run_subagent",

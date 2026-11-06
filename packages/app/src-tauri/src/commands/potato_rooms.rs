@@ -34,6 +34,15 @@ pub struct RoomView {
     pub bots: Vec<BotChip>,
     pub last_ms: i64,
     pub unread: u32,
+    /// What the owner wrote for the bots of this group.
+    pub instructions: String,
+    /// The shared folder's name as chosen (empty: the default, the group's id) and its full path inside the bots' computer.
+    pub folder: String,
+    pub folder_path: String,
+    /// `listen` or `mentions`.
+    pub mode: String,
+    /// Bots switched off in this group only.
+    pub off_bots: Vec<String>,
     /// The names of the bots now typing in this group.
     pub typing: Vec<String>,
     /// The live step list of each bot working in this group.
@@ -97,6 +106,11 @@ fn view(service: &Service, room: &Room) -> RoomView {
         bots: room.bot_ids.iter().map(|b| BotChip { id: b.clone(), name: service.bot_name(b) }).collect(),
         last_ms: room.last_ms,
         unread: room.unread,
+        instructions: room.instructions.clone(),
+        folder: room.folder.clone(),
+        folder_path: room.folder_path(),
+        mode: room.mode.as_str().to_string(),
+        off_bots: room.off_bots.clone(),
         typing: service.room_typing(&room.id),
         work: service.room_work(&room.id).into_iter().map(|(bot, run)| RoomWork { bot, run }).collect(),
     }
@@ -118,7 +132,7 @@ pub async fn potato_room_create(app: AppHandle, name: String, bot_ids: Vec<Strin
         let (name, bot_ids) = rstore::validate(&name, &bot_ids, &known_bots(&root)?).map_err(wire)?;
         let mut rooms = rstore::load_rooms(&root).map_err(wire)?;
         let now = now_ms();
-        let room = Room { id: rstore::new_id('r'), name, bot_ids, created_ms: now, last_ms: now, unread: 0 };
+        let room = Room { id: rstore::new_id('r'), name, bot_ids, created_ms: now, last_ms: now, unread: 0, ..Default::default() };
         rooms.push(room.clone());
         rstore::save_rooms(&root, &rooms).map_err(wire)?;
         s.notify_room(&room.id);
@@ -149,7 +163,23 @@ pub async fn potato_room_set_bots(app: AppHandle, room_id: String, bot_ids: Vec<
         let mut rooms = rstore::load_rooms(&root).map_err(wire)?;
         let i = index_of(&rooms, &room_id)?;
         let (_, bot_ids) = rstore::validate(&rooms[i].name, &bot_ids, &known_bots(&root)?).map_err(wire)?;
-        rooms[i].bot_ids = bot_ids;
+        rstore::set_members(&mut rooms[i], bot_ids);
+        rstore::save_rooms(&root, &rooms).map_err(wire)?;
+        s.notify_room(&room_id);
+        Ok(view(&s, &rooms[i]))
+    })
+    .await
+}
+
+/// The group settings screen's Save: instructions, shared folder, Listen or Mentions, and who is switched off here.
+/// Nothing is saved unless all of it is valid. Bots read the new settings from the next line they are given.
+#[tauri::command]
+pub async fn potato_room_set_settings(app: AppHandle, room_id: String, instructions: String, folder: String, mode: String, off_bots: Vec<String>) -> Result<RoomView, String> {
+    run(&app, move |s| {
+        let root = live::root();
+        let mut rooms = rstore::load_rooms(&root).map_err(wire)?;
+        let i = index_of(&rooms, &room_id)?;
+        rstore::apply_settings(&mut rooms[i], &instructions, &folder, &mode, &off_bots).map_err(wire)?;
         rstore::save_rooms(&root, &rooms).map_err(wire)?;
         s.notify_room(&room_id);
         Ok(view(&s, &rooms[i]))

@@ -26,6 +26,27 @@ export interface InstallView {
   needsLinuxFeature: boolean;
 }
 
+/** `on`: WSL gives unused memory back. `other`: the person chose a different value (left alone). `off`: not set. */
+export interface MemoryReturn {
+  state: 'on' | 'other' | 'off';
+  value: string | null;
+}
+
+/** What `potato_sandbox_limits_get` answers. CPU is a percent of the whole PC, memory is in MB. */
+export interface SandboxLimits {
+  cpuPercent: number;
+  memoryMb: number;
+  defaultCpuPercent: number;
+  defaultMemoryMb: number;
+  pcMemoryMb: number;
+  maxMemoryMb: number;
+  running: boolean;
+  usedCpuPercent: number | null;
+  usedMemoryMb: number | null;
+  /** The work is at its memory limit, so it is being slowed and reclaimed. */
+  memoryPressure: boolean;
+}
+
 export interface SandboxView {
   state: SandboxState;
   reason: string | null;
@@ -127,6 +148,14 @@ export interface SandboxTransport {
   remove(typed: string): Promise<void>;
   /** Returns the number that is used (the app keeps it between 1 and 240). */
   setIdle(minutes: number): Promise<number>;
+  /** The CPU and memory limits in force (or this PC's defaults) and, while the sandbox runs, what its work uses. */
+  limitsGet(): Promise<SandboxLimits>;
+  /** Sets both limits. They apply at once if the sandbox is running (no restart) and at every later start. */
+  limitsSet(cpuPercent: number, memoryMb: number): Promise<SandboxLimits>;
+  /** Whether WSL hands unused memory back to Windows (autoMemoryReclaim in .wslconfig). */
+  memoryReturnGet(): Promise<MemoryReturn>;
+  /** Adds autoMemoryReclaim=gradual to .wslconfig, keeping the person's other settings. Takes effect when WSL next starts. */
+  memoryReturnEnable(): Promise<MemoryReturn>;
   /** Step one of "turn on Windows' Linux feature": the text of the confirm dialog and a token for its button. */
   linuxAsk(): Promise<FeatureAsk>;
   /** Step two: the person pressed the dialog's button. */
@@ -154,6 +183,10 @@ export const tauriSandboxTransport: SandboxTransport = {
   reset: () => invoke<void>('potato_sandbox_reset'),
   remove: (typed) => invoke<void>('potato_sandbox_remove', { typed }),
   setIdle: (minutes) => invoke<number>('potato_sandbox_set_idle', { minutes }),
+  limitsGet: () => invoke<SandboxLimits>('potato_sandbox_limits_get'),
+  limitsSet: (cpuPercent, memoryMb) => invoke<SandboxLimits>('potato_sandbox_limits_set', { cpuPercent, memoryMb }),
+  memoryReturnGet: () => invoke<MemoryReturn>('potato_sandbox_memory_return_get'),
+  memoryReturnEnable: () => invoke<MemoryReturn>('potato_sandbox_memory_return_enable'),
   linuxAsk: () => invoke<FeatureAsk>('potato_sandbox_linux_ask'),
   linuxEnable: (token) => invoke<{ restartNeeded: boolean }>('potato_sandbox_linux_enable', { token }),
   vercelStatus: () => invoke<VercelTools>('potato_sandbox_vercel_status'),
@@ -473,6 +506,8 @@ export const FAKE_MENU: Recipe[] = [
 
 export interface FakeSandboxSeed {
   status?: Partial<SandboxView>;
+  limits?: Partial<SandboxLimits>;
+  memoryReturn?: Partial<MemoryReturn>;
   menu?: Recipe[];
   detected?: Detected;
   /** Reject `install` with this sentence. */
@@ -512,6 +547,20 @@ export function fakeSandboxTransport(seed: FakeSandboxSeed = {}): FakeSandboxTra
     install: emptyInstall(),
     ...seed.status,
   };
+  let limits: SandboxLimits = {
+    cpuPercent: 50,
+    memoryMb: 4096,
+    defaultCpuPercent: 50,
+    defaultMemoryMb: 4096,
+    pcMemoryMb: 16384,
+    maxMemoryMb: 14745,
+    running: false,
+    usedCpuPercent: null,
+    usedMemoryMb: null,
+    memoryPressure: false,
+    ...seed.limits,
+  };
+  let memoryReturn: MemoryReturn = { state: 'off', value: null, ...seed.memoryReturn };
   const calls: FakeSandboxTransport['calls'] = [];
   const installListeners = new Set<(v: InstallView) => void>();
   const changedListeners = new Set<() => void>();
@@ -632,6 +681,22 @@ export function fakeSandboxTransport(seed: FakeSandboxSeed = {}): FakeSandboxTra
         view.diskBytes = null;
         view.install = emptyInstall();
         emitChanged();
+      }),
+    memoryReturnGet: () => log('memoryReturnGet', [], () => ({ ...memoryReturn })),
+    memoryReturnEnable: () =>
+      log('memoryReturnEnable', [], () => {
+        if (memoryReturn.state === 'off') memoryReturn = { state: 'on', value: 'gradual' };
+        return { ...memoryReturn };
+      }),
+    limitsGet: () => log('limitsGet', [], () => ({ ...limits })),
+    limitsSet: (cpuPercent, memoryMb) =>
+      log('limitsSet', [cpuPercent, memoryMb], () => {
+        limits = {
+          ...limits,
+          cpuPercent: Math.min(100, Math.max(10, Math.round(cpuPercent))),
+          memoryMb: Math.min(limits.maxMemoryMb, Math.max(1024, Math.round(memoryMb))),
+        };
+        return { ...limits };
       }),
     setIdle: (minutes) =>
       log('setIdle', [minutes], () => {

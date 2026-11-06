@@ -1,0 +1,225 @@
+#!/usr/bin/python3 -I
+# Puppet Master: live CPU and memory limits for the sandbox's desktop work. Written for this repo (no upstream code).
+"""Run by the Windows host as root: `wsl -d <distro> -u root --exec python3 -I /usr/local/sbin/pm-sbx-limits <command>`.
+The user pm (the desktop, Chrome, the terminal, the bots' tools) cannot change it, and nothing pm runs can: the file is root's,
+and so are the limit files it writes.
+
+Commands (each prints one JSON object):
+  apply <cpu_percent> <memory_mb>   set the limits at once (no restart), then put every pm process under them
+  sweep                             put pm processes that are not under the limits there (new ones the control service did not place)
+  status                            the limits, what the work uses now (usage counters for the host to difference), the PC's size
+  reclaim                           give cached memory back (page cache), when the host says the sandbox is idle
+
+How it works (cgroup v2, which WSL 2 mounts at /sys/fs/cgroup with the cpu and memory controllers):
+  <root>/            the sandbox's cgroup. Its directory is root's; only its cgroup.procs file is pm's (see "who can move").
+  <root>/work        everything pm runs, except the control service. cpu.max and memory.high / memory.max are set here.
+  <root>/control     the control service (python3 ... pm-sbx-control). No limit, so the host can always talk to the desktop.
+The secret hub and its tool servers run as root and as uids 60000+, and the egress rules are firewall rules (no process): none of
+them is pm's, so none is touched.
+Who can move processes: a writer needs write access to the destination's cgroup.procs and to the common ancestor's. work/cgroup.procs
+and <root>/cgroup.procs belong to pm, so the control service (which lives in <root>/control) can put the programs it starts into
+work. pm cannot create a cgroup (the directories are root's), cannot write a limit file, and cannot move itself out to a
+cgroup without a limit (control/cgroup.procs is root's, and the parent cannot hold processes once it has controllers on).
+Memory: memory.high is the working limit (the kernel slows and reclaims above it); memory.max sits a little above it as a hard
+stop, so the desktop is slowed before anything is killed.
+"""
+
+import json
+import os
+import sys
+import time
+
+ROOT = os.environ.get("PM_SBX_CGROUP_ROOT", "/sys/fs/cgroup/pm-sbx")
+TOP = os.path.dirname(ROOT)
+WORK = os.path.join(ROOT, "work")
+CONTROL = os.path.join(ROOT, "control")
+PERIOD_US = 100000
+MIN_CPU_PERCENT = 5
+MIN_MEMORY_MB = 512
+
+
+def write(path, text):
+    with open(path, "w") as f:
+        f.write(text)
+
+
+def read(path, default=""):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return default
+
+
+def pm_ids():
+    import pwd  # Linux only; imported here so the numbers can be tested anywhere
+
+    info = pwd.getpwnam("pm")
+    return info.pw_uid, info.pw_gid
+
+
+def cpu_count():
+    return os.cpu_count() or 1
+
+
+def mem_total_mb():
+    for line in read("/proc/meminfo").splitlines():
+        if line.startswith("MemTotal:"):
+            return int(line.split()[1]) // 1024
+    return 0
+
+
+def ensure_layout():
+    """Creates the cgroups once per boot and hands pm exactly the two cgroup.procs files it needs."""
+    if read("/sys/fs/cgroup/cgroup.controllers").find("cpu") < 0 or read("/sys/fs/cgroup/cgroup.controllers").find("memory") < 0:
+        raise SystemExit(json.dumps({"ok": False, "error": "no cpu and memory controllers (cgroup v2) in this kernel"}))
+    sub = read(os.path.join(TOP, "cgroup.subtree_control"))
+    for need in ("cpu", "memory"):
+        if need not in sub.split():
+            write(os.path.join(TOP, "cgroup.subtree_control"), "+" + need)
+    os.makedirs(ROOT, exist_ok=True)
+    for need in ("cpu", "memory"):
+        if need not in read(os.path.join(ROOT, "cgroup.subtree_control")).split():
+            write(os.path.join(ROOT, "cgroup.subtree_control"), "+" + need)
+    for d in (WORK, CONTROL):
+        os.makedirs(d, exist_ok=True)
+    uid, gid = pm_ids()
+    for path in (os.path.join(ROOT, "cgroup.procs"), os.path.join(WORK, "cgroup.procs")):
+        os.chown(path, uid, gid)
+
+
+def set_limits(cpu_percent, memory_mb):
+    cpu_percent = max(MIN_CPU_PERCENT, min(100, int(cpu_percent)))
+    total = mem_total_mb()
+    memory_mb = max(MIN_MEMORY_MB, int(memory_mb))
+    if total:
+        memory_mb = min(memory_mb, total)
+    quota = int(cpu_percent / 100.0 * cpu_count() * PERIOD_US)
+    quota = max(1000, quota)
+    # The ceiling sits a little above the working limit: slowed and reclaimed first, killed only past this.
+    ceiling = memory_mb + max(256, memory_mb // 8)
+    if total:
+        ceiling = min(ceiling, total)
+    write(os.path.join(WORK, "cpu.max"), f"{quota} {PERIOD_US}")
+    # Raise the ceiling first when growing, lower it last when shrinking, so the two never cross.
+    write(os.path.join(WORK, "memory.max"), str(ceiling * 1024 * 1024))
+    write(os.path.join(WORK, "memory.high"), str(memory_mb * 1024 * 1024))
+    return cpu_percent, memory_mb, ceiling
+
+
+def cgroup_of(pid):
+    for line in read(f"/proc/{pid}/cgroup").splitlines():
+        if line.startswith("0::"):
+            return line[3:]
+    return ""
+
+
+def is_control(pid):
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            parts = f.read().split(b"\0")
+    except OSError:
+        return False
+    return any(p.endswith(b"/pm-sbx-control") for p in parts[:4])
+
+
+def sweep():
+    uid, _ = pm_ids()
+    work_rel = WORK[len("/sys/fs/cgroup"):] if WORK.startswith("/sys/fs/cgroup") else WORK
+    control_rel = CONTROL[len("/sys/fs/cgroup"):] if CONTROL.startswith("/sys/fs/cgroup") else CONTROL
+    moved = 0
+    for name in os.listdir("/proc"):
+        if not name.isdigit():
+            continue
+        pid = int(name)
+        try:
+            if os.stat(f"/proc/{pid}").st_uid != uid:
+                continue
+            want_control = is_control(pid)
+            target, rel = (CONTROL, control_rel) if want_control else (WORK, work_rel)
+            if cgroup_of(pid) == rel:
+                continue
+            write(os.path.join(target, "cgroup.procs"), str(pid))
+            moved += 1
+        except OSError:
+            continue  # it ended, or it is a kernel thread
+    return moved
+
+
+def stat_int(path, key):
+    for line in read(path).splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0] == key:
+            return int(parts[1])
+    return 0
+
+
+def status():
+    cpu_max = read(os.path.join(WORK, "cpu.max"))
+    quota = None
+    if cpu_max and not cpu_max.startswith("max"):
+        quota = int(cpu_max.split()[0])
+    high = read(os.path.join(WORK, "memory.high"))
+    ceiling = read(os.path.join(WORK, "memory.max"))
+    n = cpu_count()
+    return {
+        "ok": True,
+        "ready": os.path.isdir(WORK),
+        "cpus": n,
+        "pc_memory_mb": mem_total_mb(),
+        "cpu_percent": round(quota / PERIOD_US / n * 100) if quota else None,
+        "memory_mb": int(high) // 1048576 if high.isdigit() else None,
+        "memory_ceiling_mb": int(ceiling) // 1048576 if ceiling.isdigit() else None,
+        "cpu_usage_usec": stat_int(os.path.join(WORK, "cpu.stat"), "usage_usec"),
+        "cpu_throttled_usec": stat_int(os.path.join(WORK, "cpu.stat"), "throttled_usec"),
+        "memory_used_mb": int(read(os.path.join(WORK, "memory.current"), "0")) // 1048576,
+        "memory_high_events": stat_int(os.path.join(WORK, "memory.events"), "high"),
+        "memory_max_events": stat_int(os.path.join(WORK, "memory.events"), "max"),
+        "oom_kills": stat_int(os.path.join(WORK, "memory.events"), "oom_kill"),
+        "processes": len(read(os.path.join(WORK, "cgroup.procs")).split()),
+        "now_ns": time.monotonic_ns(),
+    }
+
+
+def reclaim():
+    """Gives clean cached pages back. Safe: it only drops what can be read again. The work cgroup is asked first."""
+    os.sync()
+    try:
+        write(os.path.join(WORK, "memory.reclaim"), "256M")
+    except OSError:
+        pass  # more than is cached, or the kernel does not offer it: not a failure
+    write("/proc/sys/vm/drop_caches", "1")
+    return {"ok": True, "reclaimed": True}
+
+
+def main(argv):
+    if os.geteuid() != 0:
+        print(json.dumps({"ok": False, "error": "run as root"}))
+        return 1
+    cmd = argv[1] if len(argv) > 1 else "status"
+    try:
+        if cmd == "apply" and len(argv) == 4:
+            ensure_layout()
+            cpu, mem, ceiling = set_limits(argv[2], argv[3])
+            moved = sweep()
+            out = status()
+            out.update({"applied": True, "moved": moved})
+        elif cmd == "sweep":
+            ensure_layout()
+            out = {"ok": True, "moved": sweep()}
+        elif cmd == "status":
+            out = status()
+        elif cmd == "reclaim":
+            out = reclaim()
+        else:
+            print(json.dumps({"ok": False, "error": "usage: pm-sbx-limits apply <cpu_percent> <memory_mb> | sweep | status | reclaim"}))
+            return 2
+    except (OSError, ValueError, KeyError) as e:
+        print(json.dumps({"ok": False, "error": str(e)}))
+        return 1
+    print(json.dumps(out))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

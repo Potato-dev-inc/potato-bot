@@ -24,6 +24,8 @@ pub enum Skip {
     BotOff,
     DailyLimit,
     Held,
+    /// Switched off in this group only (group settings).
+    Muted,
 }
 
 /// Which bots get this line, and which are skipped and why. Never the sender. Nobody gets a line at or past the hop
@@ -40,6 +42,8 @@ pub fn targets(
     for bot in &room.bot_ids {
         let why = if line.from.kind == Speaker::Bot && &line.from.id == bot {
             Some(Skip::Sender)
+        } else if !room.bot_listens(bot) {
+            Some(Skip::Muted)
         } else if held {
             Some(Skip::Held)
         } else if line.hop >= MAX_BOT_HOPS {
@@ -84,5 +88,8 @@ pub fn inbox_item(
             "line": line,
             "tools": tools.as_str(),
             "sandboxOnly": sandbox_only,
+            "mode": room.mode.as_str(),
+            "instructions": room.instructions,
+            "folder": room.folder_path(),
     }))
 }

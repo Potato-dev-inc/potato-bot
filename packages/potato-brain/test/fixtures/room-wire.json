@@ -18,6 +18,9 @@
     "line": { "id": "l0000000000a1", "from": { "kind": "person", "id": "owner", "name": "You" }, "text": "@Nimbus hi", "at": 2000, "hop": 0, "inReplyTo": null },
     "tools": "full",
     "sandboxOnly": false,
+    "mode": "listen",
+    "instructions": "",
+    "folder": "/home/pm/groups/r0123456789ab",
     "capabilities": { "sandbox": true }
   },
   "events": [
@@ -43,6 +46,9 @@
     "line": { "id": "l80d6960566e2", "from": { "kind": "person", "id": "owner", "name": "You" }, "text": "hi", "at": 1793885003778, "hop": 0, "inReplyTo": null },
     "tools": "full",
     "sandboxOnly": false,
+    "mode": "listen",
+    "instructions": "",
+    "folder": "/home/pm/groups/r4bb2b9763480",
     "capabilities": { "sandbox": false }
   }
 }

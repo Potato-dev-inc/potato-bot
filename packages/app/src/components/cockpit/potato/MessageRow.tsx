@@ -15,6 +15,7 @@ import { HoverActions } from './HoverActions';
 import { ReactButton, ReactionChips } from './Reactions';
 import { SaveAsFile } from './SaveAsFile';
 import { SettingChangeNote } from './SettingChangeNote';
+import { HandoffCard, PeerCard } from './BotTalkCards';
 import { SpeakButton } from './SpeakButton';
 import type { ThreadRow } from './model';
 
@@ -61,6 +62,20 @@ export function MessageRow({ row, botId, botName, agentLabel, transport, onChang
     setPicked(inside ? sel!.toString().trim() : '');
   };
   const m: PotatoMessage = row.message;
+  if (row.type === 'note' && m.peer) {
+    return (
+      <li className="ck-potato-botcard-row" data-message-id={m.id}>
+        <PeerCard message={m} />
+      </li>
+    );
+  }
+  if (row.type === 'note' && m.handoff) {
+    return (
+      <li className="ck-potato-botcard-row" data-message-id={m.id}>
+        <HandoffCard from={botName} handoff={m.handoff} />
+      </li>
+    );
+  }
   if (row.type === 'note' && m.change) {
     return (
       <li className="ck-potato-note ck-potato-change" role="note" data-message-id={m.id}>

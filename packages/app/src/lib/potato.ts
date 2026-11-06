@@ -215,6 +215,25 @@ export interface PotatoMessage {
   reactions?: string[];
   /** A note that says the bot changed one of its own settings when you asked: the card with Undo. Absent on every other message. */
   change?: PotatoSettingChange;
+  /** A peer card: this bot wrote to, or was written to by, another of your bots. `text` is the message. Absent on every other message. */
+  peer?: PotatoPeerCard;
+  /** A hand-off card in a group: a task one bot gave another. Absent on every other message. */
+  handoff?: PotatoHandoff;
+}
+
+/** `out`: this bot asked the other. `in`: the other bot asked this one. `reply`: the other bot answered. */
+export interface PotatoPeerCard {
+  dir: 'out' | 'in' | 'reply';
+  botId: string;
+  botName: string;
+}
+
+/** A task one bot of a group gave another (`hand_off`). `passed` is false when the hand-off limit stopped it. */
+export interface PotatoHandoff {
+  toId: string;
+  toName: string;
+  task: string;
+  passed: boolean;
 }
 
 /** The settings a bot may change for itself, when its owner asks in the private chat. Nothing else of the bot is in reach. */

@@ -78,6 +78,9 @@ session_bin() { case "$SESSION" in xfce4) echo xfce4-session ;; cinnamon) echo c
 # XDG_SESSION_TYPE must say x11: Muffin refuses to start without a supported session type.
 unset WAYLAND_DISPLAY PULSE_SERVER
 export DISPLAY="$DISPLAY_NAME" XDG_SESSION_TYPE=x11 GDK_BACKEND=x11 QT_QPA_PLATFORM=xcb SDL_VIDEODRIVER=x11
+# The screen is drawn by software (Mesa llvmpipe), which by default uses one thread per core: a busy page then burns every core.
+# Two threads are plenty for 1440x900 and halve the compositor's cost on a busy page (measured: Cinnamon 188% -> about 95%).
+export LP_NUM_THREADS="${PM_SBX_LP_THREADS:-2}"
 
 pidfile() { echo "$PIDS/$1.pid"; }
 pid_of() { [ -r "$(pidfile "$1")" ] && cat "$(pidfile "$1")"; return 0; }
@@ -329,7 +332,7 @@ start_vnc() {
     # -localhost binds loopback only. (-listen 127.0.0.1 still opened [::]:5900 on the spike.) No -viewonly: the password
     # typed decides view or control (see make_vnc_passwords).
     setsid nohup x11vnc -display "$DISPLAY_NAME" -localhost -rfbport "$VNC_PORT" -passwdfile "$VNCDIR/passwd" \
-      -forever -shared -noxdamage -quiet -o "$LOGS/x11vnc.log" >/dev/null 2>&1 </dev/null &
+      -forever -shared -noxdamage -wait 66 -defer 66 -nap -quiet -o "$LOGS/x11vnc.log" >/dev/null 2>&1 </dev/null &
     echo $! >"$(pidfile x11vnc)"
   fi
   wait_port "$VNC_PORT" x11vnc
@@ -412,6 +415,8 @@ do_stop() {
   stop_one websockify websockify
   stop_one x11vnc x11vnc
   stop_one session "$(session_bin)"
+  # Cinnamon's compositor outlives its session and would keep drawing (and burning CPU) into the next start.
+  pkill -u "$(id -u)" -f '^cinnamon( |$)' >/dev/null 2>&1 || true
   stop_one xvfb Xvfb
   echo "DESKTOP_STOPPED"
 }

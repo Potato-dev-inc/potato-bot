@@ -102,6 +102,11 @@ FLAGS=(
   --disable-gpu
   --enable-unsafe-swiftshader
   --disable-dev-shm-usage
+  --disable-background-networking
+  --disable-component-update
+  --disable-sync
+  --disable-breakpad
+  --disable-features=MediaRouter,OptimizationHints,Translate
   --no-first-run
   --no-default-browser-check
   --disable-session-crashed-bubble

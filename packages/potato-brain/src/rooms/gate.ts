@@ -53,6 +53,8 @@ export const addressed: Stage = (f) => {
   if (aim === "other") return { kind: "pass", why: "aimed_elsewhere" };
   return "next";
 };
+/** In "mentions" mode a line that calls nobody gets no answer from any bot. Calls (@Name, a name at the start, @everyone, a reply to my line) came earlier. */
+export const mentionsOnly: Stage = (f) => (f.mode === "mentions" ? { kind: "pass", why: "mentions_only" } : "next");
 export const silence: Stage = (f, s) => {
   if (f.line.from.kind === "person") return "next"; // the person is never met with silence because a bot spoke lately
   const b = s.silence.blocked(s.now);
@@ -70,7 +72,7 @@ export const heuristic: Stage = (f) => {
   return { kind: "pass", why: quiet ? "left_alone" : "low_score" };
 };
 
-export const HEURISTIC_CHAIN: Stage[] = [ownLine, hopLimit, addressed, silence, responder, heuristic];
+export const HEURISTIC_CHAIN: Stage[] = [ownLine, hopLimit, addressed, mentionsOnly, silence, responder, heuristic];
 
 export function makeGate(_mode: GateMode = "heuristic"): (f: RoomFacts, s: GateState) => Verdict {
   const chain = HEURISTIC_CHAIN;

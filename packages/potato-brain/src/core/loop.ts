@@ -43,6 +43,8 @@ import { JOB_TURN_NOTE } from "./job-tools.ts";
 import { stepFacts } from "./step-label.ts";
 import type { StepOutcome } from "./step-label.ts";
 import { STEER_TURN_NOTE, steerMessage } from "./steer.ts";
+import { Talk, TALK_NUDGE, TALK_ROOM_NOTE, TALK_TURN_NOTE, type TalkMode } from "./talk.ts";
+import { MESSAGE_USER_NAME } from "./message-user-tools.ts";
 import type { SteerItem } from "./steer.ts";
 import type { MemoryPort, PersonPatch } from "../memory/vaultMemory.ts";
 
@@ -79,7 +81,7 @@ export interface ExtraTool {
    * No gate: offered on every turn.
    * `"sandbox_owner"`: as "sandbox", and only on the owner's turns (`TurnOptions.owner`, routine runs included).
    */
-  gate?: "sandbox" | "sandbox_owner" | "owner" | "owner_person";
+  gate?: "sandbox" | "sandbox_owner" | "owner" | "owner_person" | "room";
   /** May wait (a sandbox tool waits for the app's answer). A thrown error becomes a plain failure text. */
   run(
     args: Record<string, unknown>,
@@ -165,6 +167,7 @@ export const ROOM_OFF_TOOLS: ReadonlySet<string> = new Set([
   "change_my_setting",
   "wait_until",
   "wait_cancel",
+  "message_bot",
 ]);
 
 /** The gates that mean the bot's computer: the tool-loop guard and the context trimming apply to them. */
@@ -233,6 +236,28 @@ interface Progress {
   approxTokens: number;
   model: string;
   usage: Usage;
+}
+
+/** The internal reminder joins the last user line if there is one (the person's steering), else it is a line of its own. */
+function withReminder(msgs: Msg[], reminder: string): Msg[] {
+  const last = msgs[msgs.length - 1];
+  if (last && last.role === "user") return [...msgs.slice(0, -1), { ...last, content: `${last.content}
+${reminder}` }];
+  return [...msgs, { role: "user", content: reminder }];
+}
+
+/** The wrap-up call carries no reminder: it is the message to the person anyway. */
+function withoutReminder(msgs: Msg[]): Msg[] {
+  const out: Msg[] = [];
+  for (const m of msgs) {
+    if (m.role !== "user" || !m.content.includes(TALK_NUDGE)) {
+      out.push(m);
+      continue;
+    }
+    const kept = m.content.split(TALK_NUDGE).join("").trimEnd();
+    if (kept !== "") out.push({ ...m, content: kept });
+  }
+  return out;
 }
 
 function freshProgress(): Progress {
@@ -551,6 +576,10 @@ export class Agent {
   private turnSignal: AbortSignal | undefined;
   private turnHalted: (() => boolean) | undefined;
   private turnNote: ((text: string) => boolean) | undefined;
+  /** What this turn said to the person beside its tool calls, and the caps on it (talk.ts). */
+  private talk: Talk | undefined;
+  /** When the last mid-turn text was posted, kept for a job: its turns follow each other by themselves. */
+  private talkPrevAt: number | undefined;
   private turnStep: ((step: StepEvent) => void) | undefined;
   private turnSteer: (() => SteerItem[]) | undefined;
   /** What the person wrote while this turn ran and the turn picked up (kept for the history). */
@@ -737,6 +766,7 @@ export class Agent {
         !(this.turnRoom && ROOM_OFF_TOOLS.has(tool.spec.name)) &&
         (!isSandboxGate(tool.gate) || this.turnSandbox) &&
         (tool.gate !== "sandbox_owner" || this.turnOwner) &&
+        (tool.gate !== "room" || this.turnRoom) &&
         (tool.gate !== "owner" || this.turnOwner) &&
         (tool.gate !== "owner_person" || (this.turnOwner && !this.turnRoutine)) &&
         // Memory tools (reads and writes of the notes and vault) only at the "full" level, as the built-in ones are.
@@ -877,6 +907,9 @@ export class Agent {
 
     for (let round = 0; round < rounds; round++) {
       if (mustStop()) throw stoppedError();
+      // Quiet for a while: one internal line for this round (no extra call). The no-tools wrap-up call below gets none.
+      const reminder = round > 0 ? this.talk?.nudge(this.now().getTime()) : null;
+      if (reminder) msgs = withReminder(msgs, reminder);
       const res = await ask(round, {
         messages: msgs,
         maxTokens: tools.length > 0 ? Math.max(this.maxTokens, TOOL_MAX_TOKENS) : this.maxTokens,
@@ -890,6 +923,9 @@ export class Agent {
       if (!res.toolCalls || res.toolCalls.length === 0) {
         return { text: res.text, usage, model };
       }
+
+      // Text beside the tool calls is a message to the person: posted now, before the steps it announces.
+      this.sayAlongside(res.text);
 
       // Every announced call must get a matching tool result, or the next
       // request is rejected for orphaned tool_call ids.
@@ -940,6 +976,7 @@ export class Agent {
         const out = await this.runExtra(extra, args, model);
         this.step({ phase: "end", id: stepId, tool: stepTool, ok: out.isError !== true, ...(out.outcome ? { outcome: out.outcome } : {}) });
         usage = addUsage(usage, this.takeSubUsage());
+        if (call.name === MESSAGE_USER_NAME && out.isError !== true) this.talk?.toldPerson(this.now().getTime());
         // The turn ends with this tool's text as the reply (ask_user): the other calls of this round are dropped.
         if (out.endTurn) return { text: out.text, usage, model };
         msgs = [
@@ -960,11 +997,14 @@ export class Agent {
         }
       }
       if (seen.size > 0) msgs = pruneSandboxMessages(msgs, seen);
+      this.talk?.roundDone();
       // Between tool rounds: anything the person wrote while the tools ran is read now and answered at once.
       msgs = this.takeSteer(msgs);
     }
 
     // The last call has no tools, but it gets the tool budget. If it fails or comes back empty the work is not thrown away.
+    // It writes the wrap-up, so the internal "say something" reminder is taken out first.
+    msgs = withoutReminder(msgs);
     try {
       const final = await ask(rounds, {
         messages: msgs,
@@ -984,6 +1024,21 @@ export class Agent {
     return { text: this.turnJob ? jobTurnStepsText(progress.steps) : stoppedAfterStepsText(progress.steps), usage, model };
   }
 
+  /** Posts what the model wrote beside its tool calls, if the talk rules allow it. A refused send is not counted as said. */
+  private sayAlongside(text: string): void {
+    const talk = this.talk;
+    if (!talk || !this.turnNote || text.trim() === "") return;
+    const out = talk.offer(text, this.now().getTime());
+    if (out === null) return;
+    let sent = false;
+    try {
+      sent = this.turnNote(out);
+    } catch {
+      // a failed send must never cost the turn
+    }
+    if (!sent) talk.said.pop();
+  }
+
   /** The messages the person wrote since the last round, added to what the model sees. A throwing source costs nothing. */
   private takeSteer(msgs: Msg[]): Msg[] {
     if (!this.turnSteer) return msgs;
@@ -996,6 +1051,7 @@ export class Agent {
     items = items.filter((item) => item.text.trim() !== "");
     if (items.length === 0) return msgs;
     this.steered.push(...items);
+    this.talk?.personWrote();
     return [...msgs, { role: "user", content: steerMessage(items) }];
   }
 
@@ -1305,6 +1361,8 @@ ${escapePromptData(body)}
     this.turnSteer = opts.steer;
     this.steered = [];
     this.turnSerial++;
+    const talkMode: TalkMode = opts.routine || opts.spontaneous || !opts.onNote ? "off" : opts.room ? "room" : "owner";
+    this.talk = new Talk({ mode: talkMode, job: this.turnJob, startedAt: now.getTime(), ...(this.turnJob && this.talkPrevAt !== undefined ? { previousAt: this.talkPrevAt } : {}) });
     const memoryOpen = this.toolLevel === "full";
     this.selfState = tickSelf(
       this.selfStore?.load() ?? this.selfState,
@@ -1422,6 +1480,8 @@ ${escapePromptData(body)}
     const ownerTurnNote = this.turnRoom || this.turnRoutine ? SCRATCHPAD_TURN_NOTE : `${SCRATCHPAD_TURN_NOTE}
 ${JOB_TURN_NOTE}${this.turnSteer ? `
 ${STEER_TURN_NOTE}` : ""}`;
+    // How to talk while working: the same in every persona (each persona file adds its own voice). Not on routines or nudges.
+    const talkText = this.talk?.mode === "off" ? "" : this.turnRoom ? TALK_ROOM_NOTE : TALK_TURN_NOTE;
     const hot: Msg[] = opts.spontaneous
       ? [...this.history.slice(-this.hotTurns * 2)]
       : [...this.history.slice(-this.hotTurns * 2), { role: "user", content: userContent }];
@@ -1437,12 +1497,14 @@ ${STEER_TURN_NOTE}` : ""}`;
           ? {
               id: "sandbox-note",
               volatility: 2,
-              content: this.turnOwner ? `${SANDBOX_TURN_NOTE}
-${ownerTurnNote}` : SANDBOX_TURN_NOTE,
+              content: [this.turnOwner ? `${SANDBOX_TURN_NOTE}
+${ownerTurnNote}` : SANDBOX_TURN_NOTE, talkText].filter(Boolean).join("\n"),
             }
           : this.turnOwner
-            ? { id: "scratchpad-note", volatility: 2, content: ownerTurnNote }
-            : null,
+            ? { id: "scratchpad-note", volatility: 2, content: [ownerTurnNote, talkText].filter(Boolean).join("\n") }
+            : talkText !== ""
+              ? { id: "talk-note", volatility: 2, content: talkText }
+              : null,
       },
       this.budget ? { budget: this.budget } : {},
     );
@@ -1529,7 +1591,10 @@ ${ownerTurnNote}` : SANDBOX_TURN_NOTE,
         content: later.length === 0 ? base : [base, "[Written while you were working]", ...later].join("\n\n"),
       });
     }
-    this.history.push({ role: "assistant", content: display });
+    // What went out beside the tool calls is part of what she said: kept in order, before the final text.
+    const talked = this.talk?.said ?? [];
+    this.history.push({ role: "assistant", content: [...talked, display].join("\n\n") });
+    if (this.talk && this.turnJob) this.talkPrevAt = this.talk.lastAt;
 
     this.mood = mood;
     this.moodStore?.save(mood);
@@ -1554,6 +1619,7 @@ ${ownerTurnNote}` : SANDBOX_TURN_NOTE,
         for (const item of this.steered) {
           this.memory.log({ kind: "heard", text: item.text, at: now, where, who: opts.speaker?.name, whoId: opts.speaker?.id });
         }
+        for (const line of talked) this.memory.log({ kind: "said", text: line, at: now, where, mood: mood.mood, spontaneous: opts.spontaneous });
         this.memory.log({
           kind: "said",
           text: display,

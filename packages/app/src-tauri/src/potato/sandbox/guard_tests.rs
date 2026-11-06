@@ -79,6 +79,9 @@ fn only_wsl_rs_starts_a_process() {
     assert!(wsl.contains("crate::proc_util::hidden_command(\"powershell.exe\")"), "the elevated call is hidden too");
 }
 
+/// The only file outside the sandbox folder that names `.wslconfig`: it adds `autoMemoryReclaim=gradual` when the person presses the button.
+const MEMORY_RETURN_EXCEPTION: &str = "commands/memory_return.rs";
+
 #[test]
 fn the_refused_words_are_in_the_gate_and_nowhere_else_in_the_app() {
     let wsl = sandbox_files().into_iter().find(|(n, _)| n == "wsl.rs").unwrap().1;
@@ -90,6 +93,10 @@ fn the_refused_words_are_in_the_gate_and_nowhere_else_in_the_app() {
             continue;
         }
         assert!(!code.contains("--shutdown"), "{name} names --shutdown; stopping every distro is never done");
+        // The one named exception: the person's own "Give unused memory back to Windows" button edits one line of .wslconfig.
+        if name == MEMORY_RETURN_EXCEPTION {
+            continue;
+        }
         assert!(!code.to_lowercase().contains(".wslconfig"), "{name} names the WSL settings file");
     }
 }
@@ -297,4 +304,13 @@ fn the_scanner_sees_a_violation() {
     assert!(!code.contains("fs::copy("), "comments are cut");
     assert!(!code.contains("dbg!"), "test code is cut");
     assert!(is_test_file("wsl/guard_tests.rs") && is_test_file("pty/tests.rs") && !is_test_file("potato/sandbox/wsl.rs"));
+}
+
+#[test]
+fn the_wslconfig_exception_is_one_file_that_never_restarts_wsl_and_is_not_in_the_sandbox_folder() {
+    let files = all_files();
+    let (_, code) = files.iter().find(|(n, _)| n == MEMORY_RETURN_EXCEPTION).expect("the exception file exists");
+    assert!(!code.contains("--shutdown") && !code.contains("--terminate") && !code.contains("Command::"), "it edits a file and nothing else");
+    assert!(!MEMORY_RETURN_EXCEPTION.starts_with("potato/sandbox/"));
+    assert_eq!(files.iter().filter(|(_, c)| c.to_lowercase().contains(".wslconfig")).count(), 1, "only that file names the WSL settings file");
 }

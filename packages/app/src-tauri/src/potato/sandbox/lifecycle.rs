@@ -30,6 +30,8 @@ use super::wsl::{GuestUser, Holder, SandboxName, Wsl, WslError};
 /// Reads of the guest in a row that may fail before the boot wait gives up (each also uses one poll).
 pub const MAX_READ_ERRORS: u32 = 30;
 pub const DEFAULT_IDLE_MINUTES: u32 = 15;
+/// After this long without use, cached memory is given back (once per quiet spell). Long before the idle stop.
+pub const RECLAIM_AFTER_MS: i64 = 5 * 60 * 1000;
 pub const MIN_IDLE_MINUTES: u32 = 1;
 pub const MAX_IDLE_MINUTES: u32 = 240;
 /// Where the guest files live inside the distro (see `install.rs`).
@@ -293,6 +295,8 @@ struct Inner {
     /// Until when the person holds the screen (a live link or lease). Counts as use for the idle rule.
     person_until_ms: i64,
     idle_minutes: u32,
+    /// The CPU and memory limits the desktop work runs under (applied at every start and on every change).
+    limits: Option<super::limits::Limits>,
 }
 
 pub struct Lifecycle {
@@ -317,6 +321,8 @@ pub struct Lifecycle {
     start_lock: Mutex<()>,
     in_use: Arc<AtomicU32>,
     generation: AtomicU64,
+    /// The `last_active_ms` of the quiet spell whose cache was already given back.
+    reclaimed_for: std::sync::atomic::AtomicI64,
 }
 
 /// While one exists, the idle stop does not run.
@@ -352,10 +358,12 @@ impl Lifecycle {
                 last_active_ms: 0,
                 person_until_ms: 0,
                 idle_minutes: DEFAULT_IDLE_MINUTES,
+                limits: None,
             }),
             start_lock: Mutex::new(()),
             in_use: Arc::new(AtomicU32::new(0)),
             generation: AtomicU64::new(0),
+            reclaimed_for: std::sync::atomic::AtomicI64::new(i64::MIN),
         }
     }
 
@@ -413,6 +421,59 @@ impl Lifecycle {
 
     pub fn idle_minutes(&self) -> u32 {
         self.inner.lock().idle_minutes
+    }
+
+    /// A quiet sandbox gives its cached memory back once (the page cache the work left behind), so Windows gets it. Safe: only
+    /// pages that can be read again are dropped. Never while something uses the sandbox.
+    fn reclaim_when_quiet(&self, now_ms: i64) {
+        let (ready, active) = {
+            let inner = self.inner.lock();
+            (inner.phase == Phase::Ready, inner.last_active_ms.max(inner.person_until_ms))
+        };
+        if ready && self.in_use.load(Ordering::SeqCst) == 0 && now_ms - active >= RECLAIM_AFTER_MS && self.reclaimed_for.swap(active, Ordering::SeqCst) != active {
+            self.reclaim_memory();
+        }
+    }
+
+    pub fn set_limits(&self, limits: super::limits::Limits) {
+        self.inner.lock().limits = Some(limits);
+    }
+
+    pub fn limits(&self) -> Option<super::limits::Limits> {
+        self.inner.lock().limits
+    }
+
+    fn run_limits(&self, wsl: &Wsl, argv: &[String]) -> Option<super::limits::GuestStatus> {
+        let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+        let out = wsl.exec(&self.name, GuestUser::Root, &args, None, super::wsl::SHORT).ok()?;
+        super::limits::parse_status(&out.stdout_text())
+    }
+
+    /// Puts the saved limits in force now (no restart). `None` when the sandbox is not running or the guest cannot do it.
+    pub fn apply_limits(&self) -> Option<super::limits::GuestStatus> {
+        let limits = self.limits()?;
+        if self.phase() != Phase::Ready {
+            return None;
+        }
+        self.run_limits(&self.wsl, &super::limits::apply_argv(limits))
+    }
+
+    /// What the work uses now and the limits in force. `None` when the sandbox is not running.
+    pub fn limits_status(&self) -> Option<super::limits::GuestStatus> {
+        if self.phase() != Phase::Ready {
+            return None;
+        }
+        self.run_limits(&self.wsl, &super::limits::status_argv())
+    }
+
+    /// Gives cached memory back to Windows' side of the VM. Safe: it only drops what can be read again.
+    pub fn reclaim_memory(&self) {
+        let _ = self.start_wsl_exec_quiet(&super::limits::reclaim_argv());
+    }
+
+    fn start_wsl_exec_quiet(&self, argv: &[String]) -> Option<()> {
+        let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+        self.wsl.exec(&self.name, GuestUser::Root, &args, None, super::wsl::SHORT).ok().map(|_| ())
     }
 
     pub fn touch(&self, now_ms: i64) {
@@ -564,6 +625,7 @@ impl Lifecycle {
              tr -d '\\r' < {GUEST_SHARE}/control/pm-sbx-computer-mcp > /usr/local/bin/pm-sbx-computer-mcp && chmod 0755 /usr/local/bin/pm-sbx-computer-mcp\n\
              tr -d '\\r' < {GUEST_SHARE}/control/pm-sbx-mcp-hub > /usr/local/bin/pm-sbx-mcp-hub && chmod 0755 /usr/local/bin/pm-sbx-mcp-hub\n\
              tr -d '\\r' < {GUEST_SHARE}/control/pm-sbx-secret-hub > /usr/local/sbin/pm-sbx-secret-hub && chmod 0750 /usr/local/sbin/pm-sbx-secret-hub\n\
+             tr -d '\\r' < {GUEST_SHARE}/control/pm-sbx-limits > /usr/local/sbin/pm-sbx-limits && chmod 0750 /usr/local/sbin/pm-sbx-limits\n\
              install -d -o pm -g pm -m 0700 /var/lib/pm-sbx && install -d -o pm -g pm -m 0755 /var/log/pm-sbx/mcp\n\
              install -d -m 0755 /opt/pm-connectors\n\
              tr -d '\\r' < {GUEST_SHARE}/page-browser/pm-sbx-page-browser > /usr/local/bin/pm-sbx-page-browser && chmod 0755 /usr/local/bin/pm-sbx-page-browser\n\
@@ -628,6 +690,11 @@ impl Lifecycle {
         let desktop = self.start_wsl.exec(&self.name, GuestUser::Pm, &[START_DESKTOP, "start"], None, Duration::from_secs(120))?;
         if !desktop.success() {
             return Err(LifecycleError::NotReady("The sandbox screen did not start.".to_string()));
+        }
+
+        // 3b. the saved CPU and memory limits, before anything heavy runs (best effort: a guest without cgroup v2 just runs unlimited)
+        if let Some(limits) = self.limits() {
+            let _ = self.run_limits(&self.start_wsl, &super::limits::apply_argv(limits));
         }
 
         // 4. everything answers
@@ -708,6 +775,7 @@ impl Lifecycle {
             )
         };
         if !due {
+            self.reclaim_when_quiet(now_ms);
             return Ok(false);
         }
         let result = self.stop_inner();

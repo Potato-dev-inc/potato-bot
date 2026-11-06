@@ -189,7 +189,7 @@ test("parseRoomItem rejects a wrong conversation id, a stranger as me, and a big
   assert.equal(parseRoomItem(wire({ conversationId: `app:dm:${ROOM}` })), null);
   assert.equal(parseRoomItem(wire({ me: { kind: "bot", id: "other", name: "Other" } })), null);
   assert.equal(parseRoomItem(wire({ me: ren })), null);
-  const many = Array.from({ length: 7 }, (_, i) => ({ kind: "bot", id: `b${i}`, name: `B${i}` }));
+  const many = Array.from({ length: 12 }, (_, i) => ({ kind: "bot", id: `b${i}`, name: `B${i}` }));
   assert.equal(parseRoomItem(wire({ roster: [ren, fish, ...many] })), null);
   const recent = Array.from({ length: 21 }, (_, i) => ({ id: `l${i}`, from: ren, text: "x", at: i, hop: 0, inReplyTo: null }));
   assert.equal(parseRoomItem(wire({ recent })), null);

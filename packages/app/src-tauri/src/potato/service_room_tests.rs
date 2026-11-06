@@ -17,7 +17,7 @@ fn pair(name: &str) -> Rig {
     let rig = Rig::new(name);
     store::add_bot(&rig.root, "mochi", "potato", 2).unwrap();
     store::add_bot(&rig.root, "kiwi", "fish", 3).unwrap();
-    rstore::save_rooms(&rig.root, &[Room { id: ROOM.into(), name: "Weekend".into(), bot_ids: vec!["nimbus".into(), "mochi".into()], created_ms: 1, last_ms: 1, unread: 0 }]).unwrap();
+    rstore::save_rooms(&rig.root, &[Room { id: ROOM.into(), name: "Weekend".into(), bot_ids: vec!["nimbus".into(), "mochi".into()], created_ms: 1, last_ms: 1, unread: 0, ..Default::default() }]).unwrap();
     rig
 }
 
@@ -313,4 +313,100 @@ fn a_bot_that_cannot_start_leaves_a_room_note() {
     let notes: Vec<RoomLine> = lines(&rig).into_iter().filter(|l| l.hop == NOTE_HOP).collect();
     assert!(notes.iter().any(|n| n.from.id == "nimbus" && n.text.contains("brain stopped")), "{notes:?}");
     assert!(notes.iter().any(|n| n.from.id == "mochi" && n.text.contains("brain stopped")), "{notes:?}");
+}
+
+// ---- hand_off: a task from one bot to another, as a card ------------------------------------------------------------------
+
+fn call_as(rig: &Rig, bot: &str, conversation: &str, id: &str, tool: &str, args: Value) -> Value {
+    rig.svc.set_spawner(std::sync::Arc::new(|job| job()));
+    rig.svc.ingest(bot, vec![parse_event(&json!({"v":1,"type":"sandbox_call","callId":id,"conversationId":conversation,"tool":tool,"args":args,"image":false})).unwrap()]);
+    let body = rig.svc.inbox_poll(bot, 0, 0);
+    body["items"].as_array().cloned().unwrap_or_default().into_iter().find(|i| i["type"] == "sandbox_result" && i["callId"] == id).unwrap_or_else(|| panic!("no answer to {id}"))
+}
+
+fn code_of(item: &Value) -> String {
+    item["error"]["code"].as_str().unwrap_or("").to_string()
+}
+
+fn hand_off(rig: &Rig, bot: &str, id: &str, to: &str, task: &str, in_reply_to: &str) -> Value {
+    call_as(rig, bot, &conversation(), id, "hand_off", json!({"to": to, "task": task, "inReplyTo": in_reply_to}))
+}
+
+fn handoffs(rig: &Rig) -> Vec<RoomLine> {
+    lines(rig).into_iter().filter(|l| l.handoff.is_some()).collect()
+}
+
+#[test]
+fn a_hand_off_saves_a_card_and_wakes_only_the_bot_it_names() {
+    let rig = pair("g_handoff");
+    let mut rooms = rstore::load_rooms(&rig.root).unwrap();
+    rooms[0].bot_ids.push("kiwi".into());
+    rstore::save_rooms(&rig.root, &rooms).unwrap();
+    let first = rig.svc.send_room(ROOM, "check the weather and plan the trip").unwrap();
+    let answer = hand_off(&rig, "nimbus", "h-1", "Mochi", "  look up the weather  ", &first.id);
+    assert_eq!(answer["ok"], json!(true), "{answer:?}");
+    let cards = handoffs(&rig);
+    assert_eq!(cards.len(), 1);
+    let card = &cards[0];
+    assert_eq!((card.hop, card.from.id.as_str(), card.text.as_str()), (1, "nimbus", "@Mochi look up the weather"));
+    assert_eq!(card.in_reply_to.as_deref(), Some(first.id.as_str()));
+    let h = card.handoff.as_ref().unwrap();
+    assert_eq!((h.to_id.as_str(), h.to_name.as_str(), h.task.as_str(), h.passed), ("mochi", "Mochi", "look up the weather", true));
+    // mochi got the person's line and then the hand-off; kiwi only the person's line; nimbus never its own
+    let mochi = items(&rig, "mochi");
+    assert_eq!(mochi.len(), 2);
+    assert_eq!(mochi[1]["line"]["id"], card.id.as_str());
+    assert_eq!(mochi[1]["line"]["hop"], 1);
+    assert_eq!(items(&rig, "kiwi").len(), 1, "a hand-off goes to the bot it names, not to the whole group");
+    assert_eq!(items(&rig, "nimbus").len(), 1);
+}
+
+#[test]
+fn a_chain_of_hand_offs_stops_at_the_hop_limit_and_the_card_says_so() {
+    let rig = pair("g_handoff_hops");
+    let l0 = rig.svc.send_room(ROOM, "go").unwrap();
+    assert_eq!(hand_off(&rig, "nimbus", "h-1", "mochi", "step one", &l0.id)["ok"], json!(true));
+    let h1 = handoffs(&rig)[0].clone();
+    assert_eq!(hand_off(&rig, "mochi", "h-2", "nimbus", "step two", &h1.id)["ok"], json!(true));
+    let h2 = handoffs(&rig)[1].clone();
+    assert_eq!(h2.hop, 2);
+    // the third step would be hop 3: the card is saved as not passed on, the bot is told, and nobody is woken
+    let before = items(&rig, "mochi").len();
+    let answer = hand_off(&rig, "nimbus", "h-3", "mochi", "step three", &h2.id);
+    assert_eq!((answer["ok"].clone(), code_of(&answer)), (json!(false), "HOP_LIMIT".to_string()), "{answer:?}");
+    let last = handoffs(&rig).pop().unwrap();
+    assert_eq!((last.hop, last.handoff.as_ref().unwrap().passed), (MAX_BOT_HOPS, false));
+    assert_eq!(items(&rig, "mochi").len(), before, "nothing is delivered past the limit");
+}
+
+#[test]
+fn a_hand_off_is_refused_for_a_made_up_line_an_unknown_bot_yourself_a_switched_off_bot_and_a_private_chat() {
+    let rig = pair("g_handoff_refuse");
+    let l0 = rig.svc.send_room(ROOM, "go").unwrap();
+    let c = |a: &Value| (a["ok"].clone(), code_of(a));
+    // a line id the bot was never given
+    assert_eq!(c(&hand_off(&rig, "nimbus", "r-1", "mochi", "x", "l00000000dead")), (json!(false), "NOT_ANSWERING".to_string()));
+    // a name that is not in the group, and the bot itself
+    assert_eq!(c(&hand_off(&rig, "nimbus", "r-2", "kiwi", "x", &l0.id)), (json!(false), "NO_SUCH_BOT".to_string()));
+    assert_eq!(c(&hand_off(&rig, "nimbus", "r-3", "nimbus", "x", &l0.id)), (json!(false), "NO_SUCH_BOT".to_string()));
+    assert_eq!(c(&hand_off(&rig, "nimbus", "r-4", "mochi", "   ", &l0.id)), (json!(false), "BAD_ARGS".to_string()));
+    // a bot switched off in this group
+    let mut rooms = rstore::load_rooms(&rig.root).unwrap();
+    rooms[0].off_bots.push("mochi".into());
+    rstore::save_rooms(&rig.root, &rooms).unwrap();
+    assert_eq!(c(&hand_off(&rig, "nimbus", "r-5", "mochi", "x", &l0.id)), (json!(false), "BOT_OFF".to_string()));
+    // the private chat has no hand_off
+    let dm = call_as(&rig, "nimbus", "app:dm:nimbus", "r-6", "hand_off", json!({"to": "mochi", "task": "x", "inReplyTo": l0.id}));
+    assert_eq!(c(&dm), (json!(false), "TOOL_NOT_ALLOWED".to_string()));
+    assert!(handoffs(&rig).is_empty(), "no refused call left a card");
+}
+
+#[test]
+fn a_hand_off_cannot_be_made_twice_from_one_answered_line() {
+    let rig = pair("g_handoff_once");
+    let l0 = rig.svc.send_room(ROOM, "go").unwrap();
+    // the bot answers; the line is no longer one it is working on
+    reply(&rig, "nimbus", &l0.id, "done");
+    let answer = hand_off(&rig, "nimbus", "o-1", "mochi", "late", &l0.id);
+    assert_eq!(code_of(&answer), "NOT_ANSWERING", "{answer:?}");
 }

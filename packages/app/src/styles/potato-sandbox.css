@@ -299,3 +299,9 @@
     transition: none;
   }
 }
+
+/* Computer limits: two labelled sliders and the use readout. */
+.sbx-limits { display: flex; flex-direction: column; gap: 10px; }
+.sbx-limit { display: grid; grid-template-columns: 110px 1fr 120px; align-items: center; gap: 10px; font-size: 12px; }
+.sbx-limit input[type='range'] { width: 100%; accent-color: currentColor; }
+.sbx-limit-value { text-align: right; font-variant-numeric: tabular-nums; }

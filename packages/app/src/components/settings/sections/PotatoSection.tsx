@@ -161,14 +161,14 @@ export function makePotatoRows(transport: PotatoTransport = tauriPotatoTransport
     {
       id: 'potato-groups-labs',
       label: 'Bot groups',
-      hint: 'Make a group of 2 to 5 of your bots and talk to them in one chat. Needs Potato Bot on too.',
+      hint: 'Make a group of 2 to 10 of your bots and talk to them in one chat. Needs Potato Bot on too.',
       keywords: `${KEYWORDS} groups group rooms chat labs early`,
       group: 'Labs',
-      labs: { name: 'Bot groups', about: 'Chat with 2 to 5 of your bots in one group. Needs Potato Bot.' },
+      labs: { name: 'Bot groups', about: 'Chat with 2 to 10 of your bots in one group. Needs Potato Bot.' },
       render: (env) => (
         <LabsSwitch
           label="Bot groups"
-          description="On: you can make a group of 2 to 5 of your bots. Off: groups are hidden and nothing in them runs. Needs Potato Bot on too."
+          description="On: you can make a group of 2 to 10 of your bots. Off: groups are hidden and nothing in them runs. Needs Potato Bot on too."
           checked={env.settings.potato_groups_enabled ?? false}
           onChange={(value) => void env.patch({ potato_groups_enabled: value })}
         />

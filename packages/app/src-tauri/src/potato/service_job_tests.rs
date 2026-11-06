@@ -452,7 +452,7 @@ fn pause_all_ends_a_job_but_quitting_the_app_does_not() {
 fn a_group_cannot_start_or_log_a_job() {
     let rig = rig("room");
     store::add_bot(&rig.root, "mochi", "potato", 2).unwrap();
-    rstore::save_rooms(&rig.root, &[Room { id: "r0123456789ab".into(), name: "Weekend".into(), bot_ids: vec!["nimbus".into(), "mochi".into()], created_ms: 1, last_ms: 1, unread: 0 }]).unwrap();
+    rstore::save_rooms(&rig.root, &[Room { id: "r0123456789ab".into(), name: "Weekend".into(), bot_ids: vec!["nimbus".into(), "mochi".into()], created_ms: 1, last_ms: 1, unread: 0, ..Default::default() }]).unwrap();
     let room = store::app_room_conversation("r0123456789ab");
     for (n, (name, args)) in [("job_start", json!({"goal": "take over"})), ("job_log", json!({"step": "x"})), ("job_done", json!({"summary": "x"}))].into_iter().enumerate() {
         let answer = tool(&rig, &room, &format!("r-{n}"), name, args);

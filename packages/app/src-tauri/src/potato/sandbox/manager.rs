@@ -657,6 +657,15 @@ impl Manager {
     }
 
     /// Returns the number that is used (the sandbox keeps it between 1 and 240).
+    /// New CPU and memory limits: kept for every later start and put in force now if the sandbox is running.
+    pub fn set_limits(&self, limits: super::limits::Limits) -> Option<super::limits::GuestStatus> {
+        self.sandbox.set_limits(limits)
+    }
+
+    pub fn limits_status(&self) -> Option<super::limits::GuestStatus> {
+        self.sandbox.limits_status()
+    }
+
     pub fn set_idle_minutes(&self, minutes: u32) -> u32 {
         let used = self.sandbox.set_idle_minutes(minutes);
         self.after();

@@ -199,6 +199,8 @@ mod service_tests;
 #[cfg(test)]
 mod service_room_tests;
 #[cfg(test)]
+mod service_peer_tests;
+#[cfg(test)]
 mod service_job_tests;
 #[cfg(test)]
 mod service_steer_tests;

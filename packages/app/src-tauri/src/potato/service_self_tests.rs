@@ -187,7 +187,7 @@ fn extra_words_in_the_arguments_reach_no_other_setting() {
 #[test]
 fn a_group_turn_cannot_use_it_whoever_wrote_the_lines() {
     let (rig, _) = rig("self-room");
-    rstore::save_rooms(&rig.root, &[Room { id: "r0123456789ab".into(), name: "Weekend".into(), bot_ids: vec!["nimbus".into(), "mochi".into()], created_ms: 1, last_ms: 1, unread: 0 }]).unwrap();
+    rstore::save_rooms(&rig.root, &[Room { id: "r0123456789ab".into(), name: "Weekend".into(), bot_ids: vec!["nimbus".into(), "mochi".into()], created_ms: 1, last_ms: 1, unread: 0, ..Default::default() }]).unwrap();
     store::add_bot(&rig.root, "mochi", "potato", 2).unwrap();
     owner_turn(&rig);
     let room = store::app_room_conversation("r0123456789ab");

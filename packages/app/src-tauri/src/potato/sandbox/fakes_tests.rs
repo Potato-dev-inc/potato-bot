@@ -39,6 +39,9 @@ pub struct State {
     pub install_registers: bool,
     /// The distro list fails, as when WSL 2 cannot start (a restart is pending, or virtualization is off).
     pub list_fails: bool,
+    /// What the last `pm-sbx-limits apply` set, and how many times `reclaim` ran.
+    pub limits_applied: Option<(u32, u32)>,
+    pub reclaims: u32,
     /// With `list_fails`: what the failing list prints (UTF-16 on stdout), as `wsl.exe` does.
     pub list_failure_text: Option<String>,
     /// The next N readiness reads fail with a transient wsl error.
@@ -118,6 +121,8 @@ impl FakeGuest {
                 install_code: 0,
                 install_registers: true,
                 list_fails: false,
+                limits_applied: None,
+                reclaims: 0,
                 list_failure_text: None,
                 readiness_errors: 0,
                 hang_install: false,
@@ -259,6 +264,16 @@ impl FakeGuest {
                     on_line(&line);
                 }
                 code(st.apply_code)
+            }
+            ["/usr/bin/python3", "-I", script, rest @ ..] if script.ends_with("pm-sbx-limits") => {
+                // The guest script: `apply <cpu> <mb>` remembers the pair, `status` and `reclaim` answer.
+                match rest {
+                    ["apply", cpu, mb] => st.limits_applied = Some((cpu.parse().unwrap(), mb.parse().unwrap())),
+                    ["reclaim"] => st.reclaims += 1,
+                    _ => {}
+                }
+                let (cpu, mb) = st.limits_applied.unwrap_or((100, 0));
+                ok(format!("{{\"ok\": true, \"ready\": true, \"cpus\": 8, \"cpu_percent\": {cpu}, \"memory_mb\": {mb}, \"memory_used_mb\": 300, \"cpu_usage_usec\": 1000, \"now_ns\": 1000000}}").into_bytes())
             }
             ["/usr/bin/python3", "-I", script, ..] if script.ends_with("pm-sbx-page-browser") => ok(b"{\"ok\":true}".to_vec()),
             _ => panic!("the fake guest was asked for something it does not know: {joined}"),

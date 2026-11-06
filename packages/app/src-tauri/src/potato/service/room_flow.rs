@@ -30,6 +30,8 @@ fn room_err(e: RoomError) -> StoreError {
         "POTATO_ROOM_LIMIT" => "POTATO_ROOM_LIMIT",
         "POTATO_ROOM_GONE" => "POTATO_ROOM_GONE",
         "POTATO_ROOM_ID" => "POTATO_ROOM_ID",
+        "POTATO_ROOM_FOLDER" => "POTATO_ROOM_FOLDER",
+        "POTATO_ROOM_MODE" => "POTATO_ROOM_MODE",
         _ => "POTATO_ROOM_IO",
     };
     StoreError::new(code, message)
@@ -104,7 +106,7 @@ impl Service {
 
     /// A note in a group about a bot (it stopped, it is out of budget). Saved, never passed on, never shown to a brain.
     fn room_note(&self, room_id: &str, bot: &str, now: i64, text: &str) {
-        let line = RoomLine { id: rstore::new_id('l'), from: self.bot_from(bot), text: text.to_string(), at: now, hop: NOTE_HOP, in_reply_to: None, file: None };
+        let line = RoomLine { id: rstore::new_id('l'), from: self.bot_from(bot), text: text.to_string(), at: now, hop: NOTE_HOP, in_reply_to: None, file: None, handoff: None };
         if let Err(e) = rstore::append_line(&self.root, room_id, line, self.home_of(bot).as_deref()) {
             tracing::debug!(?e, "could not save a group note");
             return;
@@ -160,6 +162,7 @@ impl Service {
             hop: 0,
             in_reply_to: None,
             file: None,
+            handoff: None,
         };
         rstore::append_line(&self.root, room_id, line.clone(), None).map_err(room_err)?;
         self.touch_room(room_id, now, false);
@@ -177,6 +180,11 @@ impl Service {
     /// Hands `line` to the member bots that may take it. Nothing is waited for: a bot that is not running is started
     /// and finds the line in its inbox.
     fn fan_out(&self, room: &Room, line: &RoomLine, tools: Tools) {
+        self.fan_out_to(room, line, tools, None);
+    }
+
+    /// As `fan_out`, but with `only` set just that bot gets the line (a hand-off goes to the bot it names, not to the whole group).
+    fn fan_out_to(&self, room: &Room, line: &RoomLine, tools: Tools, only: Option<&str>) {
         let now = self.host.now_ms();
         let held = hold::is_held(&self.root);
         let conversation = store::app_room_conversation(&room.id);
@@ -225,7 +233,10 @@ impl Service {
             let stopped = rt.is_some_and(|r| r.keeper.is_stopped());
             on.insert(bot.clone(), p.exists && self.brains.enabled() && !p.agents && p.blocked.is_none() && !stopped);
         }
-        let (go, skipped) = fanout::targets(room, line, &|b| on.get(b).copied().unwrap_or(false), &|b| over.get(b).copied().unwrap_or(false), held);
+        let (mut go, skipped) = fanout::targets(room, line, &|b| on.get(b).copied().unwrap_or(false), &|b| over.get(b).copied().unwrap_or(false), held);
+        if let Some(only) = only {
+            go.retain(|b| b == only);
+        }
 
         for bot in &go {
             let me = self.bot_from(bot);
@@ -263,7 +274,7 @@ impl Service {
                         Some(blocked) => self.blocked_note(bot, blocked),
                         None => format!("{name} is not running, so it did not get this line."),
                     },
-                    Skip::Sender | Skip::HopLimit | Skip::Held => continue,
+                    Skip::Sender | Skip::HopLimit | Skip::Held | Skip::Muted => continue,
                 };
                 self.room_note(&room.id, bot, now, &text);
             }
@@ -309,7 +320,7 @@ impl Service {
             text.push(' ');
             text.push_str(face);
         }
-        let line = RoomLine { id: rstore::new_id('l'), from: self.bot_from(bot), text, at: now, hop, in_reply_to: Some(in_reply_to.to_string()), file: None };
+        let line = RoomLine { id: rstore::new_id('l'), from: self.bot_from(bot), text, at: now, hop, in_reply_to: Some(in_reply_to.to_string()), file: None, handoff: None };
         if let Err(e) = rstore::append_line(&self.root, room_id, line.clone(), self.home_of(bot).as_deref()) {
             tracing::debug!(?e, "could not save a group reply");
             return true;
@@ -336,5 +347,70 @@ impl Service {
             session.in_flight.remove(in_reply_to);
         }
         true
+    }
+}
+
+/// The most characters of a hand-off task (the brain cuts at the same number).
+const HANDOFF_TASK_MAX: usize = 600;
+
+impl Service {
+    /// The answer to `hand_off`: one bot gives another bot of the same group a task. Saved as a line with a hand-off card
+    /// (who, to whom, what) one hop deeper than the line the bot is answering, and delivered to that bot alone. The hop limit is
+    /// the group's: past it the card is saved as "not passed on" and the bot is told to say what is left itself.
+    /// The line it answers must be one this bot was given and has not answered yet, so a made-up id cannot reset the count.
+    pub(super) fn hand_off_item(&self, ctx: &sandbox_calls::Context, call_id: &str, args: &Value) -> Value {
+        let refuse = |code: &str, message: &str| protocol::sandbox_result_err(call_id, code, message, false);
+        let Some(room_id) = store::app_room_of(&ctx.conversation) else {
+            return refuse("TOOL_NOT_ALLOWED", "Hand-offs work only inside a group.");
+        };
+        let Ok(room) = self.find_room(room_id) else {
+            return refuse("ROOM_GONE", "This group no longer exists.");
+        };
+        if !room.bot_ids.iter().any(|b| b == &ctx.bot) || !room.bot_listens(&ctx.bot) {
+            return refuse("TOOL_NOT_ALLOWED", "This bot is not taking part in this group.");
+        }
+        let to = args.get("to").and_then(Value::as_str).unwrap_or("").trim().to_lowercase();
+        let task: String = rstore::clean_line(args.get("task").and_then(Value::as_str).unwrap_or("").trim(), None).chars().take(HANDOFF_TASK_MAX).collect();
+        let in_reply_to = args.get("inReplyTo").and_then(Value::as_str).unwrap_or("");
+        if to.is_empty() || task.trim().is_empty() {
+            return refuse("BAD_ARGS", "Say which bot and what it should do.");
+        }
+        let answering = self.inner.lock().bots.get(&ctx.bot).and_then(|rt| rt.session.as_ref()).is_some_and(|s| s.in_flight.get(in_reply_to).is_some_and(|c| c == &ctx.conversation));
+        if !answering {
+            return refuse("NOT_ANSWERING", "There is no message in this group for you to hand off from right now.");
+        }
+        let members: Vec<(String, String)> = room.bot_ids.iter().map(|b| (b.clone(), self.name_of(b))).collect();
+        let Some((to_id, to_name)) = members.iter().find(|(id, name)| id != &ctx.bot && name.trim().to_lowercase() == to).cloned() else {
+            let others: Vec<&str> = members.iter().filter(|(id, _)| id != &ctx.bot).map(|(_, n)| n.as_str()).collect();
+            return refuse("NO_SUCH_BOT", &format!("No other bot with that name is in this group. The others are: {}.", others.join(", ")));
+        };
+        if !room.bot_listens(&to_id) {
+            return refuse("BOT_OFF", &format!("{to_name} is switched off in this group, so it cannot be given a task."));
+        }
+        let now = self.host.now_ms();
+        let trigger_hop = rstore::read_lines(&self.root, room_id, rstore::MAX_READ).into_iter().find(|l| l.id == in_reply_to).map(|l| l.hop);
+        // A trigger that is gone from the file cannot be counted: the card is kept but goes no further.
+        let hop = trigger_hop.map(|h| h.saturating_add(1)).unwrap_or(MAX_BOT_HOPS).min(NOTE_HOP - 1);
+        let passed = hop < MAX_BOT_HOPS;
+        let line = RoomLine {
+            id: rstore::new_id('l'),
+            from: self.bot_from(&ctx.bot),
+            text: format!("@{to_name} {task}"),
+            at: now,
+            hop,
+            in_reply_to: Some(in_reply_to.to_string()),
+            file: None,
+            handoff: Some(rstore::Handoff { to_id: to_id.clone(), to_name: to_name.clone(), task: task.clone(), passed }),
+        };
+        if rstore::append_line(&self.root, room_id, line.clone(), self.home_of(&ctx.bot).as_deref()).is_err() {
+            return refuse("ROOM_SAVE_FAILED", "The hand-off could not be saved. Try again.");
+        }
+        self.touch_room(room_id, now, true);
+        if !passed {
+            return refuse("HOP_LIMIT", "This chat has reached its hand-off limit, so nothing was passed on. Tell the person what is left for them or another bot instead.");
+        }
+        let saved = rstore::read_lines(&self.root, room_id, 1).pop().filter(|l| l.id == line.id).unwrap_or(line);
+        self.fan_out_to(&room, &saved, Tools::Full, Some(&to_id));
+        protocol::sandbox_result_ok(call_id, serde_json::json!({ "ok": true, "handedTo": to_name, "note": format!("Passed on to {to_name}. The group sees a hand-off card. {to_name} answers in the group; do not say it is done.") }))
     }
 }

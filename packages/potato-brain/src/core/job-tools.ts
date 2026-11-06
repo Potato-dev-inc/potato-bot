@@ -1,3 +1,4 @@
+import { TALK_JOB_NOTE } from "./talk.ts";
 import type { ExtraTool } from "./loop.ts";
 import type { SandboxReply } from "./sandbox-tools.ts";
 
@@ -21,7 +22,7 @@ export const JOB_SUMMARY_MAX = 600;
 
 /** One block for owner turns in the private chat: when to start a job, and how to behave while one runs. */
 export const JOB_TURN_NOTE =
-  "For work that will take longer than this one turn (many steps, a lot of waiting, a whole project), call job_start with the goal first: the app then starts your next turn by itself until you call job_done. Inside a job, keep working and do not ask for things you can decide yourself; log each finished step with job_log, keep your to-do list up to date, and call job_done only when the goal is really reached. Between the turns of a job stay quiet: reply with one short line unless you have something your owner needs (a result, a problem, a question). When you need your owner's yes before something risky or hard to undo, call request_approval and wait for the answer; never say it was approved before the answer arrives. The app itself stops commands that push, publish, deploy, reach another computer or delete outside your work folder, and asks your owner: do not try to get around that.";
+  "For work that will take longer than this one turn (many steps, a lot of waiting, a whole project), call job_start with the goal first: the app then starts your next turn by itself until you call job_done. Inside a job, keep working and do not ask for things you can decide yourself; log each finished step with job_log, keep your to-do list up to date, and call job_done only when the goal is really reached. " + TALK_JOB_NOTE + " When you need your owner's yes before something risky or hard to undo, call request_approval and wait for the answer; never say it was approved before the answer arrives. The app itself stops commands that push, publish, deploy, reach another computer or delete outside your work folder, and asks your owner: do not try to get around that.";
 
 export const JOB_SPECS: Record<JobToolName, { name: string; description: string; parameters: Record<string, unknown> }> = {
   job_start: {

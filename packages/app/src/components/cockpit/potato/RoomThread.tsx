@@ -17,6 +17,7 @@ import { Composer } from './Composer';
 import { MessageRow } from './MessageRow';
 import { useJumpTo, type JumpTarget } from './useJumpTo';
 import { NewGroupSheet } from './NewGroupSheet';
+import { RoomSettings } from './RoomSettings';
 import { DaySeparator, TimeSeparator, UnreadDivider } from './Separators';
 import { ThreadIcon } from './ThreadIcons';
 import { ToolActivity } from './ToolActivity';
@@ -53,7 +54,7 @@ export interface RoomThreadProps {
   now?: number;
 }
 
-type Overlay = null | 'bots' | 'delete';
+type Overlay = null | 'bots' | 'delete' | 'settings';
 
 /** The room's lines as the thread's messages. The bot's id stays with the line (`senders`), because a file card needs it. */
 function asMessages(lines: readonly RoomLine[]): { messages: PotatoMessage[]; senders: Map<string, RoomLine['from']> } {
@@ -62,6 +63,7 @@ function asMessages(lines: readonly RoomLine[]): { messages: PotatoMessage[]; se
     senders.set(line.id, line.from);
     const base = { id: line.id, at: line.at, text: line.text };
     if (line.hop === ROOM_NOTE_HOP) return { ...base, kind: 'note', from: { kind: 'note', name: line.from.name } };
+    if (line.handoff) return { ...base, kind: 'note', from: { kind: 'note', name: line.from.name }, handoff: line.handoff };
     if (line.from.kind === 'person') return { ...base, kind: 'text', from: { kind: 'you' } };
     return { ...base, kind: 'text', from: { kind: 'bot', name: line.from.name }, file: line.file ?? undefined };
   });
@@ -324,7 +326,11 @@ export function RoomThread({ room, transport, potato, bots, avatars, onDeleted, 
               </button>
             </form>
           )}
-          <p className="ck-sub ck-potato-brain">{ROOM_COPY.botsCount(room.bots.length)}</p>
+          <p className="ck-sub ck-potato-brain">
+            {ROOM_COPY.botsCount(room.bots.length)}
+            {room.mode === 'mentions' ? ' · Mentions only' : ''}
+            {(room.offBots ?? []).length > 0 ? ` · ${(room.offBots ?? []).length} off` : ''}
+          </p>
           {renameError && (
             <p className="ck-sub ck-potato-starters-error" role="alert">
               {renameError}
@@ -352,6 +358,17 @@ export function RoomThread({ room, transport, potato, bots, avatars, onDeleted, 
       </header>
       {menu && (
         <div ref={menuRef} className="ck-potato-menu" role="menu" aria-label={ROOM_COPY.menu} style={{ left: menu.x, top: menu.y }}>
+          <button
+            type="button"
+            role="menuitem"
+            className="ck-potato-menu-item"
+            onClick={() => {
+              setMenu(null);
+              setOverlay('settings');
+            }}
+          >
+            {ROOM_COPY.menuSettings}
+          </button>
           <button
             type="button"
             role="menuitem"
@@ -443,6 +460,15 @@ export function RoomThread({ room, transport, potato, bots, avatars, onDeleted, 
           bots={bots.map((b) => ({ id: b.id, name: b.name }))}
           transport={transport}
           edit={room}
+          onDone={() => setOverlay(null)}
+          onCancel={() => setOverlay(null)}
+        />
+      )}
+      {overlay === 'settings' && (
+        <RoomSettings
+          room={room}
+          bots={bots.map((b) => ({ id: b.id, name: b.name }))}
+          transport={transport}
           onDone={() => setOverlay(null)}
           onCancel={() => setOverlay(null)}
         />

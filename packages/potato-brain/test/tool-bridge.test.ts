@@ -20,6 +20,7 @@ import { requestLoginTool } from "../src/core/login-tools.ts";
 import { addMcpServerTool, requestConnectorTool } from "../src/core/mcp-tools.ts";
 import { askUserTool, requestApprovalTool } from "../src/core/question-tools.ts";
 import { messageUserTool } from "../src/core/message-user-tools.ts";
+import { handOffTool, messageBotTool } from "../src/core/bot-talk-tools.ts";
 import { BRIDGE_MIN_TOOLS, CORE_EXTRA_TOOLS, FIND_TOOL_NAME, USE_TOOL_NAME, searchTools } from "../src/core/tool-bridge.ts";
 import { initialMood } from "../src/persona/mood.ts";
 import type { ChatRequest, ChatResult, Provider, ToolCall, Usage } from "../src/types.ts";
@@ -66,6 +67,8 @@ function fullSet(sent: Array<{ tool: string; args: Record<string, unknown> }>): 
     requestApprovalTool({ call: callHost }),
     messageUserTool(() => true),
     selfSettingsTool({ call: callHost }),
+    handOffTool({ call: callHost, replyTo: () => "l1" }),
+    messageBotTool({ call: callHost }),
   ];
 }
 

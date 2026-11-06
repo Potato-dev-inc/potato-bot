@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.4
+
+- New: live limits for the bot's computer. Settings > Potato Bot > Computer limits has a CPU limit (percent of this PC) and a Memory limit (GB). They apply at once, with no restart of the bot's computer, and are applied again at every start. The suggested limits are half the processors and a quarter of the memory (at least 2 GB). The page shows what the computer uses now. Heavy jobs run slower with lower limits. The limits are cgroup v2 settings set by a root-only script in the guest, so nothing the bot runs can change them; the control service, the secret hub and the firewall rules stay outside them.
+- Lighter desktop: the screen is drawn with two threads instead of one per core, the screen stream is capped at about 15 frames a second, Chrome starts with fewer background features, and a stopped desktop no longer leaves Cinnamon's compositor running into the next start.
+- New: "Give unused memory back to Windows" (Settings > Potato Bot > Sandbox) adds one line, autoMemoryReclaim=gradual, to your .wslconfig, only when you press the button. A copy is kept, a value you set yourself is never changed, and it takes effect the next time WSL starts. A quiet bot's computer also gives cached memory back after five minutes.
+- Fixed: the Node.js inside the app was never used (the lookup returned its folder instead of node.exe), so a PC with no Node still could not start the bot. It is found now, and the brain starts with it first.
+
 ## 1.0.3
 
 - Node.js is now inside the app (the official 22.20.0 win-x64 build). Nobody has to install Node any more, and the "Install Node.js" button is gone.

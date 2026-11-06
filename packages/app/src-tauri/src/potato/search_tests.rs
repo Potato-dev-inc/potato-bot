@@ -26,7 +26,7 @@ fn say(root: &PathBuf, bot: &str, at: i64, from: FromKind, text: &str) -> String
 const ROOM: &str = "r0123456789ab";
 
 fn make_room(root: &PathBuf) {
-    let room = Room { id: ROOM.into(), name: "Trip".into(), bot_ids: vec!["fin".into(), "nim".into()], created_ms: 1, last_ms: 1, unread: 0 };
+    let room = Room { id: ROOM.into(), name: "Trip".into(), bot_ids: vec!["fin".into(), "nim".into()], created_ms: 1, last_ms: 1, unread: 0, ..Default::default() };
     rstore::save_rooms(root, &[room]).unwrap();
 }
 
@@ -39,6 +39,7 @@ fn room_line(root: &PathBuf, id: &str, at: i64, text: &str) {
         hop: 0,
         in_reply_to: None,
         file: None,
+        handoff: None,
     };
     rstore::append_line(root, ROOM, line, None).unwrap();
 }

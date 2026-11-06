@@ -4,7 +4,8 @@ import { fakeRoomsTransport, isRoomGone, ROOM_ERROR_TEXT, roomErrorText, roomPro
 describe('roomProblem', () => {
   it('empty name', () => expect(roomProblem('  ', ['a', 'b'])).toBe('Give the group a name.'));
   it('one bot', () => expect(roomProblem('x', ['a'])).toBe('Pick at least 2 bots.'));
-  it('six bots', () => expect(roomProblem('x', ['a', 'b', 'c', 'd', 'e', 'f'])).toBe('A group can have up to 5 bots.'));
+  it('eleven bots', () => expect(roomProblem('x', 'abcdefghijk'.split(''))).toBe('A group can have up to 10 bots.'));
+  it('ten bots is fine', () => expect(roomProblem('x', 'abcdefghij'.split(''))).toBeNull());
   it('duplicate', () => expect(roomProblem('x', ['a', 'a'])).toBe('Each bot can be in a group once.'));
   it('ok', () => expect(roomProblem('Weekend', ['a', 'b'])).toBeNull());
 });

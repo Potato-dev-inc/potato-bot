@@ -24,6 +24,7 @@ import { ConfirmSheet, NumberControl } from '../controls';
 import type { RowDef, SettingsEnv } from '../model';
 import { Btn, Note, SettingBlock, SettingRow } from '../settings-ui';
 import { LabsSwitch } from '../LabsSwitch';
+import { LimitsRow, MemoryReturnRow } from './LimitsRow';
 import { InstallProgress, SandboxWizard } from './SandboxWizard';
 import { useSandbox } from './useSandbox';
 
@@ -509,6 +510,24 @@ export function makeSandboxRows(transport: SandboxTransport = tauriSandboxTransp
       group: 'Sandbox',
       labsFlag: 'potato_sandbox_enabled',
       render: (env) => <IdleRow transport={transport} env={env} />,
+    },
+    {
+      id: 'potato-sandbox-limits',
+      label: 'Computer limits',
+      hint: "How much CPU and memory the bot's computer may use. Applies at once, no restart.",
+      keywords: `${KEYWORDS} cpu memory ram limit slow fast lighter processor gigabytes`,
+      group: 'Sandbox',
+      labsFlag: 'potato_sandbox_enabled',
+      render: (env) => <LimitsRow transport={transport} env={env} />,
+    },
+    {
+      id: 'potato-sandbox-memory-return',
+      label: 'Give unused memory back to Windows',
+      hint: 'Lets WSL hand memory the bot\'s computer no longer needs back to Windows. Needs a WSL restart to take effect.',
+      keywords: `${KEYWORDS} memory ram vmmem vmmemwsl task manager wslconfig reclaim`,
+      group: 'Sandbox',
+      labsFlag: 'potato_sandbox_enabled',
+      render: (env) => <MemoryReturnRow transport={transport} env={env} />,
     },
     {
       id: 'potato-sandbox-vercel',

@@ -138,7 +138,7 @@ fn ask_user_with_choices_becomes_a_card_and_without_them_stays_text() {
 fn the_card_tools_are_off_in_a_group_and_for_a_routine() {
     let (rig, _) = rig("ask-room");
     store::add_bot(&rig.root, "mochi", "potato", 2).unwrap();
-    rstore::save_rooms(&rig.root, &[Room { id: "r0123456789ab".into(), name: "Weekend".into(), bot_ids: vec!["nimbus".into(), "mochi".into()], created_ms: 1, last_ms: 1, unread: 0 }]).unwrap();
+    rstore::save_rooms(&rig.root, &[Room { id: "r0123456789ab".into(), name: "Weekend".into(), bot_ids: vec!["nimbus".into(), "mochi".into()], created_ms: 1, last_ms: 1, unread: 0, ..Default::default() }]).unwrap();
     let room = store::app_room_conversation("r0123456789ab");
     let answer = tool(&rig, &room, "r-1", "request_approval", json!({"action": "Deploy", "why": "x"}));
     assert_eq!((answer["ok"].clone(), code(&answer)), (json!(false), "TOOL_NOT_ALLOWED".to_string()), "{answer:?}");
@@ -518,7 +518,7 @@ fn a_message_that_says_it_is_approved_does_not_unlock_the_command() {
 fn a_risky_command_in_a_group_never_runs_and_makes_no_card() {
     let (rig, fake) = rig("gate-room");
     store::add_bot(&rig.root, "mochi", "potato", 2).unwrap();
-    rstore::save_rooms(&rig.root, &[Room { id: "r0123456789ab".into(), name: "Weekend".into(), bot_ids: vec!["nimbus".into(), "mochi".into()], created_ms: 1, last_ms: 1, unread: 0 }]).unwrap();
+    rstore::save_rooms(&rig.root, &[Room { id: "r0123456789ab".into(), name: "Weekend".into(), bot_ids: vec!["nimbus".into(), "mochi".into()], created_ms: 1, last_ms: 1, unread: 0, ..Default::default() }]).unwrap();
     let room = store::app_room_conversation("r0123456789ab");
     let answer = tool(&rig, &room, "g-1", "run_terminal", json!({"command": "git push"}));
     // no group turn is open, so its trust is the lowest and the trust check says no first; with a trusted group turn the

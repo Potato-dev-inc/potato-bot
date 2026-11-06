@@ -1,6 +1,9 @@
-export const MAX_ROOM_BOTS = 5;
+export const MAX_ROOM_BOTS = 10;
 /** A person line is hop 0. Bots may answer bots up to hop 3, then they stop. */
 export const MAX_BOT_HOPS = 3;
+
+/** "listen": a line to nobody is answered by one bot. "mentions": a bot speaks only when called with @, by name, or in a reply to it. */
+export type RoomMode = "listen" | "mentions";
 
 export interface Member { kind: "person" | "bot"; id: string; name: string }
 
@@ -21,11 +24,15 @@ export interface RoomFacts {
   roster: Member[];      // everyone in the room, the person first
   recent: RoomLine[];    // up to 20 lines before `line`, oldest first
   line: RoomLine;        // the new line
+  /** Group settings (from the app). Absent in older items: listen, no instructions, no folder. */
+  mode?: RoomMode;
+  instructions?: string; // what the owner wrote for this group, at most 2000 chars
+  folder?: string;       // the shared folder inside the bot's computer
 }
 
 export type PassReason =
   | "own_line" | "hop_limit" | "aimed_elsewhere" | "bot_not_addressed"
-  | "left_alone" | "silence_budget" | "cooldown" | "not_first_responder" | "low_score";
+  | "left_alone" | "silence_budget" | "cooldown" | "not_first_responder" | "low_score" | "mentions_only";
 
 export type Verdict =
   | { kind: "speak"; why: "addressed" | "everyone" | "question" | "chatty" }
@@ -77,6 +84,9 @@ export interface RoomInboxItem {
   tools?: "full" | "no_memory";
   capabilities?: { sandbox?: boolean };
   sandboxOnly?: boolean;
+  mode?: RoomMode;            // "listen" (default) or "mentions"
+  instructions?: string;      // the owner's instructions for this group
+  folder?: string;            // the group's shared folder, a path inside the bot's computer
 }
 
 /**

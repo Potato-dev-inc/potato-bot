@@ -3,21 +3,21 @@
 use serde_json::json;
 
 use super::fanout::*;
-use super::store::{Room, RoomFrom, RoomLine, Speaker};
+use super::store::{Room, RoomFrom, RoomLine, RoomMode, Speaker};
 use crate::potato::protocol::Tools;
 
 const ROOM: &str = "r0123456789ab";
 
 fn room(bots: &[&str]) -> Room {
-    Room { id: ROOM.into(), name: "Weekend".into(), bot_ids: bots.iter().map(|b| b.to_string()).collect(), created_ms: 1, last_ms: 1, unread: 0 }
+    Room { id: ROOM.into(), name: "Weekend".into(), bot_ids: bots.iter().map(|b| b.to_string()).collect(), created_ms: 1, last_ms: 1, unread: 0, ..Default::default() }
 }
 
 fn person_line() -> RoomLine {
-    RoomLine { id: "l000000000001".into(), from: RoomFrom { kind: Speaker::Person, id: "owner".into(), name: "You".into() }, text: "hi".into(), at: 10, hop: 0, in_reply_to: None, file: None }
+    RoomLine { id: "l000000000001".into(), from: RoomFrom { kind: Speaker::Person, id: "owner".into(), name: "You".into() }, text: "hi".into(), at: 10, hop: 0, in_reply_to: None, file: None, handoff: None }
 }
 
 fn bot_line(bot: &str, hop: u8) -> RoomLine {
-    RoomLine { id: format!("l00000000000{hop}"), from: RoomFrom { kind: Speaker::Bot, id: bot.into(), name: bot.into() }, text: "yo".into(), at: 20, hop, in_reply_to: Some("l000000000001".into()), file: None }
+    RoomLine { id: format!("l00000000000{hop}"), from: RoomFrom { kind: Speaker::Bot, id: bot.into(), name: bot.into() }, text: "yo".into(), at: 20, hop, in_reply_to: Some("l000000000001".into()), file: None, handoff: None }
 }
 
 fn on(_: &str) -> bool {
@@ -127,4 +127,42 @@ fn room_line_from_other_person_is_sandbox_only() {
     let item = inbox_item("x", &room(&["a", "b"]), &r[1], &r, &[], &person_line(), Tools::NoMemory, true);
     assert_eq!(item["sandboxOnly"], true);
     assert_eq!(item["tools"], "no_memory");
+}
+
+// ---- group settings ----
+
+#[test]
+fn a_bot_switched_off_in_the_group_hears_nothing_and_the_others_still_do() {
+    let mut r = room(&["a", "b", "c"]);
+    r.off_bots = ids(&["b"]);
+    let (go, skip) = targets(&r, &person_line(), &on, &under, false);
+    assert_eq!(go, ids(&["a", "c"]));
+    assert_eq!(skip, vec![("b".to_string(), Skip::Muted)]);
+    // a bot's line too: the switched-off bot is not woken by a hand-off either
+    let (go, _) = targets(&r, &bot_line("a", 1), &on, &under, false);
+    assert_eq!(go, ids(&["c"]));
+}
+
+#[test]
+fn the_item_carries_the_mode_the_instructions_and_the_folder_path() {
+    let r = roster();
+    let mut group = room(&["a", "b"]);
+    let plain = inbox_item("l000000000001", &group, &r[1], &r, &[], &person_line(), Tools::Full, false);
+    assert_eq!((plain["mode"].clone(), plain["instructions"].clone(), plain["folder"].clone()), (json!("listen"), json!(""), json!(format!("/home/pm/groups/{ROOM}"))));
+    group.mode = RoomMode::Mentions;
+    group.instructions = "Answer in French.".into();
+    group.folder = "trip".into();
+    let item = inbox_item("l000000000001", &group, &r[1], &r, &[], &person_line(), Tools::Full, false);
+    assert_eq!((item["mode"].clone(), item["instructions"].clone(), item["folder"].clone()), (json!("mentions"), json!("Answer in French."), json!("/home/pm/groups/trip")));
+}
+
+#[test]
+fn ten_bots_all_get_the_persons_line_and_the_sender_is_still_skipped() {
+    let names: Vec<String> = (0..10).map(|i| format!("b{i}")).collect();
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let r = room(&refs);
+    let (go, skip) = targets(&r, &person_line(), &on, &under, false);
+    assert_eq!((go.len(), skip.len()), (10, 0));
+    let (go, skip) = targets(&r, &bot_line("b3", 1), &on, &under, false);
+    assert_eq!((go.len(), skip), (9, vec![("b3".to_string(), Skip::Sender)]));
 }

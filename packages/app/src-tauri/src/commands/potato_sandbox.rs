@@ -142,6 +142,46 @@ pub async fn potato_sandbox_set_idle(minutes: u32) -> Result<u32, String> {
     .await
 }
 
+/// The last reading of the work's CPU counter, to turn two readings into a percentage.
+static LAST_SAMPLE: parking_lot::Mutex<Option<crate::potato::sandbox::limits::GuestStatus>> = parking_lot::Mutex::new(None);
+
+fn limits_view(manager: &Manager) -> crate::potato::sandbox::limits::LimitsView {
+    use crate::potato::sandbox::limits::{build_view, cpu_use_percent, pc_memory_mb};
+    let now = manager.limits_status();
+    let used_cpu = {
+        let mut last = LAST_SAMPLE.lock();
+        let used = match (last.as_ref(), now.as_ref()) {
+            (Some(earlier), Some(later)) => cpu_use_percent(earlier, later),
+            _ => None,
+        };
+        *last = now.clone();
+        used
+    };
+    build_view(sandbox_host::saved_limits(), pc_memory_mb(), now.as_ref(), used_cpu)
+}
+
+/// The CPU and memory limits in force (or the defaults for this PC), and what the work uses while the sandbox runs.
+#[tauri::command]
+pub async fn potato_sandbox_limits_get() -> Result<crate::potato::sandbox::limits::LimitsView, String> {
+    run(|m| Ok(limits_view(&m))).await
+}
+
+/// Sets the limits: kept for every later start and put in force at once if the sandbox is running (no restart).
+#[tauri::command]
+pub async fn potato_sandbox_limits_set(cpu_percent: u32, memory_mb: u32) -> Result<crate::potato::sandbox::limits::LimitsView, String> {
+    run(move |m| {
+        let limits = crate::potato::sandbox::limits::clamp(
+            crate::potato::sandbox::limits::Limits { cpu_percent, memory_mb },
+            crate::potato::sandbox::limits::pc_memory_mb(),
+        );
+        sandbox_host::save_limits(limits);
+        m.set_limits(limits);
+        *LAST_SAMPLE.lock() = None;
+        Ok(limits_view(&m))
+    })
+    .await
+}
+
 #[derive(Serialize, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct VercelTools {

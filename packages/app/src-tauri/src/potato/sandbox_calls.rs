@@ -1283,6 +1283,7 @@ impl Calls {
                 hop: 1,
                 in_reply_to: None,
                 file: Some(card),
+                handoff: None,
             };
             rstore::append_line(&self.root, room_id, line, home.as_deref()).map_err(|_| CallError::new("ROOM_SAVE_FAILED", "The file could not be put in the group. Try again."))?;
             self.host.room_changed(room_id);

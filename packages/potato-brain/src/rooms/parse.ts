@@ -1,4 +1,4 @@
-import type { Member, RoomFacts, RoomLine } from "./types.ts";
+import type { Member, RoomFacts, RoomLine, RoomMode } from "./types.ts";
 import { MAX_ROOM_BOTS } from "./types.ts";
 import type { RoomMeta } from "./runner.ts";
 
@@ -13,6 +13,20 @@ function clean(x: unknown, max: number): string | null {
   if (typeof x !== "string") return null;
   const t = x.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, max);
   return t === "" ? null : t;
+}
+
+export const MAX_INSTRUCTIONS = 2000;
+const FOLDER = /^\/home\/pm\/groups\/[a-z0-9][a-z0-9_-]{0,39}$/;
+
+/** Text with line breaks kept and other control characters taken out. */
+function cleanBlock(x: unknown, max: number): string {
+  if (typeof x !== "string") return "";
+  return x.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, " ").trim().slice(0, max);
+}
+
+/** The shared folder is a path under /home/pm/groups/ and nothing else, so no value from the app can point anywhere else. */
+function cleanFolder(x: unknown): string {
+  return typeof x === "string" && FOLDER.test(x) ? x : "";
 }
 
 function member(x: unknown): Member | null {
@@ -79,7 +93,12 @@ export function parseRoomItem(raw: unknown): ParsedRoomItem | null {
   return {
     id,
     conversationId,
-    facts: { roomId, roomName: clean(raw["roomName"], 60) ?? "Group", me, roster, recent, line: current },
+    facts: {
+      roomId, roomName: clean(raw["roomName"], 60) ?? "Group", me, roster, recent, line: current,
+      mode: (raw["mode"] === "mentions" ? "mentions" : "listen") satisfies RoomMode,
+      instructions: cleanBlock(raw["instructions"], MAX_INSTRUCTIONS),
+      folder: cleanFolder(raw["folder"]),
+    },
     meta: {
       tools: raw["tools"] === "no_memory" ? "no_memory" : "full",
       sandbox: isRecord(caps) && caps["sandbox"] === true,

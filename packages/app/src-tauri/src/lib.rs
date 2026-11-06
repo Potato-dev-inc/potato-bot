@@ -248,6 +248,10 @@ pub fn run() {
             commands::potato_helper_start,
             commands::potato_hold_state,
             commands::potato_install_node,
+            commands::potato_sandbox_limits_get,
+            commands::potato_sandbox_limits_set,
+            commands::potato_sandbox_memory_return_get,
+            commands::potato_sandbox_memory_return_enable,
             commands::app_update_check,
             commands::app_update_busy,
             commands::app_update_install,
@@ -289,6 +293,7 @@ pub fn run() {
             commands::potato_room_rename,
             commands::potato_room_send,
             commands::potato_room_set_bots,
+            commands::potato_room_set_settings,
             commands::potato_mcp_add,
             commands::potato_mcp_remote_add,
             commands::potato_mcp_tools_set,
@@ -442,7 +447,7 @@ pub fn run() {
             // are applied, so it must know the app handle first. 1.0.1 set it later and found no files on a clean PC.
             potato::sandbox_host::set_app(app.handle().clone());
             #[cfg(not(test))]
-            potato::sidecar::set_bundled_node(potato::resource_dirs::installed(app.handle(), "node", "node.exe"));
+            potato::sidecar::set_bundled_node(potato::resource_dirs::installed(app.handle(), "node", "node.exe").map(|dir| dir.join("node.exe")));
             potato::sandbox_host::startup_diag();
             commands::startup_probe(app.handle().clone());
             #[cfg(not(test))]

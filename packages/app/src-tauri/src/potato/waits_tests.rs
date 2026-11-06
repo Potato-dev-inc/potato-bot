@@ -292,7 +292,7 @@ fn the_owner_starts_a_wait_in_their_private_chat_and_gets_one_plain_answer() {
 fn security_a_wait_is_refused_in_a_group_and_nothing_is_saved() {
     let (rig, _) = engine("tool-room");
     store::add_bot(&rig.root, "mochi", "potato", 2).unwrap();
-    rstore::save_rooms(&rig.root, &[Room { id: "r0123456789ab".into(), name: "Weekend".into(), bot_ids: vec!["nimbus".into(), "mochi".into()], created_ms: 1, last_ms: 1, unread: 0 }]).unwrap();
+    rstore::save_rooms(&rig.root, &[Room { id: "r0123456789ab".into(), name: "Weekend".into(), bot_ids: vec!["nimbus".into(), "mochi".into()], created_ms: 1, last_ms: 1, unread: 0, ..Default::default() }]).unwrap();
     let answer = call(&rig, &store::app_room_conversation("r0123456789ab"), "wait_until", args("ls"));
     let (code, message) = error_of(&answer);
     assert_eq!(code, "TOOL_NOT_ALLOWED");

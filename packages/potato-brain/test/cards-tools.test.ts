@@ -65,8 +65,8 @@ test("ask_user falls back to text when the app errors or throws", async () => {
 });
 
 test("the job note asks for quiet between turns and names request_approval and the app's own gate", () => {
-  assert.match(JOB_TURN_NOTE, /stay quiet/);
-  assert.match(JOB_TURN_NOTE, /one short line unless/);
+  assert.match(JOB_TURN_NOTE, /keep your owner in the loop/);
+  assert.doesNotMatch(JOB_TURN_NOTE, /stay quiet/);
   assert.match(JOB_TURN_NOTE, /request_approval/);
   assert.match(JOB_TURN_NOTE, /never say it was approved/);
   assert.match(JOB_TURN_NOTE, /do not try to get around that/);
