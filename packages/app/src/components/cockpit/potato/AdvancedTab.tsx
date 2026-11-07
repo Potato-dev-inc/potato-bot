@@ -8,6 +8,7 @@ import { plainError } from '../../../lib/potato';
 import { ADVANCED_COPY, tauriBotSettingsTransport, type BotOptions, type BotSettingsTransport, type ToolSwitches } from '../../../lib/potato-botsettings';
 import { AdvancedAlwaysAllow } from './AdvancedAlwaysAllow';
 import { AdvancedAskLevel } from './AdvancedAskLevel';
+import type { AgentsTransport } from '../../../lib/potato-agents';
 import { AdvancedBot } from './AdvancedBot';
 import { AdvancedInstructions } from './AdvancedInstructions';
 import { AdvancedModel } from './AdvancedModel';
@@ -38,9 +39,11 @@ export interface AdvancedTabProps {
   companionTransport?: CompanionTransport;
   /** Opens a running helper's pane (Open work's Open button). */
   onOpenPane?: (paneId: string) => void;
+  /** The calls behind "Agents in the sandbox" (the app passes nothing; tests pass a fake). */
+  agentsTransport?: AgentsTransport;
 }
 
-export function AdvancedTab({ bot, defaultBrain = 'deepseek', transport = tauriBotSettingsTransport, onChanged, onNotify, settings, potatoTransport, companion, companionTransport, onOpenPane }: AdvancedTabProps) {
+export function AdvancedTab({ bot, defaultBrain = 'deepseek', transport = tauriBotSettingsTransport, onChanged, onNotify, settings, potatoTransport, companion, companionTransport, onOpenPane, agentsTransport }: AdvancedTabProps) {
   const [options, setOptions] = useState<BotOptions | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -110,6 +113,7 @@ export function AdvancedTab({ bot, defaultBrain = 'deepseek', transport = tauriB
         companionTransport={companionTransport}
         onChanged={onChanged}
         onNotify={onNotify}
+        agentsTransport={agentsTransport}
       />
       <AdvancedInstructions
         instructions={options.instructions}

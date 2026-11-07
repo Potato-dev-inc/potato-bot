@@ -30,6 +30,7 @@ pub const SIDECAR_SECRETS: &[&str] = &["deepseek_api_key", "potato_provider_key"
 
 pub fn is_sidecar_secret(name: &str) -> bool {
     SIDECAR_SECRETS.contains(&name)
+        || crate::potato::custom_agents::is_agent_secret_name(name)
         || name
             .strip_prefix("potato_provider_key_")
             .is_some_and(crate::companion::model::valid_id)

@@ -202,6 +202,13 @@ impl Host for LiveHost {
         crate::secrets::read_secret(name)
     }
 
+    fn delete_secret(&self, name: &str) {
+        // Only an agent's own secret names are ever removed this way.
+        if super::custom_agents::is_agent_secret_name(name) {
+            let _ = crate::secrets::SecretBackend::delete(crate::secrets::backend(), name);
+        }
+    }
+
     fn go_key(&self) -> Option<String> {
         if super::sidecar::fake_brain_active() {
             return None;

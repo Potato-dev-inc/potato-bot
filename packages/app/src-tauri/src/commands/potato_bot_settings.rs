@@ -273,3 +273,35 @@ pub async fn potato_import_read_text(path: String) -> Result<String, String> {
 pub async fn potato_import_drafts_save(bot_id: String, instructions: String, memories: Vec<String>) -> Result<Applied, String> {
     run(move |s| s.save_drafts(&bot_id, &instructions, &memories)).await
 }
+
+// ---- the owner's own agents ("Through my agents"): add, approve, remove, pick -------------------------------------
+
+/// The bot's approved agents and the one it talks through.
+#[tauri::command]
+pub async fn potato_agents_get(bot_id: String) -> Result<crate::potato::service::AgentsView, String> {
+    run(move |s| s.agents_view(&bot_id)).await
+}
+
+/// Checks a pasted definition and answers the summary to read, or the mistake with its line. Saves nothing.
+#[tauri::command]
+pub async fn potato_agent_check(definition: String) -> Result<crate::potato::custom_agents::Summary, String> {
+    let service = service()?;
+    service.agent_check(&definition).map_err(|e| format!("POTATO_AGENT_INVALID: {e}"))
+}
+
+/// The owner approved the summary they read (`fingerprint`). Only this command adds an agent; nothing the bot can call reaches it.
+#[tauri::command]
+pub async fn potato_agent_add(bot_id: String, definition: String, fingerprint: String) -> Result<crate::potato::service::AgentsView, String> {
+    run(move |s| s.agent_add(&bot_id, &definition, &fingerprint)).await
+}
+
+#[tauri::command]
+pub async fn potato_agent_remove(bot_id: String, agent_id: String) -> Result<crate::potato::service::AgentsView, String> {
+    run(move |s| s.agent_remove(&bot_id, &agent_id)).await
+}
+
+/// Picks the approved agent a bot talks through (`null`: none).
+#[tauri::command]
+pub async fn potato_agent_pick(bot_id: String, agent_id: Option<String>) -> Result<crate::potato::service::AgentsView, String> {
+    run(move |s| s.agent_pick(&bot_id, agent_id.as_deref())).await
+}

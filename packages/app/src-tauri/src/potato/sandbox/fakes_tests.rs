@@ -52,6 +52,9 @@ pub struct State {
     pub hang_apply: bool,
     /// The desktop start script never ends by itself; it ends when the call's cancel flag is set.
     pub hang_desktop: bool,
+    /// How many times the agent clean-up ran, and its exit code (0: no process of the agent's user is left).
+    pub agent_kills: u32,
+    pub agent_kill_code: i32,
     pub calls: Vec<Prepared>,
     pub holders: Vec<Arc<AtomicBool>>,
     pub elevated_seen: usize,
@@ -128,6 +131,8 @@ impl FakeGuest {
                 hang_install: false,
                 hang_apply: false,
                 hang_desktop: false,
+                agent_kills: 0,
+                agent_kill_code: 0,
                 calls: Vec::new(),
                 holders: Vec::new(),
                 elevated_seen: 0,
@@ -198,6 +203,13 @@ impl FakeGuest {
             // the guest-files stamp is missing (an older build made this sandbox): the files are copied in, then updated
             ["/bin/cat", "/etc/pm-sbx/guest-version"] => ok(Vec::new()),
             ["/bin/mkdir", ..] | ["/bin/tar", ..] => ok(Vec::new()),
+            // an agent's saved space is deleted by name
+            ["/bin/rm", "-f", "--", _] => code(0),
+            // the clean-up that kills every process of the agent's user (its script comes on stdin)
+            ["/bin/sh", "-s"] if call.stdin.as_ref().is_some_and(|b| String::from_utf8_lossy(b).contains("AGENT_LEFTOVER")) => {
+                st.agent_kills += 1;
+                code(st.agent_kill_code)
+            }
             ["/bin/sh", "-s"] if st.readiness_errors > 0 => {
                 st.readiness_errors -= 1;
                 Err(WslError::Timeout)

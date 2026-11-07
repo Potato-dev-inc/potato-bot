@@ -77,6 +77,9 @@ session_bin() { case "$SESSION" in xfce4) echo xfce4-session ;; cinnamon) echo c
 # Join-the-session environment. Everything that touches the display sets these explicitly too.
 # XDG_SESSION_TYPE must say x11: Muffin refuses to start without a supported session type.
 unset WAYLAND_DISPLAY PULSE_SERVER
+# The screen is closed to every other user: Xvfb checks a cookie that only this user can read (no "-ac"). Everything that opens the
+# display (Chrome, x11vnc, the screenshot and click tools) finds it here, in this user's own home.
+export XAUTHORITY="$HOME/.Xauthority"
 export DISPLAY="$DISPLAY_NAME" XDG_SESSION_TYPE=x11 GDK_BACKEND=x11 QT_QPA_PLATFORM=xcb SDL_VIDEODRIVER=x11
 # The screen is drawn by software (Mesa llvmpipe), which by default uses one thread per core: a busy page then burns every core.
 # Two threads are plenty for 1440x900 and halve the compositor's cost on a busy page (measured: Cinnamon 188% -> about 95%).
@@ -150,7 +153,13 @@ start_xvfb() {
   # next xfce4-session often gets the same process number ("server already running"). Only ours (this user's) can be removed here.
   # Nothing of ours runs at this point: Xvfb is not alive, so no session is.
   rm -f /tmp/.ICE-unix/* 2>/dev/null
-  setsid nohup Xvfb "$DISPLAY_NAME" -screen 0 "${GEOM}x24" -nolisten tcp -ac >"$LOGS/xvfb.log" 2>&1 </dev/null &
+  # A new cookie each start, readable by this user only. Without one the display refuses everybody, so a failure here stops the start.
+  COOKIE=$(mcookie 2>/dev/null || head -c 16 /dev/urandom | od -An -tx1 | tr -d '[:space:]')
+  [ -n "$COOKIE" ] || die "could not make a screen key" 1
+  ( umask 077; rm -f "$XAUTHORITY"; : >"$XAUTHORITY" ) || die "could not make the screen key file" 1
+  xauth -f "$XAUTHORITY" add "$DISPLAY_NAME" . "$COOKIE" >/dev/null 2>&1 || die "could not write the screen key" 1
+  chmod 600 "$XAUTHORITY"
+  setsid nohup Xvfb "$DISPLAY_NAME" -screen 0 "${GEOM}x24" -nolisten tcp -auth "$XAUTHORITY" >"$LOGS/xvfb.log" 2>&1 </dev/null &
   echo $! >"$(pidfile xvfb)"
   for _ in $(seq 1 50); do xdpyinfo -display "$DISPLAY_NAME" >/dev/null 2>&1 && break; sleep 0.1; done
   xdpyinfo -display "$DISPLAY_NAME" >/dev/null 2>&1 || die "Xvfb did not start; see $LOGS/xvfb.log" 1
@@ -331,7 +340,7 @@ start_vnc() {
   if ! alive_key x11vnc; then
     # -localhost binds loopback only. (-listen 127.0.0.1 still opened [::]:5900 on the spike.) No -viewonly: the password
     # typed decides view or control (see make_vnc_passwords).
-    setsid nohup x11vnc -display "$DISPLAY_NAME" -localhost -rfbport "$VNC_PORT" -passwdfile "$VNCDIR/passwd" \
+    setsid nohup x11vnc -display "$DISPLAY_NAME" -auth "$XAUTHORITY" -localhost -rfbport "$VNC_PORT" -passwdfile "$VNCDIR/passwd" \
       -forever -shared -noxdamage -wait 66 -defer 66 -nap -quiet -o "$LOGS/x11vnc.log" >/dev/null 2>&1 </dev/null &
     echo $! >"$(pidfile x11vnc)"
   fi
@@ -386,7 +395,7 @@ write_env() {
   mkdir -p "$STATE"
   {
     echo "unset WAYLAND_DISPLAY PULSE_SERVER"
-    echo "export DISPLAY=$DISPLAY_NAME XDG_SESSION_TYPE=x11 XDG_RUNTIME_DIR=/tmp/pm-runtime GDK_BACKEND=x11 QT_QPA_PLATFORM=xcb SDL_VIDEODRIVER=x11"
+    echo "export DISPLAY=$DISPLAY_NAME XAUTHORITY=$XAUTHORITY XDG_SESSION_TYPE=x11 XDG_RUNTIME_DIR=/tmp/pm-runtime GDK_BACKEND=x11 QT_QPA_PLATFORM=xcb SDL_VIDEODRIVER=x11"
     if printf '%s\n' "$DBUS" | grep -Eq '^unix:[A-Za-z0-9_=,/.:+-]+$'; then
       echo "export DBUS_SESSION_BUS_ADDRESS='$DBUS'"
     fi

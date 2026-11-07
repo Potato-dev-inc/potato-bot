@@ -134,10 +134,10 @@ impl RunSecrets {
     }
 
     /// The script (no secret in it) that writes the three files from stdin, and the stdin it reads: the
-    /// token, the view password and the control password, one per line. Files are owned by `pm`, mode 0400.
+    /// token, the view password and the control password, one per line. Files are owned by `pm`, mode 0400, in a folder owned by root with group `pm`, mode 0750 (the agent's user cannot even look inside).
     pub fn push(&self) -> (String, Vec<u8>) {
         let script = format!(
-            "umask 077; mkdir -p {SECRETS_DIR} && chmod 0755 {SECRETS_DIR} && IFS= read -r t && IFS= read -r v && IFS= read -r c && \
+            "umask 077; mkdir -p {SECRETS_DIR} && chown root:pm {SECRETS_DIR} && chmod 0750 {SECRETS_DIR} && IFS= read -r t && IFS= read -r v && IFS= read -r c && \
              printf '%s' \"$t\" > {TOKEN_FILE} && printf '%s' \"$v\" > {VIEW_FILE} && printf '%s' \"$c\" > {CONTROL_FILE} && \
              chown pm:pm {TOKEN_FILE} {VIEW_FILE} {CONTROL_FILE} && chmod 0400 {TOKEN_FILE} {VIEW_FILE} {CONTROL_FILE}"
         );

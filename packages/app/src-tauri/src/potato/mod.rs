@@ -52,6 +52,7 @@ pub mod waits;
 pub mod files_browser;
 pub mod auth;
 pub mod bot_settings;
+pub mod custom_agents;
 pub mod cost;
 pub mod reply_cost;
 pub mod reactions;
@@ -118,6 +119,10 @@ mod voice_tests;
 mod auth_tests;
 #[cfg(test)]
 mod bot_settings_tests;
+#[cfg(test)]
+mod custom_agents_tests;
+#[cfg(test)]
+mod service_agent_tests;
 #[cfg(test)]
 mod cost_tests;
 #[cfg(test)]

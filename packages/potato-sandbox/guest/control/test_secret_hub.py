@@ -177,6 +177,25 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(secret.uid_for("github"), secret.uid_for("github"))
         self.assertNotEqual(secret.uid_for("github"), secret.uid_for("notion"))
 
+    def test_the_agents_uid_is_outside_the_range_and_a_server_is_never_given_it(self):
+        self.assertEqual(secret.AGENT_UID, 59999)
+        self.assertFalse(secret.UID_BASE <= secret.AGENT_UID < secret.UID_BASE + secret.UID_SPAN, "the agent's user is not in the servers' range")
+        was = secret.AGENT_UID
+        try:
+            secret.AGENT_UID = secret.uid_for("github")
+            with self.assertRaises(ValueError):
+                secret.uid_for("github")
+            session = secret.Session(hub_mod, log_dir=tempfile.mkdtemp(prefix="pm-sechub-"), drop=False)
+            try:
+                reply = session.handle({"id": 1, "op": "config", "servers": [{"name": "github", "command": "true", "args": [], "env": {}}]})
+            finally:
+                session.close()
+            self.assertFalse(reply["ok"])
+            self.assertEqual(reply["status"], 400)
+            self.assertIn("not allowed", reply["error"])
+        finally:
+            secret.AGENT_UID = was
+
     def test_a_passwd_and_group_line_is_written_once_and_never_over_a_real_user(self):
         tmp = tempfile.mkdtemp(prefix="pm-passwd-")
         try:

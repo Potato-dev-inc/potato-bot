@@ -329,3 +329,46 @@ fn the_guest_update_script_goes_in_on_stdin_and_no_argument_holds_a_line_break()
     assert_eq!(update.args.last().map(String::as_str), Some("-s"), "{:?}", update.args);
     assert!(!update.args.iter().any(|a| a.contains("pm-sbx-mcp-hub")), "the script is not an argument");
 }
+
+#[test]
+fn every_agent_turn_ends_by_killing_the_agents_user_and_checking_none_is_left() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+    let rig = rig(false, 0);
+    rig.sandbox.install(&InstallOptions::new(SandboxName::main(), Desktop::Xfce), &mut |_| {}).unwrap();
+    rig.sandbox.start().unwrap();
+    let cancel = Arc::new(AtomicBool::new(false));
+    // a normal end
+    rig.sandbox.agent_run("echo hi", Duration::from_secs(5), &cancel).unwrap();
+    assert_eq!(rig.guest.st.lock().agent_kills, 1);
+    // a stop: the answer is "stopped", and the clean-up still ran (it is not cancelled with the turn)
+    cancel.store(true, Ordering::SeqCst);
+    assert_eq!(rig.sandbox.agent_run("echo hi", Duration::from_secs(5), &cancel).unwrap_err().code, "AGENT_STOPPED");
+    assert_eq!(rig.guest.st.lock().agent_kills, 2);
+    // a process the clean-up could not remove is an error, not a quiet success, and not a plain stop
+    rig.guest.st.lock().agent_kill_code = 73;
+    let fresh = Arc::new(AtomicBool::new(false));
+    assert_eq!(rig.sandbox.agent_run("echo hi", Duration::from_secs(5), &fresh).unwrap_err().code, "AGENT_LEFTOVER");
+    assert_eq!(rig.sandbox.agent_run("echo hi", Duration::from_secs(5), &cancel).unwrap_err().code, "AGENT_LEFTOVER");
+    // the clean-up goes in on stdin as root, never as an argument
+    let calls = rig.guest.calls();
+    let kill = calls.iter().find(|c| c.stdin.as_deref().is_some_and(|s| String::from_utf8_lossy(s).contains("AGENT_LEFTOVER"))).unwrap();
+    assert!(kill.args.iter().all(|a| !a.contains('\n')));
+}
+
+#[test]
+fn an_agents_saved_space_is_deleted_by_a_fixed_command_and_only_a_home_image_can_be_named() {
+    let rig = rig(false, 0);
+    // not installed: there is no space to delete, and the sandbox is not started for it
+    assert!(rig.sandbox.agent_home_remove("/var/lib/pm-agents/nimbus--scribe.img").is_ok());
+    assert!(rig.guest.calls().iter().all(|c| !c.args.iter().any(|a| a == "/bin/rm")));
+    rig.sandbox.install(&InstallOptions::new(SandboxName::main(), Desktop::Xfce), &mut |_| {}).unwrap();
+    rig.sandbox.start().unwrap();
+    rig.sandbox.agent_home_remove("/var/lib/pm-agents/nimbus--scribe.img").unwrap();
+    let calls = rig.guest.calls();
+    let rm = calls.iter().find(|c| c.args.iter().any(|a| a == "/bin/rm")).expect("the delete ran");
+    assert_eq!(&rm.args[rm.args.len() - 4..], ["/bin/rm", "-f", "--", "/var/lib/pm-agents/nimbus--scribe.img"]);
+    for bad in ["/etc/passwd", "/var/lib/pm-agents/../../etc/passwd", "/var/lib/pm-agents/", "/var/lib/pm-agents/a b.img", "/var/lib/pm-agents/x.txt", "nimbus.img"] {
+        assert_eq!(rig.sandbox.agent_home_remove(bad).unwrap_err().code, "SANDBOX_BAD_COMMAND", "{bad}");
+    }
+}

@@ -48,6 +48,7 @@ DEFAULT_DISPLAY = ":99"
 CHILD_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 CHILD_PINS = {
     "HOME": "/home/pm",
+    "XAUTHORITY": "/home/pm/.Xauthority",
     "LANG": "C.UTF-8",
     "XDG_RUNTIME_DIR": "/tmp/pm-runtime",
     "GDK_BACKEND": "x11",

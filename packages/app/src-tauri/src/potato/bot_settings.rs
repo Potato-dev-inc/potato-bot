@@ -122,6 +122,11 @@ pub struct BotSettings {
     /// The owner's limit on the sites the bot's web tools open. Off by default. Set only by the app command
     /// `potato_bot_sites_set`; no tool the model can call reads or writes it.
     pub site_limit: SiteLimit,
+    /// The owner's own agents, approved in Settings (`custom_agents.rs`). Written only by the app commands behind the Advanced
+    /// tab; no tool the model can call reads or writes it.
+    pub custom_agents: Vec<super::custom_agents::CustomAgent>,
+    /// The approved agent this bot talks through when its brain is "Through my agents". `None`: the companion's own chat.
+    pub brain_agent: Option<String>,
 }
 
 /// The most sites one list holds.

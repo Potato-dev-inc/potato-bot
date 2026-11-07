@@ -38,6 +38,7 @@ use super::log::{self, LogRing};
 use super::protocol::{self, ErrorCode, Event, HelperStatus, PauseReason, Tools, Trust};
 
 mod card_flow;
+mod agent_flow;
 mod chart;
 mod file_flow;
 mod job_flow;
@@ -50,6 +51,7 @@ pub mod portable;
 #[cfg(test)]
 #[path = "portable_tests.rs"]
 mod portable_tests;
+pub use agent_flow::AgentsView;
 pub use card_flow::AnswerOutcome;
 pub use login_flow::{ForgetOutcome, LoginOrigin};
 use job_flow::{JobAfter, JobTurn};
@@ -116,6 +118,8 @@ pub trait Host: Send + Sync {
     fn profile(&self, bot: &str) -> Option<BotProfile>;
     fn host_env(&self) -> HostEnv;
     fn secret(&self, name: &str) -> Option<String>;
+    /// Removes a secret this app stored for an agent (its owner removed the agent). Nothing by default.
+    fn delete_secret(&self, _name: &str) {}
     /// The active Go plan key from the agent's own store; used only for the Go brain.
     fn go_key(&self) -> Option<String> {
         None
@@ -493,6 +497,12 @@ pub struct Service {
     pub(super) helpers: super::helpers::HelperState,
     /// When the job files were last looked at for a job nobody is running (`job_flow.rs`).
     job_scan_ms: AtomicI64,
+    /// The agent turns now running, by bot: the flag that kills the agent's process when it turns true (`agent_flow.rs`).
+    agent_runs: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    /// One agent turn's time limit in seconds (a test lowers it).
+    agent_turn_seconds: std::sync::atomic::AtomicU64,
+    /// How long past that limit the host waits for the sandbox to answer (the sandbox kills the agent itself at the limit).
+    agent_grace_ms: std::sync::atomic::AtomicU64,
 }
 
 type Result<T> = std::result::Result<T, StoreError>;
@@ -517,6 +527,9 @@ impl Service {
             spawner: Mutex::new(thread_spawner()),
             helpers: super::helpers::HelperState::default(),
             job_scan_ms: AtomicI64::new(i64::MIN),
+            agent_runs: Mutex::new(HashMap::new()),
+            agent_turn_seconds: std::sync::atomic::AtomicU64::new(super::custom_agents::TURN_SECONDS),
+            agent_grace_ms: std::sync::atomic::AtomicU64::new(20_000),
         })
     }
 
@@ -1010,6 +1023,9 @@ impl Service {
 
         if settings.brain == BrainKind::Agents {
             drop(g);
+            if self.agent_brain_id(bot).is_some() {
+                return self.agent_turn(bot, &saved.id, &conversation, origin, &sent_text);
+            }
             self.note(bot, "Talking through your agents is not ready yet.");
             self.host.changed(bot);
             return Ok(SendOutcome { id: saved.id, state: BrainState::Agents, delivered: false });
@@ -1158,6 +1174,7 @@ impl Service {
 
     /// The page's Stop button: asks the brain to leave. The next message starts it again.
     pub fn stop_bot(&self, bot: &str) {
+        self.cancel_agent(bot);
         let now = self.host.now_ms();
         let mut g = self.inner.lock();
         if let Some(rt) = g.bots.get_mut(bot) {
@@ -1197,6 +1214,7 @@ impl Service {
     }
 
     fn ask_to_leave(&self, bot: &str) {
+        self.cancel_agent(bot);
         let now = self.host.now_ms();
         let mut g = self.inner.lock();
         if let Some(rt) = g.bots.get_mut(bot) {
@@ -1286,6 +1304,10 @@ impl Service {
             return BrainState::Off;
         }
         if settings.brain == BrainKind::Agents {
+            // An approved agent of the owner's own runs in the sandbox; no companion chat stands in for the thread.
+            if self.agent_brain_id(bot).is_some() {
+                return if self.agent_running(bot) { BrainState::Ready } else { BrainState::Idle };
+            }
             return BrainState::Agents;
         }
         let Some(rt) = g.bots.get(bot) else {

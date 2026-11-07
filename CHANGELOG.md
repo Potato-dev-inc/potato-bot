@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.7
+
+- The bot's computer screen is closed to every other user: the display now checks a key (X cookie) that only the sandbox account can read, a new one at every start. The secret hub and the tool hub were adjusted to match.
+- A custom agent brain gets a private view of its folder, a kept 1 GB home and its own secrets.
+- An existing sandbox gets the new guest files the next time it starts (no reset). The screen key applies at that start; a sandbox that is running keeps its old screen until it stops or idles out.
+
 ## 1.0.6
 
 - New: the OpenCode Go key can be set in Settings, and each bot can pick a Go model.

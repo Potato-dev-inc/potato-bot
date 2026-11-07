@@ -21,6 +21,8 @@ import {
   writeAcpPane,
   writeAgentChoice,
 } from '../../../lib/potato-agent-choice';
+import type { AgentsTransport } from '../../../lib/potato-agents';
+import { AdvancedAgents } from './AdvancedAgents';
 import { AdvancedSection } from './AdvancedSection';
 
 export interface AdvancedModelProps {
@@ -41,9 +43,11 @@ export interface AdvancedModelProps {
   companionTransport?: CompanionTransport;
   onChanged?: () => void;
   onNotify?: (text: string) => void;
+  /** The calls behind "Agents in the sandbox" (the app passes nothing; tests pass a fake). */
+  agentsTransport?: AgentsTransport;
 }
 
-export function AdvancedModel({ brain, defaultBrain, onChange, custom, onProviderChange, goModel, defaultGoModel, onGoModelChange, botId, companion, companionTransport, onChanged, onNotify }: AdvancedModelProps) {
+export function AdvancedModel({ brain, defaultBrain, onChange, custom, onProviderChange, goModel, defaultGoModel, onGoModelChange, botId, companion, companionTransport, onChanged, onNotify, agentsTransport }: AdvancedModelProps) {
   const usingAgents = (brain ?? defaultBrain) === 'agents';
   const usingCustom = (brain ?? defaultBrain) === 'custom';
   const usingGo = (brain ?? defaultBrain) === 'go';
@@ -216,6 +220,7 @@ export function AdvancedModel({ brain, defaultBrain, onChange, custom, onProvide
           />
         </div>
       )}
+      {usingAgents && <AdvancedAgents botId={botId} transport={agentsTransport} />}
       {usingAgents && (
         <div className="ck-potato-adv-agent">
           <label className="ck-sub" htmlFor="ck-adv-agent">

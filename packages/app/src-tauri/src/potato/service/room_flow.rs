@@ -272,6 +272,9 @@ impl Service {
                     }
                     Skip::BotOff => match pre.get(bot).and_then(|p| p.blocked) {
                         Some(blocked) => self.blocked_note(bot, blocked),
+                        None if pre.get(bot).is_some_and(|p| p.agents) && self.agent_brain_id(bot).is_some() => {
+                            format!("{name} talks through your own agent, which cannot be limited, so it answers only you in your private chat, not in groups.")
+                        }
                         None => format!("{name} is not running, so it did not get this line."),
                     },
                     Skip::Sender | Skip::HopLimit | Skip::Held | Skip::Muted => continue,

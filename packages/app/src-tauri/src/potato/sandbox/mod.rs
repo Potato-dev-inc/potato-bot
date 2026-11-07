@@ -227,6 +227,17 @@ pub trait Sandbox: Send + Sync {
     fn shell(&self, _command: &str, _cwd: Option<&str>, _timeout: std::time::Duration) -> SbxResult<ShellOutput> {
         Err(SandboxError::new("SANDBOX_SHELL_UNSUPPORTED", "This sandbox cannot run commands."))
     }
+    /// Runs the owner's own agent for one turn (`potato/custom_agents.rs` builds the script). The script goes to a root shell's
+    /// standard input and drops to the agent's own user itself. `cancel` kills the process tree when it turns true: the answer
+    /// is the error `AGENT_STOPPED`. A run past `timeout` is `timed_out`. Never the bot's shell: the bot's tools do not reach this.
+    fn agent_run(&self, _script: &str, _timeout: std::time::Duration, _cancel: &Arc<std::sync::atomic::AtomicBool>) -> SbxResult<ShellOutput> {
+        Err(SandboxError::new("SANDBOX_SHELL_UNSUPPORTED", "This sandbox cannot run an agent."))
+    }
+    /// Deletes one agent's saved space (its home image, `custom_agents::home_image`) when the owner removes the agent. A sandbox
+    /// that is not installed has none, so that is fine. The path must be a home image; anything else is refused.
+    fn agent_home_remove(&self, _image: &str) -> SbxResult<()> {
+        Err(SandboxError::new("SANDBOX_SHELL_UNSUPPORTED", "This sandbox cannot delete an agent's space."))
+    }
     /// Reads a file inside the sandbox (at most `max` bytes).
     fn read_file(&self, _path: &str, _max: usize) -> SbxResult<Vec<u8>> {
         Err(SandboxError::new("SANDBOX_FILES_UNSUPPORTED", "This sandbox cannot read files."))
@@ -763,6 +774,62 @@ impl Sandbox for WslSandbox {
         Ok(ShellOutput { code: out.code, stdout: cut_chars(out.stdout_text(), SHELL_OUTPUT_CHARS), stderr: cut_chars(out.stderr_text(), SHELL_OUTPUT_CHARS), timed_out: false })
     }
 
+    fn agent_run(&self, script: &str, timeout: std::time::Duration, cancel: &Arc<std::sync::atomic::AtomicBool>) -> SbxResult<ShellOutput> {
+        self.ensure_finished()?;
+        let _busy = self.lifecycle.begin_use();
+        self.lifecycle.ensure_ready(now_ms())?;
+        let wsl = self.wsl.with_cancel(cancel.clone());
+        let ran = wsl.exec(&self.name, GuestUser::Root, &["/bin/sh", "-s"], Some(script.as_bytes().to_vec()), timeout.min(SHELL_MAX_TIMEOUT));
+        // However the turn ended (done, timed out, stopped, or the pipe broke), every process of the agent's user is killed as
+        // root and checked. Killing the `wsl.exe` client or `timeout -k` does not reach a child that started its own session.
+        let kill = crate::potato::custom_agents::kill_script();
+        let cleaned = self.wsl.exec(&self.name, GuestUser::Root, &["/bin/sh", "-s"], Some(kill.into_bytes()), std::time::Duration::from_secs(30));
+        let out = match ran {
+            Ok(out) => out,
+            Err(WslError::Timeout) => {
+                self.lifecycle.touch(now_ms());
+                if !matches!(&cleaned, Ok(o) if o.success()) {
+                    return Err(SandboxError::new("AGENT_LEFTOVER", "Some of the agent's processes could not be stopped in the sandbox."));
+                }
+                return Ok(ShellOutput { code: None, stdout: String::new(), stderr: "The agent took too long and was stopped.".to_string(), timed_out: true });
+            }
+            Err(WslError::Cancelled) => {
+                if !matches!(&cleaned, Ok(o) if o.success()) {
+                    return Err(SandboxError::new("AGENT_LEFTOVER", "Some of the agent's processes could not be stopped in the sandbox."));
+                }
+                return Err(SandboxError::new("AGENT_STOPPED", "The agent was stopped."));
+            }
+            Err(e) => return Err(e.into()),
+        };
+        self.lifecycle.touch(now_ms());
+        if !matches!(&cleaned, Ok(o) if o.success()) {
+            return Err(SandboxError::new("AGENT_LEFTOVER", "Some of the agent's processes could not be stopped in the sandbox."));
+        }
+        Ok(ShellOutput { code: out.code, stdout: cut_chars(out.stdout_text(), SHELL_OUTPUT_CHARS), stderr: cut_chars(out.stderr_text(), SHELL_OUTPUT_CHARS), timed_out: false })
+    }
+
+    fn agent_home_remove(&self, image: &str) -> SbxResult<()> {
+        let dir = crate::potato::custom_agents::HOME_IMAGE_DIR;
+        let name = image.strip_prefix(dir).and_then(|r| r.strip_prefix('/')).unwrap_or("");
+        let plain = !name.is_empty() && name.ends_with(".img") && name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.')) && !name.contains("..");
+        if !plain {
+            return Err(SandboxError::new("SANDBOX_BAD_COMMAND", "That is not an agent space."));
+        }
+        self.ensure_finished()?;
+        if self.status()?.state == State::NotInstalled {
+            return Ok(());
+        }
+        let _busy = self.lifecycle.begin_use();
+        self.lifecycle.ensure_ready(now_ms())?;
+        // Nothing mounted from it can be left: the private mount ends with the turn, and one turn runs at a time.
+        let out = self.wsl.exec(&self.name, GuestUser::Root, &["/bin/rm", "-f", "--", image], None, std::time::Duration::from_secs(30))?;
+        self.lifecycle.touch(now_ms());
+        if !out.success() {
+            return Err(SandboxError::new("SANDBOX_SHELL_FAILED", "The sandbox could not delete the file."));
+        }
+        Ok(())
+    }
+
     fn shell(&self, command: &str, cwd: Option<&str>, timeout: std::time::Duration) -> SbxResult<ShellOutput> {
         if command.as_bytes().len() > 16 * 1024 {
             return Err(SandboxError::new("SANDBOX_BAD_COMMAND", "That command is too long. Split it into smaller ones."));
@@ -1136,6 +1203,9 @@ pub enum Recorded {
     /// A `login` call: how many bytes went on its stdin (the bytes themselves are only in `FakeSandbox::login_stdin`).
     BrowserLogin(usize),
     Shell(String),
+    /// The script of an `agent_run`.
+    AgentRun(String),
+    AgentHomeRemove(String),
     RootShell(String),
     SecretConfig(Vec<String>),
     ReadFile(String),
@@ -1184,7 +1254,17 @@ struct FakeState {
     page_hops: Vec<PageHop>,
     /// The answers `shell` gives, first in first out (an empty queue answers "fake shell", exit 0).
     shell_queue: Vec<ShellOutput>,
+    /// The answers `agent_run` gives, first in first out; empty: "fake agent reply", exit 0.
+    agent_queue: Vec<ShellOutput>,
+    /// `agent_run` never ends by itself: it ends when the cancel flag turns true (`AGENT_STOPPED`) or at the timeout.
+    agent_hang: bool,
+    agent_home_fails: bool,
+    /// What `agent_run` does with the script when set (a test may run it against a tiny local program).
+    agent_hook: Option<AgentHook>,
 }
+
+#[cfg(any(test, feature = "dev-fake-tui"))]
+pub type AgentHook = std::sync::Arc<dyn Fn(&str) -> ShellOutput + Send + Sync>;
 
 #[cfg(any(test, feature = "dev-fake-tui"))]
 pub type FilesHook = std::sync::Arc<dyn Fn(&[String], Option<Vec<u8>>) -> files_script::FilesOutput + Send + Sync>;
@@ -1230,6 +1310,27 @@ impl FakeSandbox {
     /// The last list of tool servers sent to the fake computer.
     pub fn queue_shell_results(&self, results: Vec<ShellOutput>) {
         self.state.lock().shell_queue = results;
+    }
+
+    pub fn queue_agent_results(&self, results: Vec<ShellOutput>) {
+        self.state.lock().agent_queue = results;
+    }
+
+    pub fn set_agent_home_fails(&self, on: bool) {
+        self.state.lock().agent_home_fails = on;
+    }
+
+    pub fn set_agent_hang(&self, on: bool) {
+        self.state.lock().agent_hang = on;
+    }
+
+    pub fn set_agent_hook(&self, hook: Option<AgentHook>) {
+        self.state.lock().agent_hook = hook;
+    }
+
+    /// The scripts the fake was asked to run as an agent.
+    pub fn agent_scripts(&self) -> Vec<String> {
+        self.calls().into_iter().filter_map(|c| if let Recorded::AgentRun(s) = c { Some(s) } else { None }).collect()
     }
 
     pub fn queue_page_hops(&self, hops: Vec<PageHop>) {
@@ -1533,6 +1634,39 @@ impl Sandbox for FakeSandbox {
 
     fn mcp_call(&self, _server: &str, _tool: &str, _arguments: &serde_json::Value) -> SbxResult<serde_json::Value> {
         self.state.lock().mcp_reply.clone().ok_or_else(|| SandboxError::new("SANDBOX_MCP_UNSUPPORTED", "This sandbox cannot call tools."))
+    }
+
+    fn agent_run(&self, script: &str, timeout: std::time::Duration, cancel: &Arc<std::sync::atomic::AtomicBool>) -> SbxResult<ShellOutput> {
+        self.use_screen(Recorded::AgentRun(script.to_string()))?;
+        let (hang, hook, queued) = {
+            let mut state = self.state.lock();
+            let queued = if state.agent_queue.is_empty() { None } else { Some(state.agent_queue.remove(0)) };
+            (state.agent_hang, state.agent_hook.clone(), queued)
+        };
+        if hang {
+            let started = std::time::Instant::now();
+            loop {
+                if cancel.load(std::sync::atomic::Ordering::SeqCst) {
+                    return Err(SandboxError::new("AGENT_STOPPED", "The agent was stopped."));
+                }
+                if started.elapsed() >= timeout {
+                    return Ok(ShellOutput { code: None, stdout: String::new(), stderr: "The agent took too long and was stopped.".to_string(), timed_out: true });
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+        if let Some(hook) = hook {
+            return Ok(hook(script));
+        }
+        Ok(queued.unwrap_or(ShellOutput { code: Some(0), stdout: "fake agent reply".to_string(), stderr: String::new(), timed_out: false }))
+    }
+
+    fn agent_home_remove(&self, image: &str) -> SbxResult<()> {
+        self.use_screen(Recorded::AgentHomeRemove(image.to_string()))?;
+        if self.state.lock().agent_home_fails {
+            return Err(SandboxError::new("SANDBOX_SHELL_FAILED", "The sandbox could not delete the file."));
+        }
+        Ok(())
     }
 
     fn shell(&self, command: &str, _cwd: Option<&str>, _timeout: std::time::Duration) -> SbxResult<ShellOutput> {

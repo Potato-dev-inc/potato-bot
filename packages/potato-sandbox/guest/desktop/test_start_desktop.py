@@ -290,5 +290,23 @@ class StaleSessionTests(unittest.TestCase):
         self.assertIn("rm -f /tmp/.ICE-unix/*", body, "xfce4-session fails with 'server already running' on a stale ICE socket")
         self.assertLess(body.index("rm -f /tmp/.ICE-unix"), body.index("setsid nohup Xvfb"))
 
+class ScreenKeyTests(unittest.TestCase):
+    """The screen is closed to other users: a cookie only this user can read, and no "-ac"."""
+
+    def test_xvfb_checks_a_private_cookie_and_never_runs_open(self):
+        text = read(START)
+        body = function_text(text, "start_xvfb")
+        self.assertNotIn(" -ac", body.split("setsid nohup Xvfb", 1)[1].split(chr(10), 1)[0])
+        self.assertIn('-auth "$XAUTHORITY"', body)
+        self.assertIn("umask 077", body)
+        self.assertLess(body.index("xauth -f"), body.index("setsid nohup Xvfb"), "the key exists before the server starts")
+
+    def test_every_user_of_the_display_is_given_the_key(self):
+        text = read(START)
+        self.assertIn('export XAUTHORITY="$HOME/.Xauthority"', text)
+        self.assertIn('x11vnc -display "$DISPLAY_NAME" -auth "$XAUTHORITY"', text)
+        self.assertIn("XAUTHORITY=$XAUTHORITY", function_text(text, "write_env"), "the join-the-session file carries it")
+
+
 if __name__ == "__main__":
     unittest.main()

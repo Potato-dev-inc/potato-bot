@@ -55,6 +55,9 @@ impl Host for FakeHost {
     fn secret(&self, name: &str) -> Option<String> {
         self.secrets.lock().get(name).cloned()
     }
+    fn delete_secret(&self, name: &str) {
+        self.secrets.lock().remove(name);
+    }
     fn resources(&self) -> Option<PathBuf> {
         self.resources.lock().clone()
     }
