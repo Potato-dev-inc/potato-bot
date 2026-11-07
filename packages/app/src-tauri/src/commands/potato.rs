@@ -189,6 +189,12 @@ pub async fn potato_open_cards(bot_id: String) -> Result<Vec<Card>, String> {
 
 /// Settings > Potato Bot > Check key: one tiny turn. Answers "Works." or one plain sentence. The key is read
 /// inside the app and goes to the model maker only.
+/// Settings > Potato Bot > Check key, for the Go plan key. One plain sentence either way; never the key.
+#[tauri::command]
+pub async fn potato_check_go_key() -> Result<String, String> {
+    run(|s| s.check_go_key()).await
+}
+
 #[tauri::command]
 pub async fn potato_check_key() -> Result<String, String> {
     run(|s| s.check_key()).await

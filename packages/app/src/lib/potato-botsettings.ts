@@ -75,6 +75,8 @@ export interface BotOptions {
   brain: BrainKind | null;
   /** The bot's own provider. `null`: the default in Settings. */
   custom: BotProvider | null;
+  /** The bot's own Go plan model. `null`: the default in Settings. Absent from an older app: the default. */
+  goModel?: string | null;
   tools: ToolSwitches;
   /** `ask_when_risky` unless the owner chose otherwise. */
   level: BotLevel;
@@ -103,6 +105,8 @@ export interface BotSettingsTransport {
   setBrain(botId: string, brain: BrainKind | null): Promise<BotOptions>;
   /** `null` goes back to the default provider in Settings. */
   setProvider(botId: string, custom: BotProvider | null): Promise<BotOptions>;
+  /** The model this bot uses on the Go plan. `null` goes back to the default in Settings. */
+  setGoModel(botId: string, model: string | null): Promise<BotOptions>;
   setTools(botId: string, tools: ToolSwitches): Promise<BotOptions>;
   setLevel(botId: string, level: BotLevel): Promise<BotOptions>;
   /** Saves the limit on the sites the bot's web tools open. An invalid site rejects with a plain sentence and saves nothing. */
@@ -123,6 +127,7 @@ export const tauriBotSettingsTransport: BotSettingsTransport = {
   options: (botId) => invoke<BotOptions>('potato_bot_options_get', { botId }),
   setBrain: (botId, brain) => invoke<BotOptions>('potato_bot_brain_set', { botId, brain }),
   setProvider: (botId, custom) => invoke<BotOptions>('potato_bot_provider_set', { botId, custom }),
+  setGoModel: (botId, model) => invoke<BotOptions>('potato_bot_go_model_set', { botId, model }),
   setTools: (botId, tools) => invoke<BotOptions>('potato_bot_tools_set', { botId, tools }),
   setLevel: (botId, level) => invoke<BotOptions>('potato_bot_level_set', { botId, level }),
   setSites: (botId, limit) => invoke<BotOptions>('potato_bot_sites_set', { botId, enabled: limit.enabled, sites: limit.sites }),
@@ -292,6 +297,11 @@ export function fakeBotSettingsTransport(seed: FakeBotSettingsSeed = {}): FakeBo
     setProvider: (botId, custom) =>
       run('setProvider', [botId, custom], () => {
         state.custom = custom;
+        return snapshot();
+      }),
+    setGoModel: (botId, model) =>
+      run('setGoModel', [botId, model], () => {
+        state.goModel = model && model.trim() !== '' ? model.trim() : null;
         return snapshot();
       }),
     setTools: (botId, tools) =>

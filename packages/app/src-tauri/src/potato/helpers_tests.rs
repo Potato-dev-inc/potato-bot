@@ -25,6 +25,8 @@ struct FakeHands {
     run: Mutex<RunState>,
     fail_start: Mutex<Option<String>>,
     key: Mutex<std::result::Result<(), String>>,
+    go_key_answer: Mutex<std::result::Result<(), String>>,
+    go_checked: Mutex<Vec<String>>,
     polls: Mutex<u32>,
     /// The pane the run's record names when it ends.
     pane_at_end: Mutex<Option<String>>,
@@ -57,6 +59,10 @@ impl Hands for FakeHands {
     }
     fn check_key(&self, _key: &str) -> std::result::Result<(), String> {
         self.key.lock().clone()
+    }
+    fn check_go_key(&self, key: &str) -> std::result::Result<(), String> {
+        self.go_checked.lock().push(key.to_string());
+        self.go_key_answer.lock().clone()
     }
 }
 
@@ -110,6 +116,8 @@ fn world(name: &str) -> World {
         run: Mutex::new(RunState::Running),
         fail_start: Mutex::new(None),
         key: Mutex::new(Ok(())),
+        go_key_answer: Mutex::new(Ok(())),
+        go_checked: Mutex::new(Vec::new()),
         polls: Mutex::new(0),
         pane_at_end: Mutex::new(None),
         pane_at_start: Mutex::new(true),
@@ -224,6 +232,8 @@ fn world_hands_for(rig: &Rig) -> Arc<FakeHands> {
         run: Mutex::new(RunState::Running),
         fail_start: Mutex::new(None),
         key: Mutex::new(Ok(())),
+        go_key_answer: Mutex::new(Ok(())),
+        go_checked: Mutex::new(Vec::new()),
         polls: Mutex::new(0),
         pane_at_end: Mutex::new(None),
         pane_at_start: Mutex::new(true),
@@ -613,6 +623,22 @@ fn check_key_says_works_or_one_plain_sentence() {
 }
 
 #[test]
+fn check_go_key_asks_the_plan_with_the_saved_key_and_gives_one_plain_sentence() {
+    let w = world("h-gocheck");
+    // nothing saved: it says so and asks nobody
+    w.rig.host.secrets.lock().remove(super::service::SECRET_GO);
+    assert_eq!(w.rig.svc.check_go_key().unwrap_err().code, "POTATO_NO_KEY");
+    assert!(w.hands.go_checked.lock().is_empty());
+    w.rig.host.secrets.lock().insert(super::service::SECRET_GO.to_string(), "oc-fake-go-key-0123456789".to_string());
+    assert_eq!(w.rig.svc.check_go_key().unwrap(), "Works.");
+    assert_eq!(*w.hands.go_checked.lock(), vec!["oc-fake-go-key-0123456789".to_string()]);
+    *w.hands.go_key_answer.lock() = Err("OpenCode Go did not accept that key.".into());
+    let e = w.rig.svc.check_go_key().unwrap_err();
+    assert_eq!(e.message, "OpenCode Go did not accept that key.");
+    assert!(!format!("{e:?}").contains("0123456789"), "the key is not in the error");
+}
+
+#[test]
 fn the_state_the_page_reads_never_holds_the_key_only_the_last_four() {
     let w = world("h-mask");
     let state = serde_json::to_string(&w.rig.svc.state().unwrap()).unwrap();
@@ -623,7 +649,7 @@ fn the_state_the_page_reads_never_holds_the_key_only_the_last_four() {
     let mut names: Vec<&str> = settings.as_object().unwrap().keys().map(String::as_str).collect();
     names.sort_unstable();
     // `voice` holds the voice's name, the speed and the bot ids that read aloud: no key.
-    assert_eq!(names, vec!["brain", "custom", "dailyLimitCents", "dailyLimitOff", "defaultPersona", "fallbacks", "sandboxActionsPerDay", "v", "voice"], "no field of the settings can hold a key");
+    assert_eq!(names, vec!["brain", "custom", "dailyLimitCents", "dailyLimitOff", "defaultPersona", "fallbacks", "goModel", "sandboxActionsPerDay", "v", "voice"], "no field of the settings can hold a key");
 }
 
 #[test]

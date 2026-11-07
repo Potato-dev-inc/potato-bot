@@ -9,7 +9,7 @@ import type { LlmProvider, Settings } from '@puppet-master/shared';
 export type ProviderSecretName = 'anthropic_api_key' | 'openai_api_key' | 'openrouter_api_key';
 /** One bot's own provider key: `potato_provider_key_<bot id>` (Rust checks the id shape). */
 export type BotProviderSecretName = `potato_provider_key_${string}`;
-export type SecretName = ProviderSecretName | 'deepseek_api_key' | 'potato_provider_key' | BotProviderSecretName;
+export type SecretName = ProviderSecretName | 'deepseek_api_key' | 'potato_provider_key' | 'potato_go_key' | BotProviderSecretName;
 
 export interface SecretMask {
   set: boolean;

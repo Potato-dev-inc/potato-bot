@@ -60,6 +60,16 @@ pub async fn potato_bot_provider_set(bot_id: String, custom: Option<crate::potat
     .await
 }
 
+/// Picks the model the bot uses on the Go plan. `null` goes back to the default in Settings.
+#[tauri::command]
+pub async fn potato_bot_go_model_set(bot_id: String, model: Option<String>) -> Result<BotOptions, String> {
+    run(move |s| {
+        s.set_go_model(&bot_id, model)?;
+        s.bot_options(&bot_id)
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn potato_bot_tools_set(bot_id: String, tools: ToolSwitches) -> Result<BotOptions, String> {
     run(move |s| {

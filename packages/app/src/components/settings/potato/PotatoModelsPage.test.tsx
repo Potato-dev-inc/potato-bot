@@ -48,7 +48,24 @@ describe('Settings > Potato Bot > Models and fallbacks', () => {
     await pickOption(select, 'go');
     await settle(4);
     expect(saved(fake)).toMatchObject({ brain: 'go', dailyLimitCents: 50 });
-    expect(hasText(root, 'Uses your OpenCode Go sign-in.')).toBe(true);
+    expect(hasText(root, 'Uses your OpenCode Go key, or the sign-in OpenCode already has on this computer.')).toBe(true);
+  });
+
+  it('with the Go brain it offers the plan models and saves the pick; the key field is there too', async () => {
+    const fake = seeded({ brain: 'go' });
+    const root = await mountPage(<ModelsPage transport={fake} />);
+    const select = byLabel<HTMLSelectElement>(root, 'Go model')!;
+    expect(select.options[0].textContent).toBe('Default (deepseek-v4.1-flash)');
+    expect([...select.options].map((o) => o.value)).toContain('kimi-k3.1-pro');
+    expect(byLabel(root, 'OpenCode Go key') ?? hasText(root, 'Check key')).toBeTruthy();
+    await pickOption(select, 'glm-5.3');
+    await settle(4);
+    expect(saved(fake)).toMatchObject({ brain: 'go', goModel: 'glm-5.3' });
+  });
+
+  it('shows no Go model for another brain', async () => {
+    const root = await mountPage(<ModelsPage transport={seeded()} />);
+    expect(byLabel(root, 'Go model')).toBeNull();
   });
 
   it('starts with no fallback and says what happens then', async () => {

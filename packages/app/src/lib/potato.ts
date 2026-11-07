@@ -73,6 +73,8 @@ export interface PotatoSettings {
   fallbacks?: BrainKind[];
   /** The endpoint of a `custom` brain. Its key is kept in the OS credential store. */
   custom?: { baseUrl: string; model: string };
+  /** The model of the Go brain (an id from the plan). Missing or empty: the brain's default. */
+  goModel?: string;
   /** Read replies aloud: the system voice, its speed, and the bots that read their replies. Missing: the defaults. */
   voice?: PotatoVoice;
 }
@@ -334,6 +336,8 @@ export interface PotatoTransport {
   settingsSet(settings: PotatoSettings): Promise<PotatoSettings>;
   /** Settings > Check key: one tiny turn. Answers "Works." or rejects with one plain sentence. */
   checkKey(): Promise<string>;
+  /** Settings > Check key for the Go plan key: asks the plan's model list. Answers "Works." or rejects with one plain sentence. */
+  checkGoKey(): Promise<string>;
   /** The files the bots made or received: the Artifacts page and "Save as file" in a thread. */
   artifacts: ArtifactTransport;
   /** `potato://changed`: something about this bot changed (`null`: the Labs switch moved). */
@@ -378,6 +382,7 @@ export const tauriPotatoTransport: PotatoTransport = {
   settingsGet: () => invoke<PotatoSettings>('potato_settings_get'),
   settingsSet: (settings) => invoke<PotatoSettings>('potato_settings_set', { settings }),
   checkKey: () => invoke<string>('potato_check_key'),
+  checkGoKey: () => invoke<string>('potato_check_go_key'),
   artifacts: tauriArtifactTransport,
   onChanged: (cb) => {
     if (!isTauri()) return Promise.resolve((() => {}) as UnlistenFn);
@@ -486,6 +491,7 @@ export interface FakePotatoSeed {
   folders?: string[];
   /** What Check key answers: a sentence, or throws one. */
   keyCheck?: () => string;
+  goKeyCheck?: () => string;
   /** The job each bot has (`job`). Default: none. */
   jobs?: Record<string, PotatoJob | null>;
   /** The files each bot's job changed (`jobFiles`). Default: none. */
@@ -718,6 +724,7 @@ export function fakePotatoTransport(seed: FakePotatoSeed = {}): FakePotatoTransp
         return { ...state.settings };
       }),
     checkKey: () => log('checkKey', [], () => (seed.keyCheck ? seed.keyCheck() : 'Works.')),
+    checkGoKey: () => log('checkGoKey', [], () => (seed.goKeyCheck ? seed.goKeyCheck() : 'Works.')),
     onChanged: (cb) => {
       listeners.add(cb);
       return Promise.resolve((() => listeners.delete(cb)) as UnlistenFn);

@@ -74,6 +74,8 @@ use crate::secrets::{self, SecretMask};
 pub const SECRET_DEEPSEEK: &str = "deepseek_api_key";
 /// The key of a Custom brain (any OpenAI-compatible endpoint). In the brain's environment only.
 pub const SECRET_PROVIDER: &str = "potato_provider_key";
+/// The Go plan key the person pasted in Settings. In the brain's environment only; the sign-in the plan's own tool keeps is the fallback.
+pub const SECRET_GO: &str = "potato_go_key";
 
 /// The credential-store name of one bot's own provider key. The UI may set it and the bot's brain reads it;
 /// the webview can never read it back (`secrets::is_sidecar_secret` allows this shape).
@@ -669,6 +671,9 @@ impl Service {
         if let Some(custom) = bot_own.custom {
             own.custom = custom;
         }
+        if let Some(model) = bot_own.go_model.filter(|m| !m.is_empty()) {
+            own.go_model = model;
+        }
         own
     }
 
@@ -683,6 +688,22 @@ impl Service {
         })?;
         if before != saved.custom {
             self.note(bot, "Now using its own provider.");
+            self.stop_bot(bot);
+        }
+        self.host.changed(bot);
+        Ok(saved)
+    }
+
+    /// Picks the model the bot uses on the Go plan (`None`: the default in Settings). A running brain is stopped, so
+    /// the next message starts on the new model.
+    pub fn set_go_model(&self, bot: &str, model: Option<String>) -> Result<BotSettings> {
+        self.require_bot(bot)?;
+        let before = bot_settings::load(&self.root, bot)?.go_model;
+        let saved = bot_settings::update(&self.root, bot, |s| {
+            s.go_model = store::clean_model_id(model.as_deref());
+            Ok(())
+        })?;
+        if before != saved.go_model {
             self.stop_bot(bot);
         }
         self.host.changed(bot);
@@ -1508,7 +1529,7 @@ impl Service {
         rt.chain_step = rt.chain_step.min(chain.len() - 1);
         let kind = chain[rt.chain_step];
         let go_key = (kind == BrainKind::Go)
-            .then(|| self.host.go_key())
+            .then(|| self.host.secret(SECRET_GO).filter(|k| !k.trim().is_empty()).or_else(|| self.host.go_key()))
             .flatten()
             .filter(|k| !k.trim().is_empty());
         if kind == BrainKind::Deepseek && key.is_none() {
@@ -1537,7 +1558,11 @@ impl Service {
                 _ => Brain::DeepSeek,
             },
             pack: &pack,
-            model: (kind == BrainKind::Custom).then_some(settings.custom.model.as_str()),
+            model: match kind {
+                BrainKind::Custom => Some(settings.custom.model.as_str()),
+                BrainKind::Go => Some(settings.go_model.as_str()),
+                _ => None,
+            },
             vault: &vault,
             persona_dir: &persona_dir,
             state_dir: &state_dir,

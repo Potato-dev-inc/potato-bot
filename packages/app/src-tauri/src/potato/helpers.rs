@@ -99,6 +99,8 @@ pub trait Hands: Send + Sync {
     fn poll(&self, project: &str, operation_id: &str) -> RunState;
     /// One tiny turn with the key: `Ok` when the model maker accepted it, else a plain sentence.
     fn check_key(&self, key: &str) -> std::result::Result<(), String>;
+    /// Asks the Go plan whether it accepts the key. `Ok` or a plain sentence.
+    fn check_go_key(&self, key: &str) -> std::result::Result<(), String>;
 }
 
 // ---- the saved book ------------------------------------------------------------------------------------
@@ -390,6 +392,15 @@ impl Service {
         let key = self.host().secret(super::service::SECRET_DEEPSEEK).filter(|k| !k.trim().is_empty());
         let key = key.ok_or_else(|| err("POTATO_NO_KEY", "Add your DeepSeek key first."))?;
         hands.check_key(&key).map_err(|m| err("POTATO_KEY_CHECK", m))?;
+        Ok("Works.".to_string())
+    }
+
+    /// Settings > Potato Bot > "Check key" for the Go plan key the person pasted. Read here, sent only to the plan.
+    pub fn check_go_key(&self) -> Result<String> {
+        let hands = self.hands()?;
+        let key = self.host().secret(super::service::SECRET_GO).filter(|k| !k.trim().is_empty());
+        let key = key.ok_or_else(|| err("POTATO_NO_KEY", "Add your Go key first."))?;
+        hands.check_go_key(&key).map_err(|m| err("POTATO_KEY_CHECK", m))?;
         Ok("Works.".to_string())
     }
 

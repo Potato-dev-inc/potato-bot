@@ -26,7 +26,7 @@ pub fn is_provider_secret(name: &str) -> bool {
 /// Secrets only a Potato Bot brain process reads (the model key, a chat app's bot token). The UI may set,
 /// read masked and delete them like a provider key; but they are NEVER handed to the webview:
 /// `secret_get_for_llm` stays provider-only. The brain gets them in its own environment at spawn.
-pub const SIDECAR_SECRETS: &[&str] = &["deepseek_api_key", "potato_provider_key", "discord_bot_token"];
+pub const SIDECAR_SECRETS: &[&str] = &["deepseek_api_key", "potato_provider_key", "potato_go_key", "discord_bot_token"];
 
 pub fn is_sidecar_secret(name: &str) -> bool {
     SIDECAR_SECRETS.contains(&name)

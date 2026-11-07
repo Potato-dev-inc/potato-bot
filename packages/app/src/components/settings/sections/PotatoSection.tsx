@@ -17,6 +17,7 @@ import { makePotatoVoiceRows } from './PotatoVoiceRows';
 import { makeUpdateRows } from './UpdateRow';
 import { makePotatoSubPageRows } from '../potato/PotatoSubPages';
 import { RecentlyDeletedRow } from '../potato/RecentlyDeleted';
+import { GoKeyField } from '../potato/GoKeyField';
 import { usePotatoSettings } from '../potato/usePotatoSettings';
 
 /** The limits of the daily limit, in cents ($0.05 to $20). Rust clamps again. */
@@ -40,7 +41,7 @@ function KeyRow({ transport, api }: { transport: PotatoTransport; api: SecretsAp
     }
   };
   if (settings && settings.brain !== 'deepseek') {
-    return <SettingRow label="DeepSeek key" description={settings.brain === 'go' ? 'Not needed: this brain uses your OpenCode Go sign-in.' : 'Not needed: this brain uses your own agents.'} />;
+    return <SettingRow label="DeepSeek key" description={settings.brain === 'go' ? 'Not needed: this brain uses your OpenCode Go key.' : 'Not needed: this brain uses your own agents.'} />;
   }
   return (
     <SettingBlock label="DeepSeek key" description="Kept in your system keychain. Only the last 4 characters are ever shown here, and the key never goes to the phone.">
@@ -190,6 +191,18 @@ export function makePotatoRows(transport: PotatoTransport = tauriPotatoTransport
       keywords: `${KEYWORDS} api key check test keychain`,
       group: 'Potato Bot',
       render: () => <KeyRow transport={transport} api={api} />,
+    },
+    {
+      id: 'potato-go-key',
+      label: 'OpenCode Go key',
+      hint: 'The key for your OpenCode Go plan. Pick OpenCode Go as the brain, then choose its model on Models and fallbacks.',
+      keywords: `${KEYWORDS} opencode go api key plan models glm kimi deepseek keychain`,
+      group: 'Potato Bot',
+      render: () => (
+        <SettingBlock label="OpenCode Go key" description="Kept in your system keychain. Only the last 4 characters are ever shown here, and the key never goes to the phone, a chat, an export or a log. Without one, the sign-in OpenCode already has on this computer is used.">
+          <GoKeyField transport={transport} api={api} />
+        </SettingBlock>
+      ),
     },
     {
       id: 'potato-persona',

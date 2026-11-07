@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.6
+
+- New: the OpenCode Go key can be set in Settings, and each bot can pick a Go model.
+- Two comments no longer name a folder on the maintainer's PC.
+
 ## 1.0.5
 
 - New: use your bots from your phone. Settings > Phone shows a QR; scanning it pairs one phone (no password, no account) and the phone web app can be added to the home screen. It lists your bots with a status dot and Needs you, opens a chat with photos, live steps and Queued, answers cards (Allow once, Allow for this job, Deny, choices, Keep going or Stop), stops a job, pauses everything, and follows the phone language (English or Traditional Chinese). The sign-in card never takes a password on the phone: it says Sign in on your PC. Every phone has its own token; Settings lists phones and signs one out at once. Phones on the same Wi-Fi reach the PC directly; if the network blocks that, turn on Reach from outside your Wi-Fi (off by default) and scan again. Windows Firewall is read, never changed without your press. Notifications use Web Push sent from your PC (no hosted service). Bot screens are not on the phone yet.

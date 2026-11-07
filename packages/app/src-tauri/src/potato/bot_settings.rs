@@ -105,6 +105,8 @@ pub struct BotSettings {
     /// The bot's own OpenAI-compatible provider (base URL and model). `None`: the default in Settings.
     /// Its key lives in the credential store under `potato_provider_key_<bot>`.
     pub custom: Option<CustomProvider>,
+    /// The model this bot uses on the Go plan. `None`: the default in Settings.
+    pub go_model: Option<String>,
     pub tools: ToolSwitches,
     /// How much the bot asks before it acts in its computer. Set only by the owner, through the app command
     /// `potato_bot_level_set`; no tool the model can call reads or writes it. Missing: ask when risky.
@@ -245,6 +247,8 @@ pub struct BotOptions {
     pub brain: Option<BrainKind>,
     /// The bot's own provider. `None`: the default in Settings.
     pub custom: Option<CustomProvider>,
+    /// The bot's own Go plan model. `None`: the default in Settings.
+    pub go_model: Option<String>,
     pub tools: ToolSwitches,
     pub level: Level,
     /// The sandbox Labs switch is on: the computer switch is shown only then.
@@ -374,6 +378,7 @@ pub fn options_of(settings: &BotSettings, sandbox_on: bool) -> BotOptions {
     BotOptions {
         brain: settings.brain,
         custom: settings.custom.clone(),
+        go_model: settings.go_model.clone(),
         tools: settings.tools,
         level: settings.level,
         sandbox_on,

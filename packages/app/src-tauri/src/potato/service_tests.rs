@@ -108,6 +108,8 @@ pub(super) struct Spawned {
     pub cwd: PathBuf,
     pub script: PathBuf,
     pub has_key: bool,
+    pub go_key: Option<String>,
+    pub model: Option<String>,
     pub sink: LineSink,
 }
 
@@ -136,6 +138,8 @@ impl Launcher for FakeLauncher {
             cwd: spec.cwd.clone(),
             script: spec.script.clone(),
             has_key: spec.env.get("DEEPSEEK_API_KEY").is_some(),
+            go_key: spec.env.get("OPENCODE_API_KEY").map(str::to_string),
+            model: spec.env.get("FISHD_MODEL").map(str::to_string),
             sink,
         });
         Ok(Box::new(FakeChild(child)))
@@ -873,6 +877,78 @@ fn the_go_brain_needs_no_key_and_gets_the_go_provider() {
     assert!(rig.svc.send("nimbus", "hi").unwrap().delivered);
     let spawned = rig.launcher.spawned.lock();
     assert_eq!((spawned[0].provider.as_str(), spawned[0].has_key), ("opencode", false));
+}
+
+const GO_KEY: &str = "oc-fake-go-key-0123456789abcdef";
+
+fn tree_text(dir: &std::path::Path, out: &mut String) {
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            tree_text(&path, out);
+        } else if let Ok(bytes) = std::fs::read(&path) {
+            out.push_str(&String::from_utf8_lossy(&bytes));
+        }
+    }
+}
+
+#[test]
+fn a_saved_go_key_and_model_reach_only_the_brain_environment() {
+    let rig = Rig::new("gokey");
+    rig.host.secrets.lock().clear();
+    rig.host.secrets.lock().insert(SECRET_GO.to_string(), GO_KEY.to_string());
+    rig.svc.set_settings(Settings { brain: BrainKind::Go, go_model: " glm-5.3 ".into(), ..Settings::default() }).unwrap();
+    assert_eq!(rig.svc.settings().unwrap().go_model, "glm-5.3", "trimmed");
+    assert!(rig.svc.send("nimbus", "hi").unwrap().delivered);
+    {
+        let spawned = rig.launcher.spawned.lock();
+        assert_eq!(spawned[0].go_key.as_deref(), Some(GO_KEY));
+        assert_eq!(spawned[0].model.as_deref(), Some("glm-5.3"));
+        assert_eq!(spawned[0].provider, "opencode");
+        assert!(!spawned[0].has_key, "the other brain's key is not handed over");
+    }
+    // the bot's own model wins over the default
+    let own = Rig::new("gokey-own");
+    own.host.secrets.lock().insert(SECRET_GO.to_string(), GO_KEY.to_string());
+    own.svc.set_settings(Settings { brain: BrainKind::Go, go_model: "glm-5.3".into(), ..Settings::default() }).unwrap();
+    own.svc.set_go_model("nimbus", Some("kimi-k3".into())).unwrap();
+    assert_eq!(own.svc.bot_options("nimbus").unwrap().go_model.as_deref(), Some("kimi-k3"));
+    assert!(own.svc.send("nimbus", "hi").unwrap().delivered);
+    assert_eq!(own.launcher.spawned.lock()[0].model.as_deref(), Some("kimi-k3"));
+    assert_eq!(own.svc.settings().unwrap().go_model, "glm-5.3", "the default is untouched");
+    // a model with spaces is dropped, not saved
+    assert_eq!(own.svc.set_go_model("nimbus", Some("two words".into())).unwrap().go_model, None);
+}
+
+#[test]
+fn the_go_key_never_reaches_the_page_the_log_the_export_or_any_saved_file() {
+    let rig = Rig::new("gosecret");
+    rig.host.secrets.lock().insert(SECRET_GO.to_string(), GO_KEY.to_string());
+    rig.svc.set_settings(Settings { brain: BrainKind::Go, ..Settings::default() }).unwrap();
+    rig.svc.send("nimbus", "hello").unwrap();
+    rig.hello();
+    rig.answer_all();
+    // the brain prints the key by mistake: the log cleaner hides it
+    let sink = rig.launcher.spawned.lock()[0].sink.clone();
+    sink(&format!("401 from the plan for key {GO_KEY}"));
+    for line in rig.svc.log_lines("nimbus") {
+        assert!(!line.contains(GO_KEY), "{line}");
+    }
+    assert!(!rig.svc.export_markdown("nimbus").unwrap().contains(GO_KEY));
+    assert!(!serde_json::to_string(&rig.svc.state().unwrap()).unwrap().contains(GO_KEY));
+    assert!(!serde_json::to_string(&rig.svc.settings().unwrap()).unwrap().contains(GO_KEY));
+    assert!(!serde_json::to_string(&rig.svc.bot_options("nimbus").unwrap()).unwrap().contains(GO_KEY));
+    // nothing the engine keeps on disk (settings, chats, bot files, backups) holds it
+    let mut all = String::new();
+    tree_text(&rig.root, &mut all);
+    assert!(!all.contains(GO_KEY), "the key was written to a file");
+}
+
+#[test]
+fn the_go_key_is_a_brain_secret_the_page_may_set_and_mask_but_never_read() {
+    assert!(crate::secrets::is_sidecar_secret(SECRET_GO));
+    assert!(crate::secrets::is_ui_secret(SECRET_GO));
+    assert!(!crate::secrets::is_provider_secret(SECRET_GO), "secret_get_for_llm refuses it");
 }
 
 fn limited_rig(name: &str) -> Rig {

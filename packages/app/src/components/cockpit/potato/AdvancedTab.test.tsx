@@ -119,6 +119,25 @@ describe('the Advanced tab', () => {
     expect(transport.calls.filter((c) => c.method === 'setBrain').at(-1)!.args).toEqual(['fish', null]);
   });
 
+  it('lets a bot on the Go plan pick its own model, and "Use the default" goes back to the Settings model', async () => {
+    const transport = fakeBotSettingsTransport();
+    await mount(transport, { defaultBrain: 'go' });
+    const select = host.querySelector<HTMLSelectElement>('select[aria-label="Go model"]')!;
+    expect(select.value).toBe('');
+    expect(select.options[0].textContent).toBe('Use the default (DeepSeek V4.1 Flash)');
+    expect([...select.options].map((o) => o.value)).toContain('glm-5.3');
+    await pick(select, 'glm-5.3');
+    expect(transport.calls.find((c) => c.method === 'setGoModel')!.args).toEqual(['fish', 'glm-5.3']);
+    expect(host.querySelector<HTMLSelectElement>('select[aria-label="Go model"]')!.value).toBe('glm-5.3');
+    await pick(host.querySelector<HTMLSelectElement>('select[aria-label="Go model"]')!, '');
+    expect(transport.calls.filter((c) => c.method === 'setGoModel').at(-1)!.args).toEqual(['fish', null]);
+  });
+
+  it('shows no Go model choice for a bot on another brain', async () => {
+    await mount(fakeBotSettingsTransport());
+    expect(host.querySelector('select[aria-label="Go model"]')).toBeNull();
+  });
+
   it('names the default brain in the first choice', async () => {
     await mount(fakeBotSettingsTransport(), { defaultBrain: 'go' });
     expect(host.querySelector('option')!.textContent).toBe('Use the default (OpenCode Go)');

@@ -3,14 +3,16 @@
 // brain in the list is tried for that message. Keys are not here: each brain keeps its own (the keychain, or its sign-in).
 import { useState } from 'react';
 import { brainLabel, plainError, type BrainKind, type PotatoSettings, type PotatoTransport } from '../../../lib/potato';
+import { GO_DEFAULT_MODEL, GO_MODELS } from '../../../lib/potato-go-models';
 import { ApiKeyField } from '../ApiKeyField';
+import { GoKeyField } from './GoKeyField';
 import { Btn, FieldInput, FieldSelect, Note, SettingBlock, SettingRow } from '../settings-ui';
 import { usePotatoSettings } from './usePotatoSettings';
 
 /** What the talk brain does and costs, under its name. */
 export const BRAIN_NOTE: Record<BrainKind, string> = {
   deepseek: 'Pays DeepSeek per message. Usually cents a day.',
-  go: 'Uses your OpenCode Go sign-in.',
+  go: 'Uses your OpenCode Go key, or the sign-in OpenCode already has on this computer.',
   agents: 'Runs on one of your agents on this machine: Claude, Codex, Cursor, OpenCode and so on. Pick it on the bot or on the companion.',
   custom: 'Any OpenAI-compatible API endpoint: OpenAI, OpenRouter, a local server, or another provider. You pay that provider.',
 };
@@ -93,6 +95,23 @@ export function ModelsPage({ transport }: { transport: PotatoTransport }) {
             />
           </SettingRow>
           <ApiKeyField label="Provider key" name="potato_provider_key" placeholder="The key for that provider" onSaved={() => void write({}, 'Saved.')} />
+        </SettingBlock>
+      )}
+
+      {brain === 'go' && (
+        <SettingBlock label="OpenCode Go" description="Your Go plan key is kept in your system keychain and only the bot's brain sees it. A bot can pick its own model on its Advanced tab.">
+          <SettingRow label="Model">
+            <FieldSelect aria-label="Go model" value={settings.goModel ?? ''} onChange={(e) => void write({ goModel: e.target.value }, 'Saved.')}>
+              <option value="">{`Default (${GO_DEFAULT_MODEL})`}</option>
+              {settings.goModel && !GO_MODELS.some((m) => m.id === settings.goModel) && <option value={settings.goModel}>{settings.goModel}</option>}
+              {GO_MODELS.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label}
+                </option>
+              ))}
+            </FieldSelect>
+          </SettingRow>
+          <GoKeyField transport={transport} />
         </SettingBlock>
       )}
 

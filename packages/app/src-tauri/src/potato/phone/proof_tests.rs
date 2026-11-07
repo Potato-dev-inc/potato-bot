@@ -1,6 +1,6 @@
 //! A server for the proof run (ignored by default): the REAL phone server, REAL sockets and the REAL tunnel program
 //! in front of a stand-in engine (a fake brain that answers every message), in a throwaway folder. A browser drives
-//! the phone page against it (`D:\pm-night\phone-shots\`). It is a test binary, not the packaged app.
+//! the phone page against it. It is a test binary, not the packaged app.
 //!
 //!   PHONE_PROOF_DIR=<empty folder> [PM_CLOUDFLARED_EXE=<exe>] [PHONE_PROOF_PORT=<n>] \
 //!     cargo test --lib phone_proof_server -- --ignored --nocapture

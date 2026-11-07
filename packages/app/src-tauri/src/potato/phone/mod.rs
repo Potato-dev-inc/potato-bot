@@ -1,5 +1,5 @@
 //! The phone: a small web app and the authenticated server that feeds it, so the owner can use the bots away
-//! from the PC. See `docs/PHONE-API.md` for the wire format and `D:\pm-night\PHONE-PLAN.md` for the reasoning.
+//! from the PC. See `docs/PHONE-API.md` for the wire format.
 //!
 //! - `gate`: the one door every request passes (Host, Origin, header, token, abilities), pairing, hello, app files
 //! - `api`: the v1 routes behind the door; `push_routes`: web push subscription; `ws`: the WebSocket twin of the long poll

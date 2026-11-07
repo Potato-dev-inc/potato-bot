@@ -51,7 +51,7 @@ const calls = (method: string) => fake.calls.filter((c) => c.method === method);
 describe('Settings > Potato Bot', () => {
   it('shows every row, in the order of the spec, with the exact copy', async () => {
     await mount();
-    expect([...m.host.querySelectorAll('[data-row]')].map((el) => el.getAttribute('data-row'))).toEqual(['potato-bot', 'potato-groups-labs', 'potato-models', 'potato-recently-deleted', 'potato-key', 'potato-persona', 'potato-limit', 'potato-connectors', 'potato-mcp', 'potato-usage']);
+    expect([...m.host.querySelectorAll('[data-row]')].map((el) => el.getAttribute('data-row'))).toEqual(['potato-bot', 'potato-groups-labs', 'potato-models', 'potato-recently-deleted', 'potato-key', 'potato-go-key', 'potato-persona', 'potato-limit', 'potato-connectors', 'potato-mcp', 'potato-usage']);
     for (const text of ['Potato Bot', 'Models and fallbacks', 'DeepSeek key', 'Check key', 'Default persona', 'Daily limit', 'Usage']) {
       expect(hasText(m.host, text), text).toBe(true);
     }

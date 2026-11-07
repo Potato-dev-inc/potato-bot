@@ -192,6 +192,12 @@ pub enum BrainKind {
     Custom,
 }
 
+/// A model id as the plan spells it: trimmed, no spaces, at most 200 characters. Anything else is dropped.
+pub fn clean_model_id(raw: Option<&str>) -> Option<String> {
+    let id = raw?.trim();
+    (!id.is_empty() && id.len() <= 200 && !id.contains(char::is_whitespace) && !id.chars().any(char::is_control)).then(|| id.to_string())
+}
+
 /// Endpoint of a `BrainKind::Custom` brain (an OpenAI-compatible `/chat/completions` service).
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 #[serde(default, rename_all = "camelCase")]
@@ -241,6 +247,8 @@ pub struct Settings {
     pub fallbacks: Vec<BrainKind>,
     /// The endpoint of a `Custom` brain (its key is kept in the OS credential store under `potato_provider_key`).
     pub custom: CustomProvider,
+    /// The model of the Go brain (a model id from the plan). Empty: the brain's own default.
+    pub go_model: String,
     /// The system voice, its speed, and the bots that read their replies aloud (see `voice.rs`).
     pub voice: super::voice::VoiceSettings,
 }
@@ -256,6 +264,7 @@ impl Default for Settings {
             sandbox_actions_per_day: super::cost::DEFAULT_SANDBOX_ACTIONS,
             fallbacks: Vec::new(),
             custom: CustomProvider::default(),
+            go_model: String::new(),
             voice: super::voice::VoiceSettings::default(),
         }
     }
@@ -279,6 +288,7 @@ pub fn load_settings(root: &Path) -> StoreResult<Settings> {
     settings.sandbox_actions_per_day = super::cost::clamp_sandbox_actions(settings.sandbox_actions_per_day);
     settings.fallbacks = super::fallback::clean(settings.brain, &settings.fallbacks);
     settings.custom = settings.custom.cleaned();
+    settings.go_model = clean_model_id(Some(&settings.go_model)).unwrap_or_default();
     settings.voice = settings.voice.cleaned();
     if !valid_pack(&settings.default_persona) {
         settings.default_persona = "fish".into();

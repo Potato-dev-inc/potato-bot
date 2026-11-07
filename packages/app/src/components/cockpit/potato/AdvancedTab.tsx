@@ -102,6 +102,9 @@ export function AdvancedTab({ bot, defaultBrain = 'deepseek', transport = tauriB
         onChange={(brain) => void apply(() => transport.setBrain(bot.id, brain))}
         custom={options.custom}
         onProviderChange={(custom) => void apply(() => transport.setProvider(bot.id, custom))}
+        goModel={options.goModel ?? null}
+        defaultGoModel={settings?.goModel ?? ''}
+        onGoModelChange={(model) => void apply(() => transport.setGoModel(bot.id, model))}
         botId={bot.id}
         companion={companion}
         companionTransport={companionTransport}

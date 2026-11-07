@@ -85,3 +85,41 @@ pub(crate) fn key_from_value(value: &str) -> Option<String> {
         .or_else(|| json.get("access").and_then(serde_json::Value::as_str).filter(|access| !access.is_empty()))
         .map(str::to_string)
 }
+
+/// Where the Go plan's model list lives. A key is checked by asking for this list, which costs nothing.
+pub const MODELS_URL: &str = "https://opencode.ai/inference/go/v1/models";
+
+/// Asks the model list at `url` whether the key is accepted. The key goes in one header to that address and
+/// nowhere else; no redirect is followed, the body is never read or logged, and every answer is one fixed
+/// sentence (so no key, address or server text can reach an error message).
+pub fn check_key_at(url: &str, key: &str) -> Result<(), String> {
+    let key = key.trim();
+    if key.is_empty() || key.contains(char::is_whitespace) || key.chars().any(char::is_control) {
+        return Err("That does not look like an OpenCode Go key. Copy it again from the OpenCode console, with no spaces.".to_string());
+    }
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(8))
+        .timeout_read(Duration::from_secs(20))
+        .redirects(0)
+        .build();
+    match agent
+        .get(url)
+        .set("Authorization", &format!("Bearer {key}"))
+        .set("User-Agent", "potato-bot/1.0")
+        .call()
+    {
+        Ok(resp) if resp.status() == 200 => Ok(()),
+        Ok(_) => Err("OpenCode Go gave an answer that was not expected. Try again.".to_string()),
+        Err(ureq::Error::Status(401 | 403, _)) => {
+            Err("OpenCode Go did not accept that key. Check that it is a Go key and that your Go plan is active.".to_string())
+        }
+        Err(ureq::Error::Status(429, _)) => Err("OpenCode Go is busy right now. Try again in a minute.".to_string()),
+        Err(ureq::Error::Status(_, _)) => Err("OpenCode Go could not answer right now. Try again in a minute.".to_string()),
+        Err(ureq::Error::Transport(_)) => Err("Could not reach OpenCode Go. Check your internet.".to_string()),
+    }
+}
+
+/// `check_key_at` for the real service.
+pub fn check_key(key: &str) -> Result<(), String> {
+    check_key_at(MODELS_URL, key)
+}

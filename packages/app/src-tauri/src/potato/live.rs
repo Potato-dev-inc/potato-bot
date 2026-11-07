@@ -336,6 +336,13 @@ impl Hands for LiveHands {
         }
         ask_model(key)
     }
+
+    fn check_go_key(&self, key: &str) -> Result<(), String> {
+        if super::sidecar::fake_brain_active() {
+            return Ok(());
+        }
+        crate::opencode::go_key::check_key(key)
+    }
 }
 
 /// One tiny turn: "hi", one word back at most. The key is sent to the model maker's address and nowhere else;

@@ -10,6 +10,7 @@ import { sendPaneMessage } from '../../../lib/paneOutbox';
 import type { BrainKind } from '../../../lib/potato';
 import { plainError } from '../../../lib/potato';
 import { ADVANCED_COPY, brainChoices, brainFromValue, brainValue, type BotProvider } from '../../../lib/potato-botsettings';
+import { GO_DEFAULT_MODEL, GO_MODELS, goModelLabel } from '../../../lib/potato-go-models';
 import { ApiKeyField } from '../../settings/ApiKeyField';
 import {
   SANDBOX_NOTICE,
@@ -29,6 +30,10 @@ export interface AdvancedModelProps {
   /** The bot's own provider. `null`: the default in Settings. */
   custom?: BotProvider | null;
   onProviderChange?: (custom: BotProvider | null) => void;
+  /** The bot's own model on the Go plan. `null`: the default in Settings (`defaultGoModel`, empty for the brain's own). */
+  goModel?: string | null;
+  defaultGoModel?: string;
+  onGoModelChange?: (model: string | null) => void;
   /** The bot these choices belong to. */
   botId: string;
   /** The bot's companion: its pane and the TUI agent it runs on ("My TUI agent"). */
@@ -38,9 +43,10 @@ export interface AdvancedModelProps {
   onNotify?: (text: string) => void;
 }
 
-export function AdvancedModel({ brain, defaultBrain, onChange, custom, onProviderChange, botId, companion, companionTransport, onChanged, onNotify }: AdvancedModelProps) {
+export function AdvancedModel({ brain, defaultBrain, onChange, custom, onProviderChange, goModel, defaultGoModel, onGoModelChange, botId, companion, companionTransport, onChanged, onNotify }: AdvancedModelProps) {
   const usingAgents = (brain ?? defaultBrain) === 'agents';
   const usingCustom = (brain ?? defaultBrain) === 'custom';
+  const usingGo = (brain ?? defaultBrain) === 'go';
   const [baseUrl, setBaseUrl] = useState(custom?.baseUrl ?? '');
   const [model, setModel] = useState(custom?.model ?? '');
   useEffect(() => {
@@ -160,6 +166,23 @@ export function AdvancedModel({ brain, defaultBrain, onChange, custom, onProvide
           </option>
         ))}
       </select>
+      {usingGo && (
+        <div className="ck-potato-adv-provider">
+          <label className="ck-potato-adv-field">
+            <span className="ck-potato-adv-line">OpenCode Go model</span>
+            <select className="ck-potato-adv-input" aria-label="Go model" value={goModel ?? ''} onChange={(event) => onGoModelChange?.(event.target.value || null)}>
+              <option value="">{`Use the default (${goModelLabel(defaultGoModel || GO_DEFAULT_MODEL)})`}</option>
+              {goModel && !GO_MODELS.some((m) => m.id === goModel) && <option value={goModel}>{goModel}</option>}
+              {GO_MODELS.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <p className="ck-sub">Only this bot. The Go key is one for all bots, in Settings.</p>
+        </div>
+      )}
       {usingCustom && (
         <div className="ck-potato-adv-provider">
           <p className="ck-sub">This bot's own provider. Other bots keep theirs.</p>
