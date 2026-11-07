@@ -50,8 +50,8 @@ import { redactSecrets } from "../lifted/redact-secrets.ts";
 import { DETAIL_MAX, FULL_MAX, TAIL_LINES, TAIL_MAX, WHY_MAX, scrubText } from "../core/step-label.ts";
 import { readReply, sandboxTools, CALL_TIMEOUT_MS } from "../core/sandbox-tools.ts";
 import type { SandboxReply, SandboxToolName } from "../core/sandbox-tools.ts";
-import { PotatoRoomTransport, RoomRunner, ROOM_ID, parseRoomItem } from "../rooms/index.ts";
-import type { RoomTurnInput, TurnOut } from "../rooms/index.ts";
+import { PotatoRoomTransport, PotatoSpaceTransport, RoomRunner, ROOM_ID, SpaceRunner, appSpaceOf, parseRoomItem, parseSpaceItem } from "../rooms/index.ts";
+import type { RoomTurnInput, SpaceTurnInput, TurnOut } from "../rooms/index.ts";
 
 export const PROTOCOL_VERSION = 1;
 
@@ -224,7 +224,8 @@ export class PotatoChannel {
   /** conversation id -> what the person wrote while a turn for it was open, oldest first */
   private steerBox = new Map<string, SteerWaiting[]>();
   private paused: PauseReason | null = null;
-  private current: { conversationId: string; replyTo: string; tools: ToolLevel; trust: Trust; stop: AbortController } | null = null;
+  private current: { conversationId: string; replyTo: string; tools: ToolLevel; trust: Trust; stop: AbortController; space?: "owner" | "guest" } | null = null;
+  private spaceRunner: SpaceRunner | null = null;
 
   private cursor = 0;
   private stopped = false;
@@ -470,6 +471,9 @@ export class PotatoChannel {
       case "room":
         this.onRoom(raw);
         return;
+      case "space":
+        this.onSpace(raw);
+        return;
       case "helper_update":
         this.onHelperUpdate(raw);
         return;
@@ -542,7 +546,9 @@ export class PotatoChannel {
     });
     // The routine tools: owner's own turns only (not a routine's run); the app checks the same.
     // In a room a routine still reports to the DM (it has no conversation id): the result says so.
-    const inRoom = conversationId.startsWith("app:room:");
+    // A space conversation is handled like a group here (no waits, routines report to the DM), and has no hand_off at all.
+    const inSpace = conversationId.startsWith("app:space:");
+    const inRoom = conversationId.startsWith("app:room:") || inSpace;
     const schedule = scheduleTools({
       call: async (name, args) => {
         const reply = await this.callSandbox(conversationId, name, args, false);
@@ -587,7 +593,9 @@ export class PotatoChannel {
       ? [selfSettingsTool({ call: (name, args) => this.callSandbox(conversationId, name, args, false) })]
       : [];
     // Work for another bot: hand_off in a group (the line it answers is the channel's); message_bot in the owner's private chat.
-    const talk = inRoom
+    const talk = inSpace
+      ? []
+      : inRoom
       ? [handOffTool({ call: (name, args) => this.callSandbox(conversationId, name, args, false), replyTo: () => (this.current?.conversationId === conversationId ? this.current.replyTo : null) })]
       : conversationId.startsWith("app:dm:")
         ? [messageBotTool({ call: (name, args) => this.callSandbox(conversationId, name, args, false) })]
@@ -656,6 +664,10 @@ export class PotatoChannel {
   ): Promise<SandboxReply> {
     const fail = (code: string, message: string): SandboxReply => ({ ok: false, error: { code, message } });
     if (this.stopped) return Promise.resolve(fail("SHUTDOWN", "The brain is stopping."));
+    // A space conversation: only the running owner turn of that conversation may call the app. Nothing else is sent (Rule 4).
+    if (conversationId.startsWith("app:space:") && !(appSpaceOf(conversationId) && this.current?.conversationId === conversationId && this.current.space === "owner")) {
+      return Promise.resolve(fail("REFUSED", "Do this in your private chat with me."));
+    }
     if (this.calls.size >= LIMITS.pendingCalls) return Promise.resolve(fail("SANDBOX_BUSY", "Too many computer calls are waiting."));
     if (Buffer.byteLength(JSON.stringify(args)) > LIMITS.callArgsBytes) {
       return Promise.resolve(fail("BAD_ARGS", "That is too much to send in one call. Split it into smaller calls."));
@@ -690,6 +702,8 @@ export class PotatoChannel {
   }
 
   private onHelperRequest(req: HelperRequest): void {
+    // No helper starts from a space turn (the tool is not offered there; this is the second lock).
+    if (req.conversationId.startsWith("app:space:")) return;
     const turn = this.current;
     if (this.pending.size >= LIMITS.pendingHelpers) {
       const oldest = this.pending.keys().next().value;
@@ -721,6 +735,13 @@ export class PotatoChannel {
     this.handled.push(id);
     if (this.handled.length > LIMITS.handledIds) this.handled.shift();
 
+    // A space conversation has its own item (type "space"); a send for one would run a turn that remembers (Rule 7).
+    if (conversationId.startsWith("app:space:")) {
+      this.log("dropped a send for a space conversation");
+      this.emit({ type: "error", code: "INTERNAL", conversationId, inReplyTo: id });
+      return;
+    }
+
     const trust = trustOf(from["trust"]);
     const name = (str(from["name"], 64) ?? "").replace(/[\r\n]+/g, " ").trim() || "someone";
     const tools: ToolLevel = m["tools"] === "full" ? "full" : "no_memory";
@@ -746,7 +767,7 @@ export class PotatoChannel {
     // running turn reads the message between its tool rounds; if it ends first, this one runs right after it, in order.
     // Only the owner's own plain message qualifies (not a routine, a stranger, a job's own turn, or a group).
     const steerable =
-      trust !== "others" && fromId !== "routine" && context === "" && !conversationId.startsWith("app:room:") && (this.busy.get(conversationId) ?? 0) > 0;
+      trust !== "others" && fromId !== "routine" && context === "" && !conversationId.startsWith("app:room:") && !conversationId.startsWith("app:space:") && (this.busy.get(conversationId) ?? 0) > 0;
     if (steerable) {
       const box = this.steerBox.get(conversationId) ?? [];
       box.push(turn);
@@ -834,12 +855,46 @@ export class PotatoChannel {
     });
   }
 
+  /**
+   * A line in a Space. The app already decided that this bot answers, so there is no gate. The turn runs on the agent of
+   * "app:space:<space>:<channel>" and is stateless (Agent, TurnOptions.space). `this.ownerName` is never set from it:
+   * a guest name must not become "my owner" in a helper note.
+   */
+  private onSpace(m: Json): void {
+    const item = parseSpaceItem(m);
+    if (!item) {
+      const conv = typeof m["conversationId"] === "string" ? m["conversationId"] : "";
+      const line = isRecord(m["line"]) ? str(m["line"]["id"], 128) : null;
+      this.log("dropped a space item that did not parse");
+      if (appSpaceOf(conv) && line) this.emit({ type: "error", code: "INTERNAL", conversationId: conv, inReplyTo: line });
+      return;
+    }
+    if (this.handled.includes(item.id)) return;
+    this.handled.push(item.id);
+    if (this.handled.length > LIMITS.handledIds) this.handled.shift();
+
+    this.computer.set(item.conversationId, item.sandbox);
+    this.spaceRunner ??= new SpaceRunner({
+      transport: new PotatoSpaceTransport((e) => this.emit(e)),
+      turn: (t) => this.runSpaceTurn(t),
+    });
+    const runner = this.spaceRunner;
+    this.enqueue(async () => {
+      await runner.onItem(item);
+    });
+  }
+
   private onHelperUpdate(m: Json): void {
     const requestId = str(m["requestId"], 128);
     const status = m["status"];
     if (!requestId || !isHelperStatus(status)) return;
     const ask = this.pending.get(requestId);
     if (!ask) return;
+    // The answer of a helper never starts a stateful turn in a space conversation.
+    if (ask.conversationId.startsWith("app:space:")) {
+      this.pending.delete(requestId);
+      return;
+    }
     // "started" changes nothing she can say yet; the end of the job gets a turn
     if (status === "started") return;
     this.pending.delete(requestId);
@@ -903,7 +958,7 @@ export class PotatoChannel {
         onNote: (text) => this.sendMidTurn(text),
         onStep: (step) => this.sendStep(t.conversationId, step),
         // Only the owner's own turn in a private chat reads the person's later messages (a routine's run does not).
-        ...(t.trust !== "others" && !t.routine && !t.conversationId.startsWith("app:room:") ? { steer: () => this.takeSteer(t.conversationId) } : {}),
+        ...(t.trust !== "others" && !t.routine && !t.conversationId.startsWith("app:room:") && !t.conversationId.startsWith("app:space:") ? { steer: () => this.takeSteer(t.conversationId) } : {}),
       });
       this.report(t.conversationId, t.replyTo, result);
     } catch (err) {
@@ -989,6 +1044,69 @@ export class PotatoChannel {
       }
       if (ended) {
         // Stop or a pause: nothing to say. The runner turns null into one pass, so the room never hangs.
+        if (this.paused === "daily_limit") throw new CodedError("PROVIDER_LIMIT", "paused");
+        return null;
+      }
+      throw err;
+    } finally {
+      this.current = null;
+    }
+  }
+
+  /**
+   * One turn in a Space. Typing and the reply are the runner's job. Nothing is written for it: no mood event, no
+   * mid-turn note and no step list (they would reach the owner's chat), only the usage, which is money.
+   */
+  private async runSpaceTurn(t: SpaceTurnInput): Promise<TurnOut | null> {
+    if (this.paused === "daily_limit") throw new CodedError("PROVIDER_LIMIT", "paused");
+    if (this.paused === "key_missing") throw new CodedError("PROVIDER_AUTH", "paused");
+    if (this.paused !== null) return null;
+    if (this.opts.providerReady === false) throw new CodedError("PROVIDER_AUTH", "no key");
+
+    const stop = new AbortController();
+    const guest = t.turn === "guest";
+    this.current = { conversationId: t.conversationId, replyTo: t.replyTo, tools: t.tools, trust: guest ? "others" : "owner_pc", stop, space: t.turn };
+    try {
+      const agent = this.agentFor(t.conversationId);
+      const result = await agent.turn(t.userText, {
+        where: t.conversationId,
+        tools: t.tools,
+        ...(t.sandbox && !guest ? { sandbox: true } : {}),
+        owner: !guest,
+        group: true,
+        room: true,
+        space: { id: t.spaceId, turn: t.turn },
+        context: t.context,
+        signal: stop.signal,
+        halted: () => this.paused !== null,
+      });
+      this.emit({
+        type: "usage",
+        model: result.model,
+        promptTokens: result.usage.promptTokens,
+        completionTokens: result.usage.completionTokens,
+        cacheHitTokens: result.usage.cacheHitTokens,
+        cacheMissTokens: result.usage.cacheMissTokens,
+      });
+      const segments = result.segments.map((x) => x.trim()).filter((x) => x !== "");
+      if (segments.length === 0) return null;
+      return { segments: capSegments(segments), kaomoji: result.kaomoji, tone: result.tone };
+    } catch (err) {
+      const code = codeOf(err);
+      const ended = stop.signal.aborted || this.paused !== null;
+      const turn = turnFailureOf(err);
+      this.log(`a space turn failed: ${code}`);
+      if (turn && (turn.usage.promptTokens > 0 || turn.usage.completionTokens > 0)) {
+        this.emit({
+          type: "usage",
+          model: turn.model || "unknown",
+          promptTokens: turn.usage.promptTokens,
+          completionTokens: turn.usage.completionTokens,
+          cacheHitTokens: turn.usage.cacheHitTokens,
+          cacheMissTokens: turn.usage.cacheMissTokens,
+        });
+      }
+      if (ended) {
         if (this.paused === "daily_limit") throw new CodedError("PROVIDER_LIMIT", "paused");
         return null;
       }

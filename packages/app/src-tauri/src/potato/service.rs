@@ -44,6 +44,7 @@ mod file_flow;
 mod job_flow;
 mod login_flow;
 mod room_flow;
+mod space_flow;
 mod self_flow;
 mod peer_flow;
 mod wait_flow;
@@ -53,6 +54,7 @@ pub mod portable;
 mod portable_tests;
 pub use agent_flow::AgentsView;
 pub use card_flow::AnswerOutcome;
+pub use space_flow::SpacePort;
 pub use login_flow::{ForgetOutcome, LoginOrigin};
 use job_flow::{JobAfter, JobTurn};
 use super::reply_cost;
@@ -88,6 +90,8 @@ pub fn provider_secret_name(bot: &str) -> String {
 pub const SHUTDOWN_GRACE_MS: i64 = 2_000;
 /// A bot that reported `typing` and then went quiet stops looking busy after this long.
 pub const TYPING_TTL_MS: i64 = 120_000;
+/// A Space line that no brain took in this long is dropped when a brain starts (the Space does not answer old lines either).
+const SPACE_LINE_MAX_AGE_MS: i64 = 5 * 60 * 1000;
 /// Items kept in an inbox that nobody has fetched.
 const INBOX_CAP: usize = 200;
 
@@ -374,6 +378,8 @@ struct BotRt {
     /// Sends for the next session: they came while none was running, or while one was leaving.
     queued: Vec<Value>,
     turn_trust: HashMap<String, Trust>,
+    /// Space line id -> delivery id. The brain names the line it answers (`inReplyTo`), the engine tracks deliveries.
+    space_lines: HashMap<String, String>,
     /// Conversations whose current turn is a routine's own run (not a person's message).
     turn_routine: HashSet<String>,
     /// The day on which the bot was paused for its limit.
@@ -446,6 +452,7 @@ impl BotRt {
             sends_ms: VecDeque::new(),
             queued: Vec::new(),
             turn_trust: HashMap::new(),
+            space_lines: HashMap::new(),
             turn_routine: HashSet::new(),
             paused_for_limit: None,
             last_surface: "app".into(),
@@ -503,6 +510,8 @@ pub struct Service {
     agent_turn_seconds: std::sync::atomic::AtomicU64,
     /// How long past that limit the host waits for the sandbox to answer (the sandbox kills the agent itself at the limit).
     agent_grace_ms: std::sync::atomic::AtomicU64,
+    /// Where a bot's answer to a Space line goes (`space_flow.rs`). None while Spaces is off.
+    space_port: Mutex<Option<Arc<dyn SpacePort>>>,
 }
 
 type Result<T> = std::result::Result<T, StoreError>;
@@ -530,6 +539,7 @@ impl Service {
             agent_runs: Mutex::new(HashMap::new()),
             agent_turn_seconds: std::sync::atomic::AtomicU64::new(super::custom_agents::TURN_SECONDS),
             agent_grace_ms: std::sync::atomic::AtomicU64::new(20_000),
+            space_port: Mutex::new(None),
         })
     }
 
@@ -1631,6 +1641,13 @@ impl Service {
                 // A send that comes back from a dead session holds its place on the limit again, once.
                 let estimate = rt.reserve_estimate();
                 for item in rt.queued.drain(..) {
+                    // A Space line that waited too long for a brain is history by now, not a question.
+                    if item.get("type").and_then(Value::as_str) == Some("space") {
+                        let at = item.pointer("/line/at").and_then(Value::as_i64).unwrap_or(0);
+                        if self.host.now_ms() - at > SPACE_LINE_MAX_AGE_MS {
+                            continue;
+                        }
+                    }
                     if let (Some(id), Some(conversation)) = (item.get("id").and_then(Value::as_str), item.get("conversationId").and_then(Value::as_str)) {
                         session.send_index.insert(id.to_string(), inbox.end());
                         session.in_flight.insert(id.to_string(), conversation.to_string());
@@ -1693,7 +1710,12 @@ impl Service {
         rt.job_after = None;
         if !lost.is_empty() {
             let name = self.name_of(bot);
-            for (_, conversation) in &lost {
+            for (id, conversation) in &lost {
+                if store::app_space_of(conversation).is_some() {
+                    if let Some(port) = self.space_port.lock().clone() {
+                        port.ended(bot, id);
+                    }
+                }
                 self.conversation_note(bot, conversation, now, &format!("{name}'s brain stopped before it answered."));
             }
         }
@@ -1810,6 +1832,10 @@ impl Service {
     /// A bot may post into its own DM, and into a group only when it is a member of that group. Any other
     /// conversation, or a group the bot is not in, is refused.
     fn own_conversation(&self, bot: &str, conversation: &str) -> bool {
+        // A space channel: only while this bot owes the Space an answer for it.
+        if store::app_space_of(conversation).is_some() {
+            return self.own_space_turn(bot, conversation);
+        }
         if let Some(room) = store::app_room_of(conversation) {
             return rooms::store::load_rooms(&self.root).map(|rooms| rooms.iter().any(|r| r.id == room && r.bot_ids.iter().any(|b| b == bot))).unwrap_or(false);
         }
@@ -1864,6 +1890,10 @@ impl Service {
             Event::Reply { conversation_id, in_reply_to, segments, kaomoji, note, .. } => {
                 if !self.own_conversation(bot, &conversation_id) {
                     return false;
+                }
+                // A Space: the answer goes back to the Space only. Nothing is saved, pushed or put in a thread.
+                if store::app_space_of(&conversation_id).is_some() {
+                    return self.on_space_reply(bot, &conversation_id, &in_reply_to, segments, kaomoji, note, now);
                 }
                 // A group: the reply is a room line, passed on to the other bots (not a DM message).
                 if let Some(room) = store::app_room_of(&conversation_id) {
@@ -1934,9 +1964,12 @@ impl Service {
                 true
             }
             Event::Pass { conversation_id, in_reply_to, reason } => {
-                // Only a group has a pass: the bot read a line and chose not to answer.
-                if !self.own_conversation(bot, &conversation_id) || store::app_room_of(&conversation_id).is_none() {
+                // Only a group or a Space has a pass: the bot read a line and chose not to answer.
+                if !self.own_conversation(bot, &conversation_id) || (store::app_room_of(&conversation_id).is_none() && store::app_space_of(&conversation_id).is_none()) {
                     return false;
+                }
+                if store::app_space_of(&conversation_id).is_some() {
+                    return self.on_space_pass(bot, &conversation_id, &in_reply_to, now);
                 }
                 if reason == "failed" {
                     if let Some(w) = self.inner.lock().bots.get_mut(bot).and_then(|rt| rt.work.get_mut(&conversation_id)) {
@@ -1985,6 +2018,13 @@ impl Service {
             Event::HelperRequest { request_id, conversation_id, task, project } => self.on_helper_request(bot, now, request_id, conversation_id, task, project),
             Event::SandboxCall { call_id, conversation_id, tool, args, image } => self.on_sandbox_call(bot, now, call_id, conversation_id, tool, args, image),
             Event::Error { code, conversation_id, in_reply_to, steps } => {
+                // A Space turn that failed: ended quietly, no note anywhere, no job (`space_flow.rs`).
+                if let Some(c) = conversation_id.as_deref().filter(|c| store::app_space_of(c).is_some()) {
+                    if !self.own_conversation(bot, c) {
+                        return false;
+                    }
+                    return self.on_space_error(bot, code, c, in_reply_to.as_deref(), steps, now);
+                }
                 // A turn that already did work is not started again on another brain: the files are on the computer.
                 if !job_stopped(code, steps) && self.fall_back(bot, now, code, in_reply_to.as_deref()) {
                     let name = self.name_of(bot);
@@ -2203,6 +2243,13 @@ impl Service {
     }
 
     fn run_sandbox_call(&self, ctx: sandbox_calls::Context, call_id: String, tool: String, args: Value) {
+        // A Space turn: a guest has no tool, an owner has the computer's tools only (`space_flow.rs`).
+        if store::app_space_of(&ctx.conversation).is_some() {
+            if let Some(item) = self.space_tool_refusal(&ctx, &call_id, &tool) {
+                self.push_to_brain(&ctx.bot, item);
+                return;
+            }
+        }
         // A tool that brings in text from outside the chat marks the turn: it can no longer change the bot's own settings.
         if sandbox_calls::Tool::parse(&tool).is_some_and(sandbox_calls::Tool::reads_outside) || history::is_tool(&tool) {
             if let Some(rt) = self.inner.lock().bots.get_mut(&ctx.bot) {
@@ -2310,6 +2357,15 @@ impl Service {
 
     fn on_helper_request(&self, bot: &str, now: i64, request_id: String, conversation_id: String, task: String, project: Option<String>) -> bool {
         if !self.own_conversation(bot, &conversation_id) {
+            return false;
+        }
+        // A helper card is a line in a thread: a Space conversation never has one, whoever asks.
+        if store::app_space_of(&conversation_id).is_some() {
+            let mut g = self.inner.lock();
+            if let Some(session) = g.bots.get_mut(bot).and_then(|rt| rt.session.as_mut()) {
+                session.inbox.push(protocol::helper_update_item(&request_id, HelperStatus::Refused, ""));
+                self.cv.notify_all();
+            }
             return false;
         }
         let trust = self.inner.lock().bots.get(bot).and_then(|rt| rt.turn_trust.get(&conversation_id).copied()).unwrap_or(Trust::Others);

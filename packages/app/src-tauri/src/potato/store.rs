@@ -354,6 +354,19 @@ pub fn app_room_of(conversation_id: &str) -> Option<&str> {
     (surface_of(conversation_id).is_some() && valid_room_id(room)).then_some(room)
 }
 
+/// `app:space:<space hex>:<channel hex>`: a channel of a Space (bots in spaces). Nothing is ever saved under it.
+pub fn app_space_conversation(space: &str, channel: &str) -> String {
+    format!("app:space:{space}:{channel}")
+}
+
+/// The space and channel of a space conversation: `app:space:<32 hex>:<16 hex>`, lowercase hex only, nothing else.
+pub fn app_space_of(conversation_id: &str) -> Option<(&str, &str)> {
+    let rest = conversation_id.strip_prefix("app:space:")?;
+    let (space, channel) = rest.split_once(':')?;
+    let hex = |s: &str, n: usize| s.len() == n && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    (hex(space, 32) && hex(channel, 16)).then_some((space, channel))
+}
+
 /// A conversation id as a file name: every character that is not a letter, digit, `.`, `_` or `-` is `%XX`.
 pub fn file_stem(conversation_id: &str) -> String {
     let mut out = String::new();

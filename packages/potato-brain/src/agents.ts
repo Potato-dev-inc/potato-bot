@@ -80,6 +80,8 @@ export function makeAgentFactory(opts: FactoryOptions): AgentFactory {
       where,
       notesDir,
       sessionsDir: config.vaultRoot,
+      // where the app writes each space's diary; read by the space_diary tool on a space turn
+      spacesDir: join(config.vaultRoot, "spaces"),
       ...(opts.share === false ? {} : { shareDir: config.shareDir }),
       compactEvery: config.hotTurns,
       onMoodChange: (_next, log) => appendMoodLog(config.stateDir, log),

@@ -67,6 +67,7 @@ pub mod trash;
 pub mod usage;
 pub mod keeper;
 pub mod live;
+pub mod space_link;
 pub mod log;
 pub mod memory_notes;
 pub mod notify;
@@ -205,6 +206,10 @@ mod service_tests;
 #[cfg(test)]
 mod service_room_tests;
 #[cfg(test)]
+mod service_space_tests;
+#[cfg(test)]
+mod space_link_tests;
+#[cfg(test)]
 mod service_peer_tests;
 #[cfg(test)]
 mod service_job_tests;
@@ -218,6 +223,8 @@ mod service_always_tests;
 mod service_level_tests;
 #[cfg(test)]
 mod real_brain_tests;
+#[cfg(test)]
+mod space_loop_tests;
 #[cfg(test)]
 mod store_tests;
 #[cfg(test)]

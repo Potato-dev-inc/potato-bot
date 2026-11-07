@@ -407,5 +407,7 @@ pub fn start(app: Option<AppHandle>, registry: Option<Arc<Mutex<crate::pty::Pane
         super::waits::run_due(&waiter, chrono::Utc::now().timestamp_millis());
         std::thread::sleep(Duration::from_secs(30));
     });
+    // Spaces may already be running: connect the two (a no-op while Spaces is off).
+    super::space_link::connect_live();
     Some(service)
 }

@@ -27,8 +27,16 @@ pub fn path(data: &Path) -> PathBuf {
 
 /// A missing or damaged file is the default.
 pub fn load(data: &Path) -> Config {
-    std::fs::read_to_string(path(data)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+    let mut config: Config = std::fs::read_to_string(path(data)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    // A dev build's window loads Vite on 1420. Both can bind it on Windows (0.0.0.0 and ::), and the phone server then
+    // answers the window with the phone page, so a dev build keeps the phone server off that port.
+    if cfg!(all(debug_assertions, not(test))) && config.port == DEV_VITE_PORT {
+        config.port = DEV_VITE_PORT + 1;
+    }
+    config
 }
+
+const DEV_VITE_PORT: u16 = 1420;
 
 pub fn save(data: &Path, config: &Config) -> Result<(), String> {
     let p = path(data);

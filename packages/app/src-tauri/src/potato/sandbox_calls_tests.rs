@@ -1331,6 +1331,19 @@ fn deny_refuses_the_command_and_tells_the_model_not_to_retry() {
     assert!(f.fake.calls().is_empty());
 }
 
+/// Rule 10 of bots in a Space: a command that needs the owner's answer is refused in a Space turn with no card made, because the
+/// answer could not be routed back to a turn in a channel. Its own words say what to do.
+#[test]
+fn a_risky_command_in_a_space_turn_is_refused_with_no_card() {
+    let f = gated("gate-space");
+    let conversation = store::app_space_conversation(&"ab".repeat(16), &"cd".repeat(8));
+    let ctx = Context { bot: "nimbus".into(), conversation, trust: OWNER, want_image: false };
+    let e = f.call_as(&ctx, "run_terminal", json!({ "command": "git push" })).unwrap_err();
+    assert_eq!((e.code, e.message.as_str()), ("APPROVAL_NOT_HERE", "Do this in your private chat with me."));
+    assert!(open_cards(&f).is_empty(), "no card is made for a Space turn");
+    assert!(f.fake.calls().is_empty());
+}
+
 #[test]
 fn a_group_a_stranger_and_a_phone_chat_are_told_to_ask_in_the_private_chat() {
     let f = gated("gate-room");

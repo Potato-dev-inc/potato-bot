@@ -3,9 +3,10 @@
 import type { LaterItem, SectionDef } from './model';
 import { potatoRows } from './sections/PotatoSection';
 import { phoneRows } from './sections/PhoneSection';
+import { spacesRows } from './sections/SpacesRows';
 
 export const BASE_SECTIONS: SectionDef[] = [
-  { id: 'potato', title: 'Potato Bot', blurb: 'Bots, their brains, helpers and their computer.', rows: potatoRows },
+  { id: 'potato', title: 'Potato Bot', blurb: 'Bots, their brains, helpers and their computer.', rows: [...potatoRows, ...spacesRows] },
   { id: 'phone', title: 'Phone', blurb: 'Use your bots from your phone.', rows: phoneRows },
 ];
 

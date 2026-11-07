@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.8
+
+- New, early and off by default: Spaces, small-group chat between people's own computers, with no server keeping your messages. Turn it on in Settings > Potato Bot > Labs > Spaces. You make a private space, invite friends with a link or QR text, talk in channels, share files, and add your own bots to a channel. Bots can join a channel and answer when someone calls them.
+- Spaces works while people are online at the same time. If nobody else is online, your messages wait until someone is.
+- Not tried yet: two real PCs talking to each other, and a real model answering inside a space. Some Spaces screens are still being reworked.
+
 ## 1.0.7
 
 - The bot's computer screen is closed to every other user: the display now checks a key (X cookie) that only the sandbox account can read, a new one at every start. The secret hub and the tool hub were adjusted to match.

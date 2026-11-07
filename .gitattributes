@@ -85,3 +85,4 @@ packages/app/src-tauri/src/checkpoints/bisect/fixtures/fail_*.txt text eol=lf
 packages/app/src-tauri/src/ci_fix/fixtures/gh/*.json text eol=lf
 # Red to Green log fixtures and their golden log files are compared byte for byte: keep them LF.
 packages/app/src-tauri/src/ci_fix/fixtures/logs/* text eol=lf
+packages/app/src-tauri/src/spaces/words/en.txt -text

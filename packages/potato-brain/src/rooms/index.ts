@@ -7,3 +7,4 @@ export * from "./transport.ts";
 export * from "./prompt.ts";
 export * from "./runner.ts";
 export * from "./parse.ts";
+export * from "./space.ts";

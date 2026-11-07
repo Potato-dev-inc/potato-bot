@@ -907,7 +907,7 @@ impl Calls {
         let listed = mcp::catalog().iter().any(|e| e.connector && e.name == server);
         match mcp::connector_of(&settings, server) {
             Some(own) if own.enabled => {
-                if !ctx.trust.is_owner() || store::app_room_of(&ctx.conversation).is_some() {
+                if !ctx.trust.is_owner() || store::app_room_of(&ctx.conversation).is_some() || store::app_space_of(&ctx.conversation).is_some() {
                     return Err(CallError::new("TOOL_NOT_ALLOWED", "A connector is for the owner's own chat with this bot, not for a group or someone else."));
                 }
                 Ok(())
@@ -993,6 +993,10 @@ impl Calls {
             return Ok(None);
         };
         // Only the owner, in the private chat, can answer a card. A group or a stranger's chat cannot.
+        // Rule 10: a card never reaches a Space channel, and its answer could not be routed back to this turn.
+        if store::app_space_of(&ctx.conversation).is_some() {
+            return Err(CallError::new("APPROVAL_NOT_HERE", "Do this in your private chat with me."));
+        }
         if ctx.conversation != store::app_conversation(&ctx.bot) || !ctx.trust.is_owner() {
             return Err(CallError::new("APPROVAL_NOT_HERE", "Ask me in our private chat"));
         }
@@ -1215,7 +1219,7 @@ impl Calls {
     /// shown as failed with a plain line. Only for the owner's own chat outside a room, like every connector.
     fn add_remote_tools(&self, ctx: &Context, reply: &mut Value) {
         let Ok(settings) = bot_settings::load(&self.root, &ctx.bot) else { return };
-        if !ctx.trust.is_owner() || store::app_room_of(&ctx.conversation).is_some() {
+        if !ctx.trust.is_owner() || store::app_room_of(&ctx.conversation).is_some() || store::app_space_of(&ctx.conversation).is_some() {
             return;
         }
         let Some(list) = reply.get_mut("servers").and_then(Value::as_array_mut) else { return };

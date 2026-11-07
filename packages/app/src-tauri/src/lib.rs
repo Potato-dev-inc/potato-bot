@@ -31,6 +31,12 @@ mod mobile_pairing;
 mod one_brain;
 mod companion;
 mod potato;
+pub mod spaces;
+pub mod secure_core;
+#[allow(dead_code)]
+mod keys;
+#[allow(dead_code)]
+mod p2p;
 mod opencode;
 pub mod operations;
 #[cfg(test)]
@@ -146,6 +152,37 @@ pub fn run() {
         .manage(AppState::new())
         .manage(commands::SessionChatState::default())
         .invoke_handler(tauri::generate_handler![
+            spaces::commands::spaces_view,
+            spaces::commands::space_create,
+            spaces::commands::space_invite_create,
+            spaces::commands::space_invite_cancel,
+            spaces::commands::space_join,
+            spaces::commands::space_join_answer,
+            spaces::commands::space_join_cancel,
+            spaces::commands::space_detail,
+            spaces::commands::space_messages,
+            spaces::commands::space_send,
+            spaces::commands::space_read,
+            spaces::commands::space_channel_create,
+            spaces::commands::space_channel_rename,
+            spaces::commands::space_channel_archive,
+            spaces::commands::space_remove_member,
+            spaces::commands::space_leave,
+            spaces::commands::space_forget,
+            spaces::commands::space_block,
+            spaces::commands::space_react,
+            spaces::commands::space_delete,
+            spaces::commands::space_file_offer,
+            spaces::commands::space_file_get,
+            spaces::commands::space_file_save,
+            spaces::commands::space_presence,
+            spaces::commands::space_show_online,
+            spaces::commands::space_bot_list,
+            spaces::commands::space_bot_candidates,
+            spaces::commands::space_bot_add,
+            spaces::commands::space_bot_remove,
+            spaces::commands::space_bot_rules,
+            spaces::commands::space_bot_local,
             commands::acp_addon_install,
             commands::acp_addon_remove,
             commands::acp_addon_status,

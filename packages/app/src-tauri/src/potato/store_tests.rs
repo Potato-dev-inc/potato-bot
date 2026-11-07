@@ -417,3 +417,28 @@ fn no_limit_is_its_own_setting_off_by_default_and_old_files_read_as_off() {
     assert_eq!(s.daily_limit_cents, 300, "the number is kept for when the limit is turned back on");
     assert_eq!(serde_json::to_value(&s).unwrap()["dailyLimitOff"], true);
 }
+
+#[test]
+fn app_space_of_is_strict_hex_and_nothing_else() {
+    let s = "ab".repeat(16);
+    let c = "cd".repeat(8);
+    let ok = format!("app:space:{s}:{c}");
+    assert_eq!(app_space_of(&ok), Some((s.as_str(), c.as_str())));
+    assert_eq!(app_space_conversation(&s, &c), ok);
+    for bad in [
+        format!("app:space:{}:{c}", "AB".repeat(16)),
+        format!("app:space:{}:{c}", "ab".repeat(15)),
+        format!("app:space:{s}:{}", "cd".repeat(7)),
+        format!("app:space:{s}:{c}:x"),
+        format!("app:space:{s}:{c}/../x"),
+        format!("app:space:{s}"),
+        format!("app:space:{}:{c}", "zz".repeat(16)),
+        format!("app:room:{s}:{c}"),
+        format!("xpp:space:{s}:{c}"),
+        String::new(),
+    ] {
+        assert_eq!(app_space_of(&bad), None, "{bad}");
+    }
+    // a space id is never a room or a bot's own conversation
+    assert_eq!((app_room_of(&ok), app_bot_of(&ok)), (None, None));
+}

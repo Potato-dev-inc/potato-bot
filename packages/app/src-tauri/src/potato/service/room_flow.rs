@@ -116,6 +116,10 @@ impl Service {
 
     /// A note row where the conversation is: the bot's own thread, or the group.
     pub(super) fn conversation_note(&self, bot: &str, conversation: &str, now: i64, text: &str) {
+        // A Space conversation has no thread: a note about it is dropped.
+        if store::app_space_of(conversation).is_some() {
+            return;
+        }
         match store::app_room_of(conversation) {
             Some(room) => self.room_note(room, bot, now, text),
             None => {

@@ -1,0 +1,345 @@
+//! The PC link: one peer-to-peer layer for everything that talks between Puppet Master installs. My computers
+//! (DevHop) is its first client; Spaces (teams, voice, shared folders) and later "agents", "panes", "workspace"
+//! are others. DL-5 in PLAN-R17-DESKTOPLAB, D-0 in PLAN-R17-TEAM-SOCIAL.
+//!
+//! - **One endpoint per app**, started only when a capability wants it. Nothing here runs at app start: no socket,
+//!   no key read, no network. Switching Labs off closes it.
+//! - **Identity**: the device key from the OS credential store is the node key (`identity.rs`). No file, no log, no
+//!   command line, no webview ever holds it.
+//! - **Capabilities** (`capability.rs`): a name, a protocol name (`alpn.rs`), a relay policy and a handler. Each is its
+//!   own permission per device, off until the person turns it on. A connection for a capability that device may not
+//!   use is closed before any handler sees it. Anything under `pm/desk` is direct-only: a relayed path is refused,
+//!   and a link that becomes relayed is closed.
+//! - **Two networks behind `Transport`**: iroh (`iroh_net.rs`) and an in-memory one for tests (`memory.rs`).
+//! - **Not reachable by agents**: nothing in the bridge, the MCP server, the tool registry or the phone routes may
+//!   mention this module (`guard_tests.rs`).
+//!
+//! Pairing (`pairing.rs`), the signed trust list (`trust.rs`) and "found nearby" (`discovery.rs`) are DL-6.
+//!
+//! The rules two computers follow when they link (which of two connections survives, one dial per peer, how long a
+//! silence may last) are in `session.rs`. Not here (on purpose): what a capability does; the desk link and input
+//! forwarding are `desk/link`.
+
+// Nothing calls this yet: DL-6 (pairing) and DL-7 (desk link) are its first users.
+#![allow(dead_code)]
+
+pub mod alpn;
+pub mod capability;
+pub mod endpoint;
+pub mod identity;
+pub mod iroh_net;
+#[cfg(test)]
+pub mod memory;
+pub mod discovery;
+pub mod pairing;
+pub mod session;
+pub mod trust;
+
+#[cfg(test)]
+mod guard_tests;
+#[cfg(test)]
+mod tests;
+
+use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+
+use serde_json::Value;
+use tokio::task::JoinHandle;
+
+use self::capability::{Capability, Permissions, Registry};
+use self::endpoint::{
+    accept_loop, check_dialed, BindSpec, Link, NodeId, P2pError, PeerAddr, Refusal, RefusalLog, Transport,
+    TransportFactory,
+};
+use self::identity::DeviceIdentity;
+use crate::keys::KeyStore;
+
+/// The Labs switch (for now the same one as My computers).
+pub const LABS_KEY: &str = "desk_enabled";
+
+pub fn labs_on(public: &Value) -> bool {
+    public.get(LABS_KEY).and_then(Value::as_bool).unwrap_or(false)
+}
+
+/// Spaces has its own Labs switch; every other capability uses `LABS_KEY`.
+pub const SPACES_LABS_KEY: &str = "spaces_enabled";
+
+pub fn labs_key_for(capability: &str) -> &'static str {
+    if capability == capability::SPACES {
+        SPACES_LABS_KEY
+    } else {
+        LABS_KEY
+    }
+}
+
+pub fn labs_on_for(public: &Value, capability: &str) -> bool {
+    public.get(labs_key_for(capability)).and_then(Value::as_bool).unwrap_or(false)
+}
+
+/// Wraps the permission rule so a capability whose own Labs switch is off is refused, whatever the rule says.
+struct LabsGated {
+    inner: Arc<dyn Permissions>,
+    desk: Arc<AtomicBool>,
+    spaces: Arc<AtomicBool>,
+}
+
+impl Permissions for LabsGated {
+    fn allowed(&self, peer: &NodeId, capability: &str) -> bool {
+        let on = if capability == capability::SPACES { &self.spaces } else { &self.desk };
+        on.load(Ordering::SeqCst) && self.inner.allowed(peer, capability)
+    }
+
+    fn set(&self, peer: &NodeId, capability: &str, on: bool) {
+        self.inner.set(peer, capability, on)
+    }
+}
+
+/// LAN addresses learned while pairing, so a paired computer can be dialed again without a ticket.
+#[derive(Default)]
+pub struct AddrBook {
+    map: Mutex<std::collections::HashMap<NodeId, Vec<std::net::SocketAddr>>>,
+}
+
+impl AddrBook {
+    pub fn remember(&self, node: NodeId, addrs: &[std::net::SocketAddr]) {
+        if addrs.is_empty() {
+            return;
+        }
+        self.map.lock().unwrap_or_else(|p| p.into_inner()).insert(node, addrs.to_vec());
+    }
+
+    pub fn peer(&self, node: NodeId) -> PeerAddr {
+        let direct = self.map.lock().unwrap_or_else(|p| p.into_inner()).get(&node).cloned().unwrap_or_default();
+        PeerAddr { id: node, direct, relay: None }
+    }
+}
+
+struct Running {
+    transport: Arc<dyn Transport>,
+    spec: BindSpec,
+    task: JoinHandle<()>,
+}
+
+pub struct P2p {
+    labs: Arc<AtomicBool>,
+    spaces_labs: Arc<AtomicBool>,
+    /// True while either switch is on: the accept loop refuses everything otherwise.
+    any_labs: Arc<AtomicBool>,
+    keys: KeyStore,
+    factory: Arc<dyn TransportFactory>,
+    registry: Arc<Registry>,
+    perms: Arc<dyn Permissions>,
+    refusals: RefusalLog,
+    loopback_only: bool,
+    addrs: AddrBook,
+    wanted: Mutex<BTreeSet<String>>,
+    /// Serializes start / restart, which await.
+    start_lock: tokio::sync::Mutex<()>,
+    running: Mutex<Option<Running>>,
+}
+
+impl P2p {
+    /// Builds the service. Starts nothing, reads no key, opens no socket.
+    pub fn new(keys: KeyStore, factory: Arc<dyn TransportFactory>, registry: Arc<Registry>, perms: Arc<dyn Permissions>) -> Self {
+        Self {
+            labs: Arc::new(AtomicBool::new(false)),
+            spaces_labs: Arc::new(AtomicBool::new(false)),
+            any_labs: Arc::new(AtomicBool::new(false)),
+            keys,
+            factory,
+            registry,
+            perms,
+            refusals: Arc::new(Mutex::new(Vec::new())),
+            loopback_only: false,
+            addrs: AddrBook::default(),
+            wanted: Mutex::new(BTreeSet::new()),
+            start_lock: tokio::sync::Mutex::new(()),
+            running: Mutex::new(None),
+        }
+    }
+
+    /// Bind to loopback only.
+    pub fn loopback_only(mut self, on: bool) -> Self {
+        self.loopback_only = on;
+        self
+    }
+
+    /// Where paired computers were last seen on this network (kept in memory only).
+    pub fn addrs(&self) -> &AddrBook {
+        &self.addrs
+    }
+
+    pub fn registry(&self) -> &Arc<Registry> {
+        &self.registry
+    }
+
+    pub fn permissions(&self) -> &Arc<dyn Permissions> {
+        &self.perms
+    }
+
+    pub fn labs(&self) -> bool {
+        self.labs.load(Ordering::SeqCst)
+    }
+
+    pub fn labs_for(&self, capability: &str) -> bool {
+        if capability == capability::SPACES {
+            self.spaces_labs.load(Ordering::SeqCst)
+        } else {
+            self.labs()
+        }
+    }
+
+    /// Called when settings change. Turning both Labs switches off is the kill switch: the endpoint closes and
+    /// nothing is wanted. With only one off, its capabilities are no longer wanted and are refused on arrival
+    /// (`LabsGated`); the endpoint narrows its protocol names at the next `want`/`unwant`, because this method is
+    /// not async and `P2p` is not behind an `Arc` here (NEEDS-FACT from Spaces D0.2).
+    pub fn apply_settings(&self, public: &Value) {
+        let desk = labs_on(public);
+        let spaces = labs_on_for(public, capability::SPACES);
+        self.labs.store(desk, Ordering::SeqCst);
+        self.spaces_labs.store(spaces, Ordering::SeqCst);
+        self.any_labs.store(desk || spaces, Ordering::SeqCst);
+        if !desk && !spaces {
+            self.stop();
+            return;
+        }
+        let none_left = {
+            let mut wanted = self.wanted.lock().unwrap_or_else(|p| p.into_inner());
+            let had = !wanted.is_empty();
+            wanted.retain(|id| self.labs_for(id));
+            had && wanted.is_empty()
+        };
+        if none_left {
+            self.stop();
+        }
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.running.lock().unwrap_or_else(|p| p.into_inner()).is_some()
+    }
+
+    pub fn node_id(&self) -> Option<NodeId> {
+        self.running.lock().unwrap_or_else(|p| p.into_inner()).as_ref().map(|r| r.transport.id())
+    }
+
+    /// The relay the running endpoint is reachable through, when relays are on.
+    pub fn home_relay(&self) -> Option<String> {
+        self.running.lock().unwrap_or_else(|p| p.into_inner()).as_ref().and_then(|r| r.transport.home_relay())
+    }
+
+    /// LAN addresses of the running endpoint (the pairing ticket carries them).
+    pub fn local_addrs(&self) -> Vec<std::net::SocketAddr> {
+        self.running.lock().unwrap_or_else(|p| p.into_inner()).as_ref().map(|r| r.transport.local_addrs()).unwrap_or_default()
+    }
+
+    /// The spec the running endpoint was bound with.
+    pub fn bound_spec(&self) -> Option<BindSpec> {
+        self.running.lock().unwrap_or_else(|p| p.into_inner()).as_ref().map(|r| r.spec.clone())
+    }
+
+    pub fn refusals(&self) -> Vec<Refusal> {
+        self.refusals.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    /// A capability needs the network: start the endpoint (or widen it) and listen for it.
+    pub async fn want(&self, capability: &str) -> Result<Arc<dyn Transport>, P2pError> {
+        if !self.labs_for(capability) {
+            return Err(P2pError::Off);
+        }
+        if self.registry.get(capability).is_none() {
+            return Err(P2pError::UnknownCapability(capability.to_string()));
+        }
+        let _guard = self.start_lock.lock().await;
+        self.wanted.lock().unwrap_or_else(|p| p.into_inner()).insert(capability.to_string());
+        self.reconcile().await
+    }
+
+    /// A capability no longer needs the network. When none does, the endpoint closes.
+    pub async fn unwant(&self, capability: &str) {
+        let _guard = self.start_lock.lock().await;
+        self.wanted.lock().unwrap_or_else(|p| p.into_inner()).remove(capability);
+        let _ = self.reconcile().await;
+    }
+
+    /// Connects to a device for one capability. Starts the endpoint when it is not running.
+    pub async fn dial(&self, peer: &PeerAddr, capability: &str) -> Result<Arc<dyn Link>, P2pError> {
+        let transport = self.want(capability).await?;
+        let cap = self.registry.get(capability).ok_or_else(|| P2pError::UnknownCapability(capability.to_string()))?;
+        let link = transport.dial(peer, &cap.alpn).await?;
+        check_dialed(&link, &cap)?;
+        Ok(link)
+    }
+
+    /// Closes the endpoint and forgets what was wanted. Safe to call from settings code.
+    pub fn stop(&self) {
+        self.wanted.lock().unwrap_or_else(|p| p.into_inner()).clear();
+        let old = self.running.lock().unwrap_or_else(|p| p.into_inner()).take();
+        if let Some(old) = old {
+            old.task.abort();
+            if let Ok(rt) = tokio::runtime::Handle::try_current() {
+                let transport = old.transport;
+                rt.spawn(async move { transport.close().await });
+            }
+        }
+    }
+
+    fn wanted_spec(&self) -> Option<BindSpec> {
+        let wanted = self.wanted.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let caps: Vec<Arc<Capability>> = wanted.iter().filter_map(|id| self.registry.get(id)).collect();
+        if caps.is_empty() {
+            return None;
+        }
+        Some(BindSpec {
+            alpns: caps.iter().map(|c| c.alpn.clone()).collect(),
+            relays: caps.iter().any(|c| c.relay_allowed()),
+            loopback_only: self.loopback_only,
+        })
+    }
+
+    /// Makes the running endpoint match what is wanted. Caller holds `start_lock`.
+    async fn reconcile(&self) -> Result<Arc<dyn Transport>, P2pError> {
+        let Some(spec) = self.wanted_spec() else {
+            self.stop();
+            return Err(P2pError::UnknownCapability("nothing wants the network".into()));
+        };
+        let current = self.running.lock().unwrap_or_else(|p| p.into_inner()).as_ref().map(|r| (r.transport.clone(), r.spec.clone()));
+        match current {
+            Some((transport, have)) if have == spec => Ok(transport),
+            Some((transport, have)) if have.relays == spec.relays && have.loopback_only == spec.loopback_only => {
+                // Same network settings, other protocol names: widen or narrow in place, links stay up.
+                transport.set_alpns(spec.alpns.iter().cloned().collect()).await;
+                if let Some(r) = self.running.lock().unwrap_or_else(|p| p.into_inner()).as_mut() {
+                    r.spec = spec;
+                }
+                Ok(transport)
+            }
+            other => {
+                if let Some((old, _)) = other {
+                    // A relay setting cannot change on a live endpoint: rebind (open links end).
+                    if let Some(r) = self.running.lock().unwrap_or_else(|p| p.into_inner()).take() {
+                        r.task.abort();
+                    }
+                    old.close().await;
+                }
+                let identity = DeviceIdentity::load(&self.keys)?;
+                let transport = self.factory.bind(&identity, &spec).await?;
+                let task = tokio::spawn(accept_loop(
+                    transport.clone(),
+                    self.registry.clone(),
+                    Arc::new(LabsGated { inner: self.perms.clone(), desk: self.labs.clone(), spaces: self.spaces_labs.clone() }),
+                    self.refusals.clone(),
+                    self.any_labs.clone(),
+                ));
+                *self.running.lock().unwrap_or_else(|p| p.into_inner()) = Some(Running { transport: transport.clone(), spec, task });
+                Ok(transport)
+            }
+        }
+    }
+}
+
+impl std::fmt::Debug for P2p {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "P2p(running: {})", self.is_running())
+    }
+}

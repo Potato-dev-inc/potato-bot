@@ -1,0 +1,97 @@
+//! Presence for the service: who is online, away or offline. Kept in memory only, never stored.
+use std::path::Path;
+use std::sync::atomic::Ordering;
+
+use super::*;
+use crate::spaces::presence::{self, Presence, PresenceTable};
+
+const SETTINGS_FILE: &str = "settings.json";
+
+/// "Show when I'm online" (all spaces on this computer). Default on.
+pub(super) fn load_show_online(dir: &Path) -> bool {
+    std::fs::read(dir.join(SETTINGS_FILE))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .and_then(|v| v["showOnline"].as_bool())
+        .unwrap_or(true)
+}
+
+impl SpacesService {
+    /// Report my state ("online" or "away"). Peers hear it at once.
+    pub fn set_my_presence(&self, state: &str) -> Result<(), String> {
+        let p = Presence::from_name(state).ok_or("That presence is not known.")?;
+        *lock(&self.my_presence) = p;
+        self.presence_tick();
+        Ok(())
+    }
+
+    /// Turn "Show when I'm online" on or off and keep it in `settings.json`. Off: nothing about me is sent.
+    pub fn set_show_online(&self, on: bool) -> Result<(), String> {
+        std::fs::create_dir_all(&self.dir).map_err(|_| "Could not save that setting.".to_string())?;
+        std::fs::write(self.dir.join(SETTINGS_FILE), json!({ "showOnline": on }).to_string())
+            .map_err(|_| "Could not save that setting.".to_string())?;
+        self.show_online.store(on, Ordering::SeqCst);
+        if on { self.presence_tick(); }
+        self.changed();
+        Ok(())
+    }
+
+    pub fn show_online(&self) -> bool { self.show_online.load(Ordering::SeqCst) }
+
+    /// Tell every live link of every space my state and what I heard (fresh entries). Hidden: send nothing.
+    pub fn presence_tick(&self) {
+        if !self.show_online() { return; }
+        let now = self.now();
+        let mine = *lock(&self.my_presence);
+        let spaces: Vec<(SpaceId, MemberKey, Vec<MemberKey>)> = lock(&self.spaces)
+            .iter()
+            .map(|(id, sp)| (*id, sp.me.member_key(), sp.roster.members.keys().copied().collect()))
+            .collect();
+        for (space, me, members) in spaces {
+            let relay = {
+                let mut tables = lock(&self.presence);
+                let t = tables.entry(space).or_default();
+                t.retain(now, |m| members.contains(m));
+                t.relay_list(now).into_iter().filter(|(m, ..)| *m != me).collect::<Vec<_>>()
+            };
+            let body = presence::encode(mine, &relay);
+            lock(&self.links).send_to_space(&space, None, sync::PRESENCE, &body);
+        }
+    }
+
+    /// A Presence frame arrived on a sync stream from `peer`. Entries about people outside the space are ignored.
+    pub(crate) fn on_presence(&self, space: &SpaceId, peer: NodeKey, body: &[u8]) {
+        let Ok((theirs, relay)) = presence::decode(body) else { return };
+        let now = self.now();
+        let Some((sender, members, me)) = self.with_open(space, |sp| {
+            (
+                sp.roster.device_by_node(&peer).map(|(m, _)| m.member),
+                sp.roster.members.keys().copied().collect::<Vec<_>>(),
+                sp.me.member_key(),
+            )
+        }) else { return };
+        let Some(sender) = sender else { return };
+        {
+            let mut tables = lock(&self.presence);
+            let t = tables.entry(*space).or_insert_with(PresenceTable::new);
+            t.heard(sender, theirs, now, now);
+            for (m, s, at) in relay {
+                if m != me && m != sender && members.contains(&m) { t.heard(m, s, at, now); }
+            }
+        }
+        self.changed();
+    }
+
+    /// `online`, `away` or `offline` for one member of one space.
+    pub(crate) fn presence_of(&self, space: &SpaceId, member: &MemberKey, now: u64) -> &'static str {
+        lock(&self.presence).get(space).map(|t| t.state_of(member, now)).unwrap_or(Presence::Offline).name()
+    }
+
+    pub(super) async fn presence_loop(self: Arc<Self>) {
+        let mut tick = tokio::time::interval(Duration::from_millis(presence::SEND_EVERY_MS));
+        loop {
+            tick.tick().await;
+            self.presence_tick();
+        }
+    }
+}

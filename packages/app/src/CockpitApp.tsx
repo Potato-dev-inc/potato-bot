@@ -16,12 +16,16 @@ import { PotatoPage } from './components/cockpit/potato/PotatoPage';
 import { totalUnread } from './components/cockpit/potato/model';
 import { PotatoPaneView } from './components/cockpit/PotatoPaneView';
 import { AppUpdateHost } from './components/updates/AppUpdateHost';
+import { SpacesRow } from './components/cockpit/SpacesRow';
+import { useSpacesEnabled } from './lib/spaces';
 import './styles/cockpit.css';
 
 // Settings is opened rarely: its own chunk keeps the first load small.
 const SettingsView = lazy(() => import('./components/cockpit/SettingsView').then((m) => ({ default: m.SettingsView })));
+// Spaces is behind a Labs flag and opened on demand: its own chunk keeps the main bundle under the size warning.
+const SpacesPage = lazy(() => import('./components/spaces/SpacesPage').then((m) => ({ default: m.SpacesPage })));
 
-type View = 'potato' | 'settings' | 'pane';
+type View = 'potato' | 'settings' | 'pane' | 'spaces';
 
 function initialView(): View {
   return new URLSearchParams(window.location.search).get('view') === 'settings' ? 'settings' : 'potato';
@@ -40,6 +44,7 @@ export default function CockpitApp() {
   const [paneId, setPaneId] = useState<string | null>(null);
   const [potatoBotId, setPotatoBotId] = useState<string | null>(readOpenBot);
   const groupsOn = useGroupsOn();
+  const spacesOn = useSpacesEnabled();
 
   const potatoOn = potato.state?.enabled === true;
   const openPotatoBot = (id: string) => {
@@ -112,6 +117,7 @@ export default function CockpitApp() {
           </span>
           {potato.state && totalUnread(potato.state.bots) > 0 && <span className="ck-count">{totalUnread(potato.state.bots)}</span>}
         </button>
+        <SpacesRow enabled={spacesOn} open={view === 'spaces' && spacesOn} onOpen={() => setView('spaces')} />
         <button
           type="button"
           className={`ck-row ck-row--flat${view === 'settings' ? ' is-active' : ''}`}
@@ -132,6 +138,10 @@ export default function CockpitApp() {
               onBack={() => setView('potato')}
               onPageChange={setSettingsTab}
             />
+          </Suspense>
+        ) : view === 'spaces' && spacesOn ? (
+          <Suspense fallback={null}>
+            <SpacesPage />
           </Suspense>
         ) : potato.state && potatoOn ? (
           <PotatoPage

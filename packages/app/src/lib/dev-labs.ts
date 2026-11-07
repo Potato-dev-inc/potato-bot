@@ -14,6 +14,7 @@ export const DEV_LABS_KEYS = [
   'acp_chat_enabled',
   'desk_enabled',
   'model_bridge_enabled',
+  'spaces_enabled',
 ] as const;
 
 /** The one line the Labs page shows while the override is on. */
