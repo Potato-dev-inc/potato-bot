@@ -69,6 +69,7 @@ pub mod live;
 pub mod log;
 pub mod memory_notes;
 pub mod notify;
+pub mod phone;
 pub mod jobs;
 pub mod cards;
 pub mod risk;

@@ -17,6 +17,7 @@ Potato Bot is MIT licensed (`LICENSE`). It includes or builds on the following. 
 | noVNC (unmodified) | 1.7.0, npm `@novnc/novnc`, https://github.com/novnc/noVNC | MPL-2.0 core (`LICENSES/MPL-2.0.txt`), other parts under their own licences, see `packages/potato-sandbox/viewer/novnc/LICENSE.txt` | `packages/potato-sandbox/viewer/novnc/` |
 | pako | bundled with noVNC | MIT | `packages/potato-sandbox/viewer/novnc/vendor/pako/LICENSE` |
 | Node.js (official win-x64 build, unmodified `node.exe`) | 22.20.0, https://nodejs.org | MIT and the licences of its bundled parts (`LICENSES/Node.txt`) | `resources/node/node.exe` in the installed app; fetched and checked against SHASUMS256.txt at release build time (`scripts/fetch-node.mjs`) |
+| cloudflared (official win-x64 build, unmodified `cloudflared.exe`, by Cloudflare) | 2026.10.7, https://github.com/cloudflare/cloudflared | Apache-2.0 (`LICENSES/cloudflared.txt`) | `resources/bin/cloudflared.exe` in the installed app; run as a separate program for the phone's away-from-home tunnel; fetched and checked against a pinned sha256 at release build time (`scripts/fetch-cloudflared.mjs`) |
 
 The MPL-2.0 files are unmodified. Their source is the noVNC 1.7.0 package linked above.
 

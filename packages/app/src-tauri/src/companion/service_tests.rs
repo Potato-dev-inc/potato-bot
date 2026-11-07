@@ -606,10 +606,11 @@ fn new_proposals_are_counted_and_kept_automatically_only_when_review_is_off() {
 // ---- making, changing, archiving ----------------------------------------------------------------
 
 #[test]
-fn a_fourth_companion_a_bypass_flag_and_an_unusable_agent_are_refused() {
+fn an_eleventh_companion_a_bypass_flag_and_an_unusable_agent_are_refused() {
     let (service, host, root) = service_with_one();
-    service.create(draft("Bit", &root.join("bit"))).unwrap();
-    service.create(draft("Nib", &root.join("nib"))).unwrap();
+    for n in 2..=10 {
+        service.create(draft(&format!("Bit{}", "x".repeat(n)), &root.join(format!("bit{n}")))).unwrap();
+    }
     let err = service.create(draft("Tofu", &root.join("tofu"))).unwrap_err();
     assert_eq!(err.code, "COMPANION_LIMIT");
 

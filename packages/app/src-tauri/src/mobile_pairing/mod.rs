@@ -12,11 +12,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 mod auth;
 mod caps;
+mod phone;
 pub mod events;
 pub mod local_secret;
 
 pub use auth::*;
 pub use caps::*;
+pub use phone::PairFail;
 
 use events::SecurityEvent;
 
@@ -71,6 +73,10 @@ struct PendingPairing {
     bridge_url: String,
     /// What the device that redeems this code will be allowed to do (chosen on the desktop).
     caps: Caps,
+    /// Re-link: the code gives this paired device a new token instead of adding a device (see `phone.rs`).
+    relink: Option<String>,
+    /// Wrong guesses against this code so far; the code is burned at `phone::MAX_WRONG_GUESSES`.
+    failures: u8,
 }
 
 /// The outcome of presenting a bearer token.
@@ -103,6 +109,8 @@ impl MobilePairingStore {
             expires_at,
             bridge_url,
             caps: persisted.pending_caps.unwrap_or_else(Caps::all),
+            relink: None,
+            failures: 0,
         })
     }
 
@@ -111,13 +119,13 @@ impl MobilePairingStore {
         &self,
     ) -> (Option<String>, Option<u64>, Option<String>, Option<Caps>) {
         match &self.pending {
-            Some(p) => (
+            Some(p) if p.relink.is_none() => (
                 Some(p.code.clone()),
                 Some(p.expires_at),
                 Some(p.bridge_url.clone()),
                 Some(p.caps),
             ),
-            None => (None, None, None, None),
+            _ => (None, None, None, None),
         }
     }
 

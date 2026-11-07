@@ -53,6 +53,22 @@ pub fn visible_command<S: AsRef<OsStr>>(program: S) -> Command {
     Command::new(program)
 }
 
+/// A `std::process::Command` for a program that must OUTLIVE this app (the phone's Cloudflare tunnel): no window, its own
+/// process group, no console of ours, and (when `breakaway` is true) out of the app's job object so closing or updating the
+/// app does not take it down. Nothing else may be started this way; every other spawn uses [`hidden_command`].
+#[cfg(windows)]
+#[track_caller]
+pub fn detached_command<S: AsRef<OsStr>>(program: S, breakaway: bool) -> Command {
+    use std::os::windows::process::CommandExt;
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+    let mut command = hidden_command(program);
+    let flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | hidden_creation_flags() | if breakaway { CREATE_BREAKAWAY_FROM_JOB } else { 0 };
+    command.creation_flags(flags);
+    command
+}
+
 /// Keep `command` (made elsewhere, for example by a helper that takes a `Command` argument) from
 /// opening a console window. Idempotent. Does nothing off Windows.
 pub fn hide_window(command: &mut Command) -> &mut Command {

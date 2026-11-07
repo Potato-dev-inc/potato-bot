@@ -6,7 +6,10 @@ import { useId, useState } from 'react';
 import { chatPageFileName } from '../../../lib/chatExport';
 import { plainError } from '../../../lib/potato';
 import { ADVANCED_COPY, nameTypedRight, type BotSettingsTransport } from '../../../lib/potato-botsettings';
+import type { CompanionTransport, CompanionView } from '../../../lib/companion';
+import type { PotatoTransport } from '../../../lib/potato';
 import { Sheet } from '../Sheet';
+import { BotExportButtons } from './BotExportButtons';
 import { AdvancedSection } from './AdvancedSection';
 
 export interface AdvancedBotProps {
@@ -14,9 +17,13 @@ export interface AdvancedBotProps {
   transport: BotSettingsTransport;
   onChanged?: () => void;
   onNotify?: (text: string) => void;
+  /** For Duplicate: the bot's companion and the calls that make a second bot. */
+  companion?: CompanionView | null;
+  companionTransport?: CompanionTransport;
+  potatoTransport?: PotatoTransport;
 }
 
-export function AdvancedBot({ bot, transport, onChanged, onNotify }: AdvancedBotProps) {
+export function AdvancedBot({ bot, transport, onChanged, onNotify, companion, companionTransport, potatoTransport }: AdvancedBotProps) {
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
@@ -68,6 +75,7 @@ export function AdvancedBot({ bot, transport, onChanged, onNotify }: AdvancedBot
           {ADVANCED_COPY.remove}
         </button>
       </div>
+      <BotExportButtons bot={bot} companion={companion} companionTransport={companionTransport} potatoTransport={potatoTransport} onChanged={onChanged} onNotify={onNotify} />
       {status && (
         <p className="ck-potato-adv-status" role="status">
           {status}

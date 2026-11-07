@@ -6,6 +6,7 @@
 // settings change anywhere else, and whenever it is shown again (it is hidden, not destroyed, on close).
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Settings } from '@puppet-master/shared';
+import { LOCALES, t, useLocale, type LocalePref } from '../lib/i18n';
 import { loadSettings, patchSettings, type SettingsPatch } from '../lib/settings';
 import { subscribeSettingsRefresh, type SettingsRefreshInfo } from '../lib/settings-sync';
 import type { UpdateCheckResult } from '../lib/app-update';
@@ -109,6 +110,7 @@ export function SettingsPanel({
   onOpenStore,
   api = DEFAULT_API,
 }: Props) {
+  const { pref, setPref } = useLocale();
   const [page, setPage] = useState<SettingsPageId>(initialTab);
   const [query, setQuery] = useState('');
   // A row to scroll to once its page is showing. `n` makes asking for the same row twice work.
@@ -302,19 +304,19 @@ export function SettingsPanel({
   const section = shown.find((s) => s.id === page) ?? (settings && page !== 'later' ? shown[0] : undefined);
   const chrome: RowChrome = { saved: savedIds, errors, target: marked ?? undefined };
 
-  const title = trimmed ? 'Search results' : page === 'later' ? 'Coming later' : (section?.title ?? 'Settings');
+  const title = t(trimmed ? 'Search results' : page === 'later' ? 'Coming later' : (section?.title ?? 'Settings'));
   const blurb = trimmed
     ? undefined
     : page === 'later'
-      ? 'Not built yet. None of these do anything today.'
-      : section?.blurb;
+      ? t('Not built yet. None of these do anything today.')
+      : section?.blurb && t(section.blurb);
 
   return (
-    <div className={inline ? 'settings settings--inline' : 'settings'} role="region" aria-label="Settings">
+    <div className={inline ? 'settings settings--inline' : 'settings'} role="region" aria-label={t('Settings')}>
       <aside className="st-side">
         <div className="st-side-top">
           {onClose && (
-            <button type="button" className="st-back" aria-label={inline ? 'Back' : 'Close settings'} onClick={onClose}>
+            <button type="button" className="st-back" aria-label={t(inline ? 'Back' : 'Close settings')} onClick={onClose}>
               <IconBack />
             </button>
           )}
@@ -322,8 +324,8 @@ export function SettingsPanel({
             <IconSearch />
             <input
               type="search"
-              aria-label="Search settings"
-              placeholder="Search"
+              aria-label={t('Search settings')}
+              placeholder={t('Search')}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => {
@@ -332,7 +334,7 @@ export function SettingsPanel({
             />
           </label>
         </div>
-        <nav className="st-nav" aria-label="Settings sections">
+        <nav className="st-nav" aria-label={t('Settings sections')}>
           {shown.map((item) => (
             <button
               key={item.id}
@@ -344,11 +346,27 @@ export function SettingsPanel({
                 setQuery('');
               }}
             >
-              {item.title}
+              {t(item.title)}
             </button>
           ))}
         </nav>
         <div className="st-side-foot">
+          <label className="st-nav-row st-lang">
+            <span>{t('Language')}</span>
+            <select
+              className="st-popup"
+              aria-label={t('Language')}
+              value={pref}
+              onChange={(e) => setPref(e.target.value as LocalePref)}
+            >
+              <option value="system">{t('Follow the system')}</option>
+              {LOCALES.map((l) => (
+                <option key={l.id} value={l.id}>
+                  {l.label}
+                </option>
+              ))}
+            </select>
+          </label>
           <button
             type="button"
             className="st-nav-row"
@@ -359,7 +377,7 @@ export function SettingsPanel({
             }}
           >
             <IconLater />
-            <span>Coming later</span>
+            <span>{t('Coming later')}</span>
           </button>
         </div>
       </aside>
@@ -375,13 +393,13 @@ export function SettingsPanel({
               settings === null ? (
                 <Skeleton />
               ) : hits.length === 0 ? (
-                <p className="st-empty">No settings match “{trimmed}”.</p>
+                <p className="st-empty">{t('No settings match “{query}”.', { query: trimmed })}</p>
               ) : (
                 <div className="st-results">
                   {hits.map(({ section: hitSection, rows }) => (
                     <section key={hitSection.id} data-section={hitSection.id}>
-                      <h2>{hitSection.title}</h2>
-                      <SectionRows rows={rows} envFor={envFor} chrome={chrome} sectionTitle={hitSection.title} />
+                      <h2>{t(hitSection.title)}</h2>
+                      <SectionRows rows={rows} envFor={envFor} chrome={chrome} sectionTitle={t(hitSection.title)} />
                     </section>
                   ))}
                 </div>
@@ -393,11 +411,11 @@ export function SettingsPanel({
                     <div key={item.title} className="st-rowwrap">
                       <div className="st-row">
                         <div className="st-label">
-                          <span>{item.title}</span>
+                          <span>{t(item.title)}</span>
                           <small>{item.note}</small>
                         </div>
                         <div className="st-control">
-                          <span className="st-value">Not available yet</span>
+                          <span className="st-value">{t('Not available yet')}</span>
                         </div>
                       </div>
                     </div>
@@ -428,7 +446,7 @@ export function SettingsPanel({
 
 function Skeleton() {
   return (
-    <div className="st-list" aria-busy="true" aria-label="Loading settings">
+    <div className="st-list" aria-busy="true" aria-label={t('Loading settings')}>
       {[0, 1, 2].map((n) => (
         <div key={n} className="st-skel">
           <span style={{ width: 120 + n * 28 }} />

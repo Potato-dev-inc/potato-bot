@@ -1,5 +1,5 @@
 // Cockpit window (`index.html?cockpit=1`): the Potato Bot app.
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { useCockpit } from './hooks/useCockpit';
 import { useCompanions } from './hooks/useCompanions';
 import { usePotatoState, readOpenBot, writeOpenBot } from './hooks/usePotato';
@@ -14,10 +14,12 @@ import { resolveSettingsTab } from './lib/settings-entry';
 import type { SettingsPageId } from './components/settings/model';
 import { PotatoPage } from './components/cockpit/potato/PotatoPage';
 import { totalUnread } from './components/cockpit/potato/model';
-import { SettingsView } from './components/cockpit/SettingsView';
 import { PotatoPaneView } from './components/cockpit/PotatoPaneView';
 import { AppUpdateHost } from './components/updates/AppUpdateHost';
 import './styles/cockpit.css';
+
+// Settings is opened rarely: its own chunk keeps the first load small.
+const SettingsView = lazy(() => import('./components/cockpit/SettingsView').then((m) => ({ default: m.SettingsView })));
 
 type View = 'potato' | 'settings' | 'pane';
 
@@ -124,11 +126,13 @@ export default function CockpitApp() {
       </aside>
       <main className="ck-main">
         {view === 'settings' ? (
-          <SettingsView
-            initialTab={settingsTab}
-            onBack={() => setView('potato')}
-            onPageChange={setSettingsTab}
-          />
+          <Suspense fallback={null}>
+            <SettingsView
+              initialTab={settingsTab}
+              onBack={() => setView('potato')}
+              onPageChange={setSettingsTab}
+            />
+          </Suspense>
         ) : potato.state && potatoOn ? (
           <PotatoPage
             state={potato.state}

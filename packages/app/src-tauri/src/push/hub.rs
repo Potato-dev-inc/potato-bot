@@ -181,6 +181,37 @@ impl PushHub {
             .retain(|_, (d, _)| !(d.kind.is_pane_prompt() && d.pane_id.as_deref() == Some(pane_id)));
     }
 
+    /// The phone says whether it is looking at the app. A phone that says "visible" counts as looking for
+    /// 45 seconds; one that dies stops suppressing by itself.
+    pub fn set_visible(&self, device_id: &str, visible: bool, now_ms: u64) {
+        let mut map = self.visible_until.lock();
+        if visible {
+            map.insert(device_id.to_string(), now_ms + 45_000);
+        } else {
+            map.remove(device_id);
+        }
+    }
+
+    /// A message from a bot's chat for every phone that may watch, is paired and is not looking at the app now.
+    /// `bot_id` rides along so a tap opens that chat. Not urgent: the phone may show it when it next wakes.
+    pub fn alert_deliveries(&self, title: &str, body: &str, tag: &str, bot_id: &str, now_ms: u64) -> Vec<Delivery> {
+        let mut deliveries = Vec::new();
+        for (device_id, subscription, hide_details) in self.store.lock().all_with_preferences() {
+            if !self.directory.device_exists(&device_id) || !self.directory.device_can_watch(&device_id) || self.is_visible(&device_id, now_ms) {
+                continue;
+            }
+            let body_text = if hide_details { String::new() } else { body.to_string() };
+            let mut extra = serde_json::Map::new();
+            extra.insert("v".into(), json!(2));
+            extra.insert("kind".into(), json!(Kind::CompanionReply.as_str()));
+            extra.insert("tag".into(), json!(tag));
+            extra.insert("companion_id".into(), json!(bot_id));
+            let payload = super::sender::PushPayload::new(&crate::redact::text(title), &crate::redact::text(&body_text), extra);
+            deliveries.push(Delivery { device_id, subscription, payload, urgent: false, pane_id: None, kind: Kind::CompanionReply });
+        }
+        deliveries
+    }
+
     pub fn is_visible(&self, device_id: &str, now_ms: u64) -> bool {
         self.visible_until.lock().get(device_id).is_some_and(|until| *until > now_ms)
     }

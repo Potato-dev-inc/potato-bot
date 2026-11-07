@@ -240,6 +240,8 @@ impl Host for LiveHost {
     }
 
     fn changed(&self, bot: &str) {
+        // Phones waiting on the long poll wake up.
+        super::phone::live::changes().bump();
         // Not in unit tests: emitting through the app handle links the windowing runtime into the lib test exe.
         #[cfg(not(test))]
         if let Some(app) = &self.app {
@@ -251,6 +253,7 @@ impl Host for LiveHost {
     }
 
     fn room_changed(&self, room_id: &str) {
+        super::phone::live::changes().bump();
         #[cfg(not(test))]
         if let Some(app) = &self.app {
             use tauri::Emitter;

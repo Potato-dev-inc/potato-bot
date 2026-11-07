@@ -32,7 +32,9 @@ pub const MAX_MESSAGE_CHARS: usize = 4000;
 pub const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 pub const MAX_FILE_LINES: usize = 5000;
 pub const CHANNEL_KEEP: usize = 500;
-pub const MAX_BOTS: usize = 3;
+/// Ten, so a group of ten bots can exist. The old limit of 3 came from "one node process per bot"; measured, a brain
+/// is about 50 MB (10 brains: 500 MB) and stops itself after 30 idle minutes.
+pub const MAX_BOTS: usize = 10;
 
 pub type StoreResult<T> = Result<T, StoreError>;
 
@@ -139,7 +141,7 @@ pub fn save_bots(root: &Path, bots: &[Bot]) -> StoreResult<()> {
     write_json(&bots_path(root), &BotsFile { v: STORE_VERSION, bots: bots.to_vec() }, "bots.json")
 }
 
-/// Adds a bot for a companion. The companion must exist (the caller checks); at most 3 bots.
+/// Adds a bot for a companion. The companion must exist (the caller checks); at most 10 bots.
 pub fn add_bot(root: &Path, id: &str, talk_persona: &str, now_ms: i64) -> StoreResult<Bot> {
     let _files = files_lock();
     if !crate::companion::model::valid_id(id) {

@@ -179,3 +179,87 @@ pub async fn potato_bot_export_markdown(chat: State<'_, SessionChatState>, bot_i
 pub async fn potato_setting_undo(bot_id: String, change_id: String) -> Result<(), String> {
     run(move |s| s.undo_setting(&bot_id, &change_id)).await
 }
+
+// ---- moving bots in and out (bot file, copy, account folder, ChatGPT or Claude drafts) ------------------------------------
+
+use crate::potato::service::portable::{AccountPreview, Applied, BotInfo, Choices, Preview};
+
+/// The avatar and the voice the bot's companion has now, looked up here so the page does not have to send them.
+fn companion_info(bot_id: &str) -> BotInfo {
+    let view = crate::companion::live::service().and_then(|c| c.views(false).into_iter().find(|v| v.id == bot_id));
+    match view {
+        Some(v) => BotInfo { name: v.name, avatar: v.avatar, persona: v.persona, talk_persona: String::new() },
+        None => BotInfo::default(),
+    }
+}
+
+/// "Export bot": writes the bot's file at `path` (the page's save dialog chose it) and returns the path. `memory`: the notes come too.
+#[tauri::command]
+pub async fn potato_bot_export_save(bot_id: String, memory: bool, path: String) -> Result<String, String> {
+    let target = std::path::PathBuf::from(&path);
+    if target.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() != Some("json") {
+        return Err("POTATO_EXPORT_PATH: Save the bot as a .json file.".to_string());
+    }
+    let info = companion_info(&bot_id);
+    let (file, _name) = run(move |s| s.export_bot_text(&bot_id, info, memory)).await?;
+    std::fs::write(&target, file).map_err(|e| format!("POTATO_EXPORT_IO: Could not save the file: {e}."))?;
+    Ok(target.display().to_string())
+}
+
+/// The name the save dialog starts with.
+#[tauri::command]
+pub async fn potato_bot_export_name(bot_id: String) -> Result<String, String> {
+    let info = companion_info(&bot_id);
+    run(move |s| s.export_bot_text(&bot_id, info, false).map(|(_, name)| name)).await
+}
+
+/// What a bot file holds: the preview. Nothing is made or written.
+#[tauri::command]
+pub async fn potato_bot_file_inspect(path: String) -> Result<Preview, String> {
+    run(move |s| s.inspect_bot_file(std::path::Path::new(&path))).await
+}
+
+/// Puts the ticked parts of a bot file into a bot the page just made.
+#[tauri::command]
+pub async fn potato_bot_file_apply(bot_id: String, path: String, choices: Choices) -> Result<Applied, String> {
+    run(move |s| s.apply_bot_file(&bot_id, std::path::Path::new(&path), choices)).await
+}
+
+/// "Duplicate": puts a bot's instructions, skills, routines (paused) and memory into a second bot the page just made.
+#[tauri::command]
+pub async fn potato_bot_copy_into(from_id: String, to_id: String) -> Result<Applied, String> {
+    run(move |s| s.copy_bot_into(&from_id, &to_id)).await
+}
+
+/// Whole-account copy: writes a folder inside `parent` and returns its path.
+#[tauri::command]
+pub async fn potato_account_export(parent: String, chats: bool) -> Result<String, String> {
+    let names: std::collections::HashMap<String, BotInfo> = crate::companion::live::service()
+        .map(|c| c.views(false).into_iter().map(|v| (v.id.clone(), BotInfo { name: v.name, avatar: v.avatar, persona: v.persona, talk_persona: String::new() })).collect())
+        .unwrap_or_default();
+    let dir = run(move |s| s.account_export(std::path::Path::new(&parent), &|id| names.get(id).cloned().unwrap_or_default(), chats)).await?;
+    Ok(dir.display().to_string())
+}
+
+#[tauri::command]
+pub async fn potato_account_inspect(dir: String) -> Result<AccountPreview, String> {
+    run(move |s| s.account_inspect(std::path::Path::new(&dir))).await
+}
+
+/// One bot of a copy folder (`id` is its folder name) into a bot the page just made: its parts and its chat.
+#[tauri::command]
+pub async fn potato_account_restore_bot(dir: String, id: String, bot_id: String) -> Result<Applied, String> {
+    run(move |s| s.account_restore_bot(std::path::Path::new(&dir), &id, &bot_id)).await
+}
+
+/// A file from ChatGPT or Claude as text (at most 2 MB; a zip is refused), so the page can look for the instructions in it.
+#[tauri::command]
+pub async fn potato_import_read_text(path: String) -> Result<String, String> {
+    run(move |_| crate::potato::service::portable::read_capped(std::path::Path::new(&path))).await
+}
+
+/// The reviewed drafts from ChatGPT or Claude become the bot's instructions and memory notes. Same cleaning as a file.
+#[tauri::command]
+pub async fn potato_import_drafts_save(bot_id: String, instructions: String, memories: Vec<String>) -> Result<Applied, String> {
+    run(move |s| s.save_drafts(&bot_id, &instructions, &memories)).await
+}

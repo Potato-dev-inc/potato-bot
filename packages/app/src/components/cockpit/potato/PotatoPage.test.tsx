@@ -203,3 +203,25 @@ describe('New bot opens the starter picker (F-2)', () => {
     expect(host.querySelectorAll('article.ck-potato-starter')).toHaveLength(0);
   });
 });
+
+describe('PotatoPage with ten bots', () => {
+  it('lists all ten bots, so a group of ten can be made', async () => {
+    const ids = ['ann', 'bob', 'cat', 'dan', 'eve', 'fay', 'gus', 'hal', 'ivy', 'jon'];
+    const transport = fakePotatoTransport({ bots: ids.map((id) => bot({ id, name: id })) });
+    await mount(transport, ids.map((id) => companion({ id, name: id, paneId: `companion-${id}` })));
+    expect(host.querySelectorAll('.ck-potato-list [role="button"], .ck-potato-list li').length).toBeGreaterThanOrEqual(10);
+    for (const id of ids) expect(host.querySelector('.ck-potato-list')?.textContent).toContain(id);
+  });
+
+  it('New bot > Move bots opens the sheet that brings a bot in from a file, ChatGPT or Claude, or a backup', async () => {
+    const transport = fakePotatoTransport({ bots: [bot()] });
+    await mount(transport);
+    await act(async () => buttonByText(host, 'New bot')!.click());
+    await act(async () => buttonByText(host, 'Move bots…')!.click());
+    expect(host.querySelector('.ck-starters-overlay, .ck-potato-starters-overlay')).toBeNull();
+    const sheet = document.body.querySelector('.ck-potato-move');
+    expect(sheet?.textContent).toContain('Bot file');
+    expect(sheet?.textContent).toContain('ChatGPT or Claude');
+    expect(sheet?.textContent).toContain('Backup');
+  });
+});

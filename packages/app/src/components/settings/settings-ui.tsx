@@ -2,14 +2,18 @@
 // inside a grouped inset list (`.st-list`); the panel supplies the list, the groups and the "Saved" tick.
 // Monochrome: no colour, no badges. Styles live in styles/settings.css.
 import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode, SelectHTMLAttributes } from 'react';
+import { t } from '../../lib/i18n';
 import { Popup, Switch } from './controls';
+
+/** A label or hint that is a plain sentence goes through the language dictionary; anything else is shown as it is. */
+const say = (node: ReactNode): ReactNode => (typeof node === 'string' ? t(node) : node);
 
 /** A label with its one-line hint. */
 function Label({ label, description }: { label: ReactNode; description?: ReactNode }) {
   return (
     <div className="st-label">
-      <span>{label}</span>
-      {description && <small>{description}</small>}
+      <span>{say(label)}</span>
+      {description && <small>{say(description)}</small>}
     </div>
   );
 }
@@ -66,7 +70,7 @@ export function SettingToggle({
 }) {
   return (
     <SettingRow label={label} description={description}>
-      <Switch checked={checked} onChange={onChange} label={label} disabled={disabled} />
+      <Switch checked={checked} onChange={onChange} label={t(label)} disabled={disabled} />
     </SettingRow>
   );
 }
@@ -75,13 +79,13 @@ export function SettingToggle({
 export function InfoRow({ label, description, value }: { label: ReactNode; description?: ReactNode; value: ReactNode }) {
   return (
     <SettingRow label={label} description={description}>
-      <span className="st-value">{value}</span>
+      <span className="st-value">{say(value)}</span>
     </SettingRow>
   );
 }
 
 export function FieldLabel({ children }: { children: ReactNode }) {
-  return <label className="st-field-label">{children}</label>;
+  return <label className="st-field-label">{say(children)}</label>;
 }
 
 export function FieldInput(props: InputHTMLAttributes<HTMLInputElement>) {
@@ -99,16 +103,21 @@ export function Btn({
   small,
   className,
   type = 'button',
+  children,
   ...rest
 }: ButtonHTMLAttributes<HTMLButtonElement> & { primary?: boolean; small?: boolean }) {
-  return <button {...rest} type={type} className={`st-btn${primary ? ' is-primary' : ''}${small ? ' is-small' : ''}${className ? ` ${className}` : ''}`} />;
+  return (
+    <button {...rest} type={type} className={`st-btn${primary ? ' is-primary' : ''}${small ? ' is-small' : ''}${className ? ` ${className}` : ''}`}>
+      {say(children)}
+    </button>
+  );
 }
 
 /** A small error or status line under a control. */
 export function Note({ children, role }: { children: ReactNode; role?: 'alert' | 'status' }) {
   return (
     <p className="st-note" role={role}>
-      {children}
+      {say(children)}
     </p>
   );
 }
@@ -118,7 +127,7 @@ export function CodeBlock({ title, code }: { title: string; code: string }) {
     <SettingBlock label={title}>
       <div className="st-code">
         <Btn small onClick={() => void navigator.clipboard.writeText(code)}>
-          Copy
+          {t('Copy')}
         </Btn>
         <pre>{code}</pre>
       </div>

@@ -1,6 +1,7 @@
 // Renders rows as grouped inset lists. Used by the panel for a section page and for search results,
 // and by the section tests (which pass their own `envFor`).
 import type { ReactNode } from 'react';
+import { t } from '../../lib/i18n';
 import { groupRows, type RowDef, type SettingsEnv } from './model';
 import './row-glow.css';
 
@@ -22,7 +23,7 @@ export function RowShell({ row, env, chrome, where }: { row: RowDef; env: Settin
       {where && <p className="st-where">{`${row.label} · ${where}`}</p>}
       {row.render(env)}
       <span className={`st-saved${on ? ' is-on' : ''}`} role="status" aria-live="polite">
-        {on ? 'Saved' : ''}
+        {on ? t('Saved') : ''}
       </span>
       {error && (
         <p className="st-rowerr" role="alert">
@@ -50,7 +51,7 @@ export function SectionRows({
     <>
       {groupRows(rows).map((group, i) => (
         <section key={`${group.head ?? ''}-${i}`} className="st-group" data-danger={group.danger ? 'true' : undefined}>
-          {group.head && <h2>{group.head}</h2>}
+          {group.head && <h2>{t(group.head)}</h2>}
           <div className="st-list">
             {group.rows.map((row) => (
               <RowShell key={row.id} row={row} env={envFor(row)} chrome={chrome} where={sectionTitle} />

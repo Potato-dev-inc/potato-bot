@@ -185,9 +185,9 @@ describe('Settings > Potato Bot', () => {
 
 describe('the Potato Bot section in the catalog', () => {
   it('is always shown: Potato Bot is the product', () => {
-    expect(SECTIONS.map((s) => s.id)).toEqual(['potato']);
-    expect(visibleSections(SECTIONS, null).map((s) => s.id)).toEqual(['potato']);
-    expect(visibleSections(SECTIONS, { potato_bot_enabled: false }).map((s) => s.id)).toEqual(['potato']);
+    expect(SECTIONS.map((s) => s.id)).toEqual(['potato', 'phone']);
+    expect(visibleSections(SECTIONS, null).map((s) => s.id)).toEqual(['potato', 'phone']);
+    expect(visibleSections(SECTIONS, { potato_bot_enabled: false }).map((s) => s.id)).toEqual(['potato', 'phone']);
   });
 });
 

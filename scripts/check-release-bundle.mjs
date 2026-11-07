@@ -66,8 +66,30 @@ for (const f of readdirSync(join(res, 'potato-sandbox/recipes')).filter((n) => n
 }
 // Node.js, so nobody has to install it (fetch-node.mjs puts it here).
 need('resources/node/node.exe');
+// The phone web app, served by the phone server.
+for (const f of ['index.html', 'app.js', 'net.js', 'i18n.js', 'style.css', 'sw.js', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png', 'apple-touch-icon.png']) need(`resources/phone/${f}`);
+// cloudflared, for the phone's away-from-home tunnel (fetch-cloudflared.mjs puts it here).
+need('resources/bin/cloudflared.exe');
+// The languages: the app's Traditional Chinese dictionary is compiled into the web UI (dist), and the phone page carries both tables.
+{
+  const assets = join(tauri, '../dist/assets');
+  const hasZh = existsSync(assets) && readdirSync(assets).filter((n) => n.endsWith('.js')).some((n) => readFileSync(join(assets, n), 'utf8').includes('繁體中文'));
+  if (!hasZh) problems.push('the Traditional Chinese language is not in the built web UI (dist/assets)');
+  const phoneI18n = join(res, 'phone/i18n.js');
+  if (existsSync(phoneI18n) && !/export const zh/.test(readFileSync(phoneI18n, 'utf8'))) problems.push('the phone page has no Traditional Chinese table');
+}
+// The uninstaller stops the phone tunnel (MSI custom action); an update must not.
+{
+  const conf2 = JSON.parse(readFileSync(join(tauri, 'tauri.conf.json'), 'utf8'));
+  const wix = conf2.bundle?.windows?.wix ?? {};
+  const frag = (wix.fragmentPaths ?? []).map((f) => join(tauri, f));
+  const text = frag.filter((f) => existsSync(f)).map((f) => readFileSync(f, 'utf8')).join('');
+  if (!text.includes('--phone-cleanup') || !text.includes('NOT UPGRADINGPRODUCTCODE') || !(wix.componentGroupRefs ?? []).includes('PhoneCleanupGroup')) {
+    problems.push('the MSI has no uninstall action that stops the phone tunnel (wix/phone-cleanup.wxs + componentGroupRefs)');
+  }
+}
 // The licences.
-for (const f of ['LICENSES/Node.txt', 'LICENSE', 'THIRD-PARTY-NOTICES.md', 'LICENSES/MIT-desktoplab.txt', 'LICENSES/MPL-2.0.txt', 'LICENSES/Apache-2.0.txt']) need(`resources/legal/${f}`);
+for (const f of ['LICENSES/Node.txt', 'LICENSES/cloudflared.txt', 'LICENSE', 'THIRD-PARTY-NOTICES.md', 'LICENSES/MIT-desktoplab.txt', 'LICENSES/MPL-2.0.txt', 'LICENSES/Apache-2.0.txt']) need(`resources/legal/${f}`);
 
 if (problems.length) {
   console.error('[check-release-bundle] the installer would be missing files:\n  ' + problems.join('\n  '));

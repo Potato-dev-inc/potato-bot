@@ -133,6 +133,9 @@ export function AdvancedTab({ bot, defaultBrain = 'deepseek', transport = tauriB
         transport={transport}
         onChanged={onChanged}
         onNotify={onNotify}
+        companion={companion}
+        companionTransport={companionTransport}
+        potatoTransport={potatoTransport}
       />
     </div>
   );

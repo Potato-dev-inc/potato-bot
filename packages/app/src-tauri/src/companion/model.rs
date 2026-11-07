@@ -5,7 +5,8 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const MAX_COMPANIONS: usize = 3;
+/// A bot is a companion, so this is also the bot limit. Archived companions do not count.
+pub const MAX_COMPANIONS: usize = 10;
 pub const SOUL_CAP: usize = 1_500;
 pub const USER_CAP: usize = 1_400;
 pub const MEMORY_CAP: usize = 2_200;

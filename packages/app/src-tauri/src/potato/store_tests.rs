@@ -58,7 +58,7 @@ fn a_file_from_a_newer_version_is_refused() {
 }
 
 #[test]
-fn bots_are_companion_ids_with_a_talk_persona_and_at_most_three() {
+fn bots_are_companion_ids_with_a_talk_persona_and_at_most_ten() {
     let root = temp("bots");
     let bot = add_bot(&root, "nimbus", "fish", 1_700).unwrap();
     assert_eq!(bot, Bot { id: "nimbus".into(), talk_persona: "fish".into(), created_ms: 1_700 });
@@ -71,9 +71,12 @@ fn bots_are_companion_ids_with_a_talk_persona_and_at_most_three() {
     assert_eq!(add_bot(&root, "../x", "fish", 2).unwrap_err().code, "POTATO_BOT_INVALID");
     assert_eq!(add_bot(&root, "mochi", "wizard", 2).unwrap_err().code, "POTATO_PERSONA_INVALID");
     add_bot(&root, "mochi", "potato", 3).unwrap();
-    add_bot(&root, "tofu", "fish", 4).unwrap();
+    for n in 3..=10 {
+        add_bot(&root, &format!("bot{n}"), "fish", n).unwrap();
+    }
+    assert_eq!(load_bots(&root).unwrap().len(), 10, "a group of ten bots can exist");
     assert_eq!(add_bot(&root, "kit", "fish", 5).unwrap_err().code, "POTATO_BOT_LIMIT");
-    assert_eq!(load_bots(&root).unwrap().len(), 3);
+    assert_eq!(load_bots(&root).unwrap().len(), 10);
 }
 
 #[test]

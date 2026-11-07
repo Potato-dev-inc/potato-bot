@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Uninstall hook for the phone's away-from-home tunnel. The tunnel (cloudflared) runs as its own process so it survives an app
+  restart and an update; only a real uninstall must end it. Windows Installer calls this action just before it removes the files,
+  and only when the product is being REMOVED and is not being replaced by a newer version (UPGRADINGPRODUCTCODE is set while a
+  one-click update or a newer MSI removes the old version), so an update never stops the tunnel.
+  The action runs the app with its phone-cleanup argument: it ends the recorded tunnel after checking the process is the one this app
+  started, and shows no window. A failure is ignored: an uninstall is never blocked by it.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <CustomAction Id="PhoneTunnelCleanup" FileKey="Path" ExeCommand="--phone-cleanup" Execute="immediate" Impersonate="yes" Return="ignore" />
+    <InstallExecuteSequence>
+      <Custom Action="PhoneTunnelCleanup" Before="RemoveFiles">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+    </InstallExecuteSequence>
+    <ComponentGroup Id="PhoneCleanupGroup">
+      <Component Id="PhoneCleanupMarker" Directory="INSTALLDIR" Guid="*">
+        <RegistryValue Root="HKLM" Key="Software\puppetmaster\Potato Bot" Name="PhoneCleanupOnUninstall" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+</Wix>

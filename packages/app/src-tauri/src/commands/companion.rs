@@ -2,7 +2,7 @@
 //! memory and its check-ins are never reachable through the bridge, the phone or MCP. The phone has the
 //! read, keep-or-drop, wake and sleep routes of `bridge/routes/companions.rs`, over the same service.
 //!
-//! Errors are one string, `CODE: plain sentence` (`COMPANION_LIMIT: You can have at most 3 ...`).
+//! Errors are one string, `CODE: plain sentence` (`COMPANION_LIMIT: You can have at most 10 ...`).
 //! The desktop views carry the home folder and the full check-in list; `companion://changed` sends them
 //! all whenever one changes.
 

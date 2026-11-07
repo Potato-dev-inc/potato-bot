@@ -21,6 +21,7 @@ import { BotList } from './BotList';
 import { CommandPalette } from './CommandPalette';
 import { PotatoLayout } from './PotatoLayout';
 import { SandboxWizardHost } from './SandboxWizardHost';
+import { MoveBotsSheet } from './MoveBotsSheet';
 import { StarterPicker } from './StarterPicker';
 import { ThreadView } from './ThreadView';
 import { pickOpenBot } from './model';
@@ -113,6 +114,7 @@ export function PotatoPage(props: PotatoPageProps) {
   }, [openRoomId, groupsOn, rooms.loaded, rooms.rooms, roomGone]);
   // "New bot" opens the starter picker (F-2); "Set up by hand" in it opens the sheet. The computer's wizard opens over it.
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [moveOpen, setMoveOpen] = useState(false);
   // Ctrl/Cmd+K: the jump palette (bots, groups and pages). The sidebar search box stays for typing a name.
   const [paletteOpen, setPaletteOpen] = useState(false);
   // The Search chats page takes the thread's place while it is open. A result opens its thread and jumps to the message.
@@ -382,7 +384,26 @@ export function PotatoPage(props: PotatoPageProps) {
             setPickerOpen(false);
             setSheetOpen(true);
           }}
+          onMove={() => {
+            setPickerOpen(false);
+            setMoveOpen(true);
+          }}
           onClose={() => setPickerOpen(false)}
+        />
+      )}
+      {moveOpen && (
+        <MoveBotsSheet
+          companions={companionTransport}
+          potato={transport}
+          botCount={state.bots.length}
+          onMade={(botId) => {
+            setMoveOpen(false);
+            onCompanionsChanged();
+            onChanged();
+            onOpenBot(botId);
+          }}
+          onNotify={onNotify}
+          onClose={() => setMoveOpen(false)}
         />
       )}
       {wizardOpen && sandboxTransport && <SandboxWizardHost transport={sandboxTransport} onClose={() => setWizardOpen(false)} />}

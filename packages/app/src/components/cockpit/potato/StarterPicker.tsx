@@ -4,6 +4,8 @@
 import { useState } from 'react';
 import { plainError } from '../../../lib/potato';
 import { COMPUTER_COPY } from '../../../lib/potato-computer';
+import { t } from '../../../lib/i18n';
+import { PORTABLE_COPY } from '../../../lib/potato-portable';
 import { STARTERS, STARTER_COPY, makeStarterBot, type StarterTemplate, type StarterTransports } from '../../../lib/potato-starters';
 import '../../../styles/cockpit-potato-starters.css';
 
@@ -15,10 +17,12 @@ export interface StarterPickerProps {
   onSetUpComputer?: () => void;
   /** Opens the old setup sheet (a custom agent, persona and folder). */
   onSetUpByHand: () => void;
+  /** Opens "Move bots" (a bot file, ChatGPT or Claude, a backup). Absent: the button is not drawn. */
+  onMove?: () => void;
   onClose: () => void;
 }
 
-export function StarterPicker({ transports, onMade, onSetUpComputer, onSetUpByHand, onClose }: StarterPickerProps) {
+export function StarterPicker({ transports, onMade, onSetUpComputer, onSetUpByHand, onMove, onClose }: StarterPickerProps) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -42,7 +46,7 @@ export function StarterPicker({ transports, onMade, onSetUpComputer, onSetUpByHa
         <header className="ck-potato-starters-head">
           <h2 className="ck-potato-starters-title">{STARTER_COPY.title}</h2>
           <button type="button" className="ck-btn ck-btn--plain ck-btn--sm" onClick={onClose}>
-            Close
+            {t('Close')}
           </button>
         </header>
         <p className="ck-sub ck-potato-starters-intro">{STARTER_COPY.intro}</p>
@@ -69,11 +73,11 @@ export function StarterPicker({ transports, onMade, onSetUpComputer, onSetUpByHa
               <button
                 type="button"
                 className="ck-btn ck-btn--secondary ck-potato-starter-make"
-                aria-label={`Make ${starter.name}`}
+                aria-label={t('Make {name}', { name: starter.name })}
                 disabled={busy !== null}
                 onClick={() => void make(starter)}
               >
-                {busy === starter.id ? 'Making…' : 'Make this bot'}
+                {busy === starter.id ? t('Making…') : t('Make this bot')}
               </button>
             </article>
           ))}
@@ -82,6 +86,11 @@ export function StarterPicker({ transports, onMade, onSetUpComputer, onSetUpByHa
           <button type="button" className="ck-btn ck-btn--plain ck-btn--sm" onClick={onSetUpByHand}>
             {STARTER_COPY.setByHand}
           </button>
+          {onMove && (
+            <button type="button" className="ck-btn ck-btn--plain ck-btn--sm" onClick={onMove}>
+              {PORTABLE_COPY.moveTitle}…
+            </button>
+          )}
         </footer>
       </section>
     </div>

@@ -46,6 +46,10 @@ mod room_flow;
 mod self_flow;
 mod peer_flow;
 mod wait_flow;
+pub mod portable;
+#[cfg(test)]
+#[path = "portable_tests.rs"]
+mod portable_tests;
 pub use card_flow::AnswerOutcome;
 pub use login_flow::{ForgetOutcome, LoginOrigin};
 use job_flow::{JobAfter, JobTurn};

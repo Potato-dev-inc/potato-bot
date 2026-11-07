@@ -5,3 +5,4 @@ export * from './protocol.js';
 export * from './schemas.js';
 export * from './mobile-pairing.js';
 export * from './orchestrator-panes.js';
+export * from './phone-api.js';

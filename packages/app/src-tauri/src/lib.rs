@@ -89,6 +89,11 @@ use tauri::{Listener, Manager};
 /// adapter for an agent that has no ACP). `Some(exit code)` when one ran; `main` exits with it. `None`:
 /// start the app as usual.
 pub fn run_cli_subcommand() -> Option<i32> {
+    // `--phone-cleanup`: the uninstaller asks the phone tunnel (a separate process that outlives the app) to end. No window.
+    if std::env::args().nth(1).as_deref() == Some("--phone-cleanup") {
+        potato::phone::tunnel::kill_recorded(&app_paths::app_data_dir());
+        return Some(0);
+    }
     acp::bridge::run_cli(&std::env::args().skip(1).collect::<Vec<_>>())
 }
 
@@ -235,6 +240,16 @@ pub fn run() {
             commands::potato_bot_options_get,
             commands::potato_bot_provider_set,
             commands::potato_bot_rename,
+            commands::potato_bot_export_save,
+            commands::potato_bot_export_name,
+            commands::potato_bot_file_inspect,
+            commands::potato_bot_file_apply,
+            commands::potato_bot_copy_into,
+            commands::potato_account_export,
+            commands::potato_account_inspect,
+            commands::potato_account_restore_bot,
+            commands::potato_import_read_text,
+            commands::potato_import_drafts_save,
             commands::potato_bot_start,
             commands::potato_bot_stop,
             commands::potato_bot_tools_set,
@@ -328,6 +343,13 @@ pub fn run() {
             commands::potato_screen_keep,
             commands::potato_screen_link,
             commands::potato_screen_skip,
+            commands::phone_device_revoke,
+            commands::phone_firewall_allow,
+            commands::phone_pairing_start,
+            commands::phone_set_custom_address,
+            commands::phone_set_port,
+            commands::phone_status,
+            commands::phone_tunnel_set,
             commands::potato_screen_state,
             commands::potato_screen_take_over,
             commands::potato_send,
@@ -493,6 +515,10 @@ pub fn run() {
             companion::live::start(app.handle().clone(), registry_for_panes.clone());
             // Potato Bot: the engine and its supervisor thread. No brain starts here; one starts on its first message.
             potato::live::start(Some(app.handle().clone()), Some(registry_for_panes.clone()));
+            // The phone: the web app server on the home network, and the tunnel when the person turned it on.
+            if let Err(err) = potato::phone::live::start(app.handle()) {
+                tracing::warn!(%err, "the phone server did not start");
+            }
             // The Computer panel: the screen hub, its 1 s keeper and the `potato://screen` event.
             potato::sandbox::screen_live::start(Some(app.handle().clone()));
             // A room a crash left on the relay is ended now (its own thread: it may wait for the network).

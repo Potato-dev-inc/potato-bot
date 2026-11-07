@@ -87,6 +87,11 @@ pub fn init(registry: Arc<Mutex<PaneRegistry>>) {
     let _ = CTX.set(Ctx { hub, registry });
 }
 
+/// The one hub, once `init` has run: the phone server registers subscriptions in it and sends its alerts through it.
+pub fn hub() -> Option<Arc<PushHub>> {
+    CTX.get().map(|ctx| ctx.hub.clone())
+}
+
 /// The label an agent shows under in the UI, from its profile or definition.
 fn agent_label(agent_type: &str) -> String {
     crate::tui::descriptors()

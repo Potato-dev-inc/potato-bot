@@ -31,8 +31,6 @@ export default defineConfig({
     target: 'es2022',
     minify: !process.env.TAURI_DEBUG ? 'esbuild' : false,
     sourcemap: !!process.env.TAURI_DEBUG,
-    // The app's own code is loaded from disk, not over a network, so the app chunk may pass 500 kB; the vendor libraries stay split out.
-    chunkSizeWarningLimit: 700,
     rollupOptions: {
       output: {
         // Split the big vendor libraries out of the app bundle so each chunk stays small.

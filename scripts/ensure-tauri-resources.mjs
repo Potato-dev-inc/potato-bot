@@ -64,7 +64,17 @@ function ensureLegal() {
   cpSync(join(root, 'LICENSES'), join(dest, 'LICENSES'), { recursive: true });
 }
 
+/** The phone web app (packages/app/phone) is served by the phone server from resources/phone/. Plain files, no build; the tools folder stays out. */
+function ensurePhone() {
+  const src = join(root, 'packages/app/phone');
+  const dest = join(root, 'packages/app/src-tauri/resources/phone');
+  rmSync(dest, { recursive: true, force: true });
+  mkdirSync(dest, { recursive: true });
+  cpSync(src, dest, { recursive: true, filter: (p) => !p.split(/[\\/]/).includes('tools') });
+}
+
 export function ensureTauriResources() {
+  ensurePhone();
   ensureLegal();
   ensurePotatoBrain();
   ensurePotatoSandbox();

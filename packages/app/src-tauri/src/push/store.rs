@@ -6,9 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
 
-#[cfg(test)]
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-#[cfg(test)]
 use base64::Engine;
 
 const MAX_ENDPOINT_LEN: usize = 1024;
@@ -109,7 +107,6 @@ pub fn endpoint_host(endpoint: &str) -> Result<String, String> {
     Ok(host)
 }
 
-#[cfg(test)]
 pub fn validate(sub: &Subscription) -> Result<(), String> {
     endpoint_host(&sub.endpoint)?;
     let key = URL_SAFE_NO_PAD
@@ -150,7 +147,6 @@ impl SubscriptionStore {
         crate::secure_file::write_private(&self.path, &text)
     }
 
-    #[cfg(test)]
     pub fn remove(&mut self, device_id: &str) -> Result<bool, String> {
         let existed = self.file.subscriptions.remove(device_id).is_some();
         let had_preference = self.file.hide_details.remove(device_id);
@@ -167,6 +163,13 @@ impl SubscriptionStore {
             .iter()
             .map(|(id, sub)| (id.clone(), sub.clone(), self.file.hide_details.contains(id)))
             .collect()
+    }
+
+    /// A phone's subscription, replacing its old one. Refused unless the endpoint is a known push service.
+    pub fn upsert(&mut self, device_id: &str, sub: Subscription) -> Result<(), String> {
+        validate(&sub)?;
+        self.file.subscriptions.insert(device_id.to_string(), sub);
+        self.persist()
     }
 
     /// Drop the subscription that uses `endpoint` (the push service said it is gone).

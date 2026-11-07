@@ -114,3 +114,10 @@
   gap: 8px;
   margin-top: 8px;
 }
+
+/* Move bots (bot file, ChatGPT or Claude, backup) */
+.cockpit .ck-potato-move { max-width: 560px; width: 92vw; max-height: 86vh; overflow: auto; }
+.cockpit .ck-potato-move-tabs { display: flex; gap: 6px; margin: 8px 0 12px; }
+.cockpit .ck-potato-move-preview { margin-top: 12px; display: grid; gap: 8px; }
+.cockpit .ck-potato-move-text { max-height: 140px; overflow: auto; white-space: pre-wrap; font: inherit; font-size: 12px; padding: 8px; border: 1px solid var(--sep); border-radius: 8px; margin: 0; }
+.cockpit .ck-potato-move-list { margin: 0; padding-left: 18px; }

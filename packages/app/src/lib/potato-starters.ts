@@ -3,6 +3,7 @@
 // of what the bot does, instructions, the three tool switches and one routine. They never hold secrets or memory.
 // `makeStarterBot` uses the existing calls only: companion create, bot add, instructions save, tools set, routine create.
 import { z } from 'zod';
+import { localized } from './i18n';
 import type { AvatarId, CompanionPersona, CompanionTransport, CompanionView } from './companion';
 import type { PotatoTransport } from './potato';
 import { INSTRUCTIONS_MAX, type BotSettingsTransport, type ToolSwitches } from './potato-botsettings';
@@ -54,13 +55,13 @@ export function loadStarterFiles(): { path: string; data: unknown }[] {
 /** The validated templates. A file that breaks the schema throws here, so the app never shows a bad card. */
 export const STARTERS: readonly StarterTemplate[] = loadStarterFiles().map((file) => starterSchema.parse(file.data));
 
-export const STARTER_COPY = {
+export const STARTER_COPY = localized({
   title: 'New bot',
   intro: 'Pick a starting point. You can change everything later.',
   needsComputer: "Needs Fish's computer",
   setByHand: 'Set up by hand',
   blankName: 'Blank',
-};
+});
 
 const DEFAULT_TOOLS: ToolSwitches = { helpers: true, computer: true, web: true };
 const NAP = { h: 4, m: 0 };

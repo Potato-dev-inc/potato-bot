@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.5
+
+- New: use your bots from your phone. Settings > Phone shows a QR; scanning it pairs one phone (no password, no account) and the phone web app can be added to the home screen. It lists your bots with a status dot and Needs you, opens a chat with photos, live steps and Queued, answers cards (Allow once, Allow for this job, Deny, choices, Keep going or Stop), stops a job, pauses everything, and follows the phone language (English or Traditional Chinese). The sign-in card never takes a password on the phone: it says Sign in on your PC. Every phone has its own token; Settings lists phones and signs one out at once. Phones on the same Wi-Fi reach the PC directly; if the network blocks that, turn on Reach from outside your Wi-Fi (off by default) and scan again. Windows Firewall is read, never changed without your press. Notifications use Web Push sent from your PC (no hosted service). Bot screens are not on the phone yet.
+- New: Reach from outside your Wi-Fi (Settings > Phone). Runs the bundled Cloudflare quick tunnel against the phone server only, as a separate process that survives app restarts and updates, so its address stays the same until it truly restarts. Cloudflare says quick tunnels are for testing and may stop at any time.
+- The official cloudflared 2026.10.7 (win-x64, Apache-2.0) is now inside the app for the phone's away-from-home link. It is fetched and checked against a pinned sha256 at build time.
+- Fixed: uninstalling the app (MSI) now ends the phone tunnel. The installer runs the app's own `--phone-cleanup` just before the files are removed, and only on a real uninstall: an update (one-click or a newer MSI) never stops the tunnel, so its address stays. The earlier hook only covered an NSIS installer, which is not what we ship.
+- The web UI loads in smaller pieces (Settings and the Terminal window are their own chunks), so the app chunk is under 500 kB again without raising the warning limit.
+- README: build-from-source steps that work on a clean clone, the phone app and its limits (https for installing and notifications, the tunnel address changes when the tunnel truly restarts), up to 10 bots, and the languages.
+- The release check also requires the phone web app files, `cloudflared.exe`, `node.exe`, both languages and the uninstall action.
+
 ## 1.0.4
 
 - New: live limits for the bot's computer. Settings > Potato Bot > Computer limits has a CPU limit (percent of this PC) and a Memory limit (GB). They apply at once, with no restart of the bot's computer, and are applied again at every start. The suggested limits are half the processors and a quarter of the memory (at least 2 GB). The page shows what the computer uses now. Heavy jobs run slower with lower limits. The limits are cgroup v2 settings set by a root-only script in the guest, so nothing the bot runs can change them; the control service, the secret hub and the firewall rules stay outside them.
