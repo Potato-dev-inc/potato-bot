@@ -189,7 +189,8 @@ export function PhoneSettings({ api = tauriApi, subscribe = tauriListen }: { api
   };
 
   if (!status) {
-    return error ? <Note role="alert">{error}</Note> : <p className="st-note">Loading…</p>;
+    // Inside a block: settings.css hides a group with no `.st-rowwrap > .st-row`, so a bare line here drew nothing.
+    return <SettingBlock label="Phone">{error ? <Note role="alert">{error}</Note> : <p className="st-note">Loading…</p>}</SettingBlock>;
   }
 
   const ways = availableWays(status);
@@ -216,7 +217,8 @@ export function PhoneSettings({ api = tauriApi, subscribe = tauriListen }: { api
   const askTunnel = (then: () => void) => setAsk({ title: 'Reach your PC from outside your Wi-Fi?', body: TUNNEL_SENTENCE, confirmLabel: 'Turn on', run: then });
 
   return (
-    <div className="st-phone">
+    // No wrapper element: the blocks must be direct children of the row (`.st-rowwrap > .st-row`) or settings.css hides the page.
+    <>
       {ask && (
         <ConfirmSheet
           title={ask.title}
@@ -396,6 +398,6 @@ export function PhoneSettings({ api = tauriApi, subscribe = tauriListen }: { api
       </details>
 
       {error && <Note role="alert">{error}</Note>}
-    </div>
+    </>
   );
 }

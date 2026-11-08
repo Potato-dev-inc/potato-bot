@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.10
+
+- Fix: Settings > Phone was blank. It shows the pairing QR, your phones and the other phone settings again.
+
 ## 1.0.9
 
 - Spaces screens redone on the Potato look: the Bots panel, the sheets, the space list, the channel list and the empty screen. Sheets fit narrow windows.
