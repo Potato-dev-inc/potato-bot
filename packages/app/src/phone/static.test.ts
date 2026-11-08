@@ -62,6 +62,7 @@ describe('manifest, shell and icons', () => {
   it('index.html is phone ready', () => {
     const html = read('index.html');
     expect(html).toContain('viewport-fit=cover');
+    expect(html).toContain('interactive-widget=resizes-content');
     expect(html).toContain('rel="manifest"');
     expect(html).toContain('apple-touch-icon');
     expect(html).toContain('type="module" src="app.js"');
@@ -69,6 +70,8 @@ describe('manifest, shell and icons', () => {
   it('style.css uses safe-area insets, dark mode and no colours', () => {
     const css = read('style.css');
     expect(css).toContain('env(safe-area-inset-bottom');
+    expect(css).toContain('100dvh');
+    expect(css).toContain('var(--vvh');
     expect(css).toContain('prefers-color-scheme: dark');
     // only grayscale hex colours: r=g=b
     for (const m of css.matchAll(/#([0-9a-fA-F]{6})\b/g)) {
@@ -111,6 +114,15 @@ describe('service worker', () => {
   it('never answers or caches /api/* requests', () => {
     const { listeners, cachePut } = load();
     for (const p of ['/api/me', '/api/bots/b1', '/x/api/changes?since=1']) {
+      const respondWith = vi.fn();
+      listeners.fetch({ request: { method: 'GET', url: 'http://pc.test' + p }, respondWith });
+      expect(respondWith, p).not.toHaveBeenCalled();
+    }
+    expect(cachePut).not.toHaveBeenCalled();
+  });
+  it('never answers or caches the screen viewer, whose path is a credential', () => {
+    const { listeners, cachePut } = load();
+    for (const p of ['/screen/abc/embed.html?path=websockify', '/screen/abc/novnc/core/rfb.js']) {
       const respondWith = vi.fn();
       listeners.fetch({ request: { method: 'GET', url: 'http://pc.test' + p }, respondWith });
       expect(respondWith, p).not.toHaveBeenCalled();

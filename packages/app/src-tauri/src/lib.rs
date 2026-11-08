@@ -388,6 +388,7 @@ pub fn run() {
             commands::potato_screen_link,
             commands::potato_screen_skip,
             commands::phone_device_revoke,
+            commands::phone_device_control_set,
             commands::phone_firewall_allow,
             commands::phone_pairing_start,
             commands::phone_set_custom_address,

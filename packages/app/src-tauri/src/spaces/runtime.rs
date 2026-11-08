@@ -91,6 +91,7 @@ impl Runtime {
             let svc = SpacesService::new(
                 parts.link.net(), parts.link.perms(), parts.keystore.clone(), parts.dir.clone(), parts.clock.clone(),
             );
+            svc.set_observer(crate::potato::phone::live::space_observer());
             if svc.start().await.is_err() {
                 svc.stop().await;
                 return;

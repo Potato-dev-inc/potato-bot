@@ -34,6 +34,16 @@ pub fn phone() -> Option<Arc<Phone>> {
     PHONE.get().cloned()
 }
 
+/// What the Spaces service calls on every space event (a message, a roster change, a link coming or going): phones waiting
+/// on `/changes` wake up, like they do for a bot's change.
+pub fn space_observer_for(changes: Arc<Changes>) -> crate::spaces::service::Notifier {
+    Arc::new(move |_| changes.bump())
+}
+
+pub fn space_observer() -> crate::spaces::service::Notifier {
+    space_observer_for(changes())
+}
+
 fn machine_name() -> String {
     std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).unwrap_or_else(|_| "your PC".to_string())
 }
@@ -49,6 +59,7 @@ pub struct LiveEnv {
     push: Mutex<Option<Arc<crate::push::hub::PushHub>>>,
     lan: Mutex<Option<(Instant, Vec<Ipv4Addr>)>>,
     service: Box<dyn Fn() -> Option<Arc<crate::potato::service::Service>> + Send + Sync>,
+    spaces_labs: Arc<dyn Fn() -> bool + Send + Sync>,
 }
 
 impl LiveEnv {
@@ -90,6 +101,12 @@ impl Env for LiveEnv {
     }
     fn groups_on(&self) -> bool {
         (self.groups)()
+    }
+    fn spaces_on(&self) -> bool {
+        (self.spaces_labs)()
+    }
+    fn spaces(&self) -> Option<Arc<crate::spaces::service::SpacesService>> {
+        if self.spaces_on() { crate::spaces::runtime::running_service() } else { None }
     }
     fn pc_name(&self) -> String {
         machine_name()
@@ -138,6 +155,8 @@ pub struct DeviceOut {
     pub last_seen_secs: Option<u64>,
     pub expired: bool,
     pub caps: Vec<String>,
+    /// The person's yes to this phone controlling the bot's computer ("Can control the bot's computer").
+    pub control_computer: bool,
 }
 
 #[derive(Serialize)]
@@ -196,6 +215,8 @@ pub struct Wiring {
     pub changes: Arc<Changes>,
     pub bind: IpAddr,
     pub service: Box<dyn Fn() -> Option<Arc<crate::potato::service::Service>> + Send + Sync>,
+    /// Whether the Labs switch `spaces_enabled` is on.
+    pub spaces: Arc<dyn Fn() -> bool + Send + Sync>,
     pub config: Config,
 }
 
@@ -212,6 +233,7 @@ impl Phone {
             push: Mutex::new(None),
             lan: Mutex::new(None),
             service: w.service,
+            spaces_labs: w.spaces,
         });
         let ctx = Arc::new(Ctx { pairing: w.pairing.clone(), env: env.clone(), limiter: Limiter::default(), changes: w.changes, assets: w.assets });
         let phone = Arc::new(Phone {
@@ -253,6 +275,7 @@ impl Phone {
         if self.started.swap(1, Ordering::SeqCst) == 1 {
             return;
         }
+        super::control::apply_saved(&self.pairing, &self.ctx.env.screen_hub());
         if self.config.read().enabled {
             self.bind_server();
         }
@@ -373,18 +396,29 @@ impl Phone {
                 last_seen_secs: d.last_seen,
                 expired: d.expired,
                 caps: d.caps.iter().map(|c| c.as_str().to_string()).collect(),
+                control_computer: d.control_computer,
             })
             .collect()
     }
 
     pub fn revoke(&self, device_id: &str) -> Result<bool, String> {
         let revoked = self.pairing.lock().revoke_phone_device(device_id)?;
+        super::control::clear(&self.ctx.env.screen_hub(), device_id);
         if let Some(hub) = self.push_hub() {
             let _ = hub.store().lock().remove(device_id);
         }
         self.ctx.changes.bump();
         (self.notify)();
         Ok(revoked)
+    }
+
+    /// "Can control the bot's computer" for one phone: saved with its pairing and applied to the screen hub at once (taking
+    /// it back closes a live control link). Only the PC calls this.
+    pub fn set_computer_control(&self, device_id: &str, on: bool) -> Result<(), String> {
+        super::control::set(&self.pairing, &self.ctx.env.screen_hub(), device_id, on)?;
+        self.ctx.changes.bump();
+        (self.notify)();
+        Ok(())
     }
 
     pub fn status(&self) -> PhoneStatus {
@@ -464,6 +498,7 @@ pub fn start(app: &tauri::AppHandle) -> Result<(), String> {
     let tunnel_exe = crate::potato::resource_dirs::installed(app, "bin", "cloudflared.exe").map(|d| d.join("cloudflared.exe"));
     let groups_app = app.clone();
     let notify_app = app.clone();
+    let spaces_app = app.clone();
     let phone = Phone::new(Wiring {
         config: config::load(&data),
         data,
@@ -478,6 +513,7 @@ pub fn start(app: &tauri::AppHandle) -> Result<(), String> {
         changes: changes(),
         bind: IpAddr::from([0, 0, 0, 0]),
         service: Box::new(crate::potato::live::service),
+        spaces: Arc::new(move || crate::spaces::labs_on(&crate::settings_store::read_public_settings(&spaces_app))),
     });
     if let Some(hub) = crate::push::hub() {
         phone.set_push(hub);
@@ -545,6 +581,7 @@ mod tests {
             changes: Arc::new(Changes::new()),
             bind: IpAddr::from([127, 0, 0, 1]),
             service: Box::new(|| None),
+            spaces: Arc::new(|| false),
             config: Config { enabled: true, port: 0, custom_address: None },
         });
         (phone, pings, data)

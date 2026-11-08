@@ -35,6 +35,7 @@ pub mod lifecycle;
 pub mod limits;
 pub mod screen;
 pub mod screen_live;
+pub mod screen_serve;
 pub mod manager;
 pub mod secret_hub;
 pub mod secrets;

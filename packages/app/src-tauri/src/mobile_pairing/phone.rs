@@ -50,6 +50,8 @@ pub struct DeviceRow {
     pub last_seen: Option<u64>,
     pub expired: bool,
     pub caps: Vec<Cap>,
+    /// The person's yes, at the PC, to this phone controlling the bots' computer.
+    pub control_computer: bool,
 }
 
 fn normalize_code(code: &str) -> String {
@@ -144,6 +146,7 @@ impl MobilePairingStore {
                     caps,
                     exp: Some(exp),
                     last_seen: Some(now),
+                    control_computer: false,
                 });
                 (device_id, name, false, caps)
             }
@@ -180,8 +183,25 @@ impl MobilePairingStore {
                 last_seen: d.last_seen,
                 expired: device_expired(d, now),
                 caps: d.caps.list(),
+                control_computer: d.control_computer,
             })
             .collect()
+    }
+
+    /// Saves the per-phone "can control the bot's computer" yes. `Ok(false)`: no such phone. Only the PC calls this.
+    pub fn set_phone_control(&mut self, device_id: &str, on: bool) -> Result<bool, String> {
+        let Some(device) = self.devices.iter_mut().find(|d| d.id == device_id) else { return Ok(false) };
+        if device.control_computer != on {
+            device.control_computer = on;
+            self.persist()?;
+        }
+        Ok(true)
+    }
+
+    /// The phones that have the person's yes saved (those whose pairing is still good).
+    pub fn phone_control_ids(&self) -> Vec<String> {
+        let now = now_secs();
+        self.devices.iter().filter(|d| d.control_computer && !device_expired(d, now)).map(|d| d.id.clone()).collect()
     }
 
     pub fn device_name(&self, device_id: &str) -> Option<String> {

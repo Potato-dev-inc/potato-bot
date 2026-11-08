@@ -4,6 +4,8 @@
 //! - `gate`: the one door every request passes (Host, Origin, header, token, abilities), pairing, hello, app files
 //! - `api`: the v1 routes behind the door; `push_routes`: web push subscription; `ws`: the WebSocket twin of the long poll
 //! - `http`: sockets and parsing; `net`: who may connect, host names, the addresses a phone can try
+//! - `screen_routes`: the sandbox screen viewer and its websocket under `/screen/<sealed>/`, on the sealed link
+//! - `spaces_routes`: Spaces on the phone (read and send only); `control`: the PC's saved yes to a phone controlling the bot's computer
 //! - `proof`: the token-bound answer that shows a phone it reached its own PC
 //! - `rate`: sliding-window limits; `config`: the saved setting (on/off, port, own address)
 //! - `tunnel`: the Cloudflare quick tunnel kept alive across app restarts
@@ -15,6 +17,7 @@
 
 pub mod api;
 pub mod config;
+pub mod control;
 pub mod firewall;
 pub mod gate;
 pub mod http;
@@ -24,6 +27,8 @@ pub mod notify;
 pub mod proof;
 pub mod push_routes;
 pub mod rate;
+pub mod screen_routes;
+pub mod spaces_routes;
 pub mod tunnel;
 pub mod ws;
 
@@ -40,3 +45,12 @@ mod api_tests;
 
 #[cfg(test)]
 mod proof_tests;
+
+#[cfg(test)]
+mod screen_tests;
+
+#[cfg(test)]
+mod spaces_tests;
+
+#[cfg(test)]
+mod control_tests;

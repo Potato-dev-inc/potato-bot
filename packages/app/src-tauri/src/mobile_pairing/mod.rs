@@ -49,6 +49,9 @@ struct PersistedDevice {
     exp: Option<u64>,
     #[serde(default)]
     last_seen: Option<u64>,
+    /// The person said yes, at the PC, to this phone using the mouse and keyboard on the bots' computer. Off unless set.
+    #[serde(default)]
+    control_computer: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -283,6 +286,7 @@ impl MobilePairingStore {
             caps,
             exp: Some(now + DEVICE_IDLE_EXPIRY_SECS),
             last_seen: None,
+            control_computer: false,
         });
         self.publish_view();
         (id, token)

@@ -2,7 +2,7 @@
    - Caches the app shell only (network first, so updates land fast).
    - NEVER touches /api/*: those requests go straight to the network, never cached.
    - Handles web push and notification clicks. */
-const CACHE = 'potato-phone-shell-v1';
+const CACHE = 'potato-phone-shell-v2';
 const SHELL = ['./', 'index.html', 'app.js', 'net.js', 'i18n.js', 'style.css', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'apple-touch-icon.png'];
 
 self.addEventListener('install', (event) => {
@@ -25,6 +25,7 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
   if (url.pathname.indexOf('/api/') !== -1) return; // never cache the API
+  if (url.pathname.indexOf('/screen/') === 0) return; // the screen viewer's path is a credential: never cache or replay it
   event.respondWith(
     fetch(req)
       .then((res) => {

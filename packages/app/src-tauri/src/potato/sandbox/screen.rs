@@ -446,6 +446,11 @@ impl ScreenHub {
         self.phone_yes.lock().remove(device_id);
     }
 
+    /// Whether the person has said yes, at this PC, to this phone taking control.
+    pub fn phone_may_control(&self, device_id: &str) -> bool {
+        self.phone_yes.lock().contains(device_id)
+    }
+
     fn emit(&self, event: &ScreenEvent) {
         let listener = self.listener.lock().clone();
         if let Some(listener) = listener {
@@ -564,6 +569,14 @@ impl ScreenHub {
     ///
     /// `control` needs the person to hold the screen (`take_over` first) and, for a phone, the person's yes at the PC.
     pub fn link(&self, bot: &str, mode: Mode, audience: &Audience, base: &str) -> Result<ScreenSrc, ScreenError> {
+        let query = if mode == Mode::Control { "?control=1" } else { "" };
+        self.link_at(bot, mode, audience, &format!("{base}/bridge/potato/sandbox/screen"), query)
+    }
+
+    /// The same link on another route root: `<root>/<sealed>/embed.html<query>#vnc=<password>`. `root` has no trailing
+    /// `/` (the phone server serves its own at `/screen`); `query` is `""` or starts with `?`. Every rule of `link`
+    /// (switch, bot name, phone's yes, running sandbox, lease for control) is this function's.
+    pub fn link_at(&self, bot: &str, mode: Mode, audience: &Audience, root: &str, query: &str) -> Result<ScreenSrc, ScreenError> {
         self.require_enabled()?;
         if !valid_bot(bot) {
             return Err(ScreenError::BadBot);
@@ -599,9 +612,16 @@ impl ScreenHub {
             a: audience.wire(),
         };
         let sealed = self.key.seal(&claims);
-        let query = if mode == Mode::Control { "?control=1" } else { "" };
         let password = fragment_password(&secrets, mode);
-        Ok(ScreenSrc(format!("{base}/bridge/potato/sandbox/screen/{sealed}/embed.html{query}#vnc={password}")))
+        Ok(ScreenSrc(format!("{root}/{sealed}/embed.html{query}#vnc={password}")))
+    }
+
+    /// The sandbox is up and has passwords to give (what `link_at` needs before it makes a link), without making one.
+    /// Lets a caller refuse early, before it does anything that cannot be undone (taking the screen).
+    pub fn ensure_running(&self) -> Result<(), ScreenError> {
+        self.require_enabled()?;
+        let (_, target) = self.target()?;
+        target.passwords.map(|_| ()).ok_or(ScreenError::NotRunning)
     }
 
     // ---- checking links ----

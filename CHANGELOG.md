@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.11
+
+- The phone app is redone: a header on every screen, the message box stays just above the keyboard, and a new black-and-white look in light and dark.
+- Watch a bot's computer live from the phone. To use its mouse and keyboard from the phone, first turn on "Can control the bot's computer" for that phone in Settings > Phone on your PC (off by default).
+- Spaces on the phone, when Spaces is on: read spaces and channels, and send messages. Inviting, removing people and adding bots stay on the PC.
+- Questions and approvals now sit in the chat instead of covering half the screen.
+- Not tried yet on real phones: the keyboard behaviour, and a real sandbox screen over the phone.
+
 ## 1.0.10
 
 - Fix: Settings > Phone was blank. It shows the pairing QR, your phones and the other phone settings again.

@@ -14,6 +14,7 @@ use super::http::Request;
 use super::http::Response;
 use crate::mobile_pairing::Cap;
 use crate::potato::cards::{Card, Kind};
+use crate::potato::sandbox::screen::{Audience, Mode, ScreenError, LINK_TTL_MS};
 use crate::potato::rooms::store as rstore;
 use crate::potato::service::{BotView, BrainState, Service};
 use crate::potato::store::{self, Message, StoreError};
@@ -29,8 +30,28 @@ pub fn need(method: &str, seg: &[&str]) -> Option<Cap> {
         ("POST", ["bots", _, "read"]) => Some(Cap::Watch),
         ("POST", ["bots", _, "send"]) | ("POST", ["rooms", _, "send"]) => Some(Cap::Type),
         ("POST", ["bots", _, "cards", _, "answer"]) => Some(Cap::Answer),
+        // Spaces on the phone: read and send only (no invites, kicks, bots or leaving from a phone).
+        ("GET", ["spaces"]) | ("GET", ["spaces", _, "channels", _, "messages"]) | ("POST", ["spaces", _, "channels", _, "read"]) => Some(Cap::Watch),
+        ("POST", ["spaces", _, "channels", _, "send"]) => Some(Cap::Type),
+        // A screen link: watching needs `watch`; the body's `control` mode needs more (`need_for`, and `type` in the route).
+        ("POST", ["bots", _, "screen"]) => Some(Cap::Watch),
+        // Handing the screen back and keeping a taken screen are control actions.
+        ("POST", ["bots", _, "screen", "release"]) | ("POST", ["bots", _, "screen", "keep"]) => Some(Cap::Control),
         _ => Some(Cap::Control),
     }
+}
+
+/// The ability a request needs: `need`, raised to `control` when a screen link asks for `control` mode.
+pub fn need_for(req: &Request, seg: &[&str]) -> Option<Cap> {
+    let base = need(req.method.as_str(), seg);
+    if let ("POST", ["bots", _, "screen"]) = (req.method.as_str(), seg) {
+        let mode = serde_json::from_slice::<Value>(&req.body).ok().and_then(|v| v.get("mode").and_then(Value::as_str).map(str::to_string));
+        if mode.as_deref() != Some("view") {
+            // "control", and anything we cannot read as "view", is held to the stricter ability (fail closed).
+            return Some(Cap::Control);
+        }
+    }
+    base
 }
 
 fn err(status: u16, code: &str, message: &str) -> Response {
@@ -75,13 +96,23 @@ fn state_of(b: &BotView) -> (&'static str, &'static str) {
     }
 }
 
-pub fn bot_json(b: &BotView) -> Value {
+/// Whether the bot uses the sandbox computer: Potato Bot and the Sandbox switch are on, a sandbox is set up, and the bot's
+/// own Computer tool switch is on (the same conditions under which its brain is told it has a computer).
+fn has_computer(s: &Service, bot: &str) -> bool {
+    s.sandbox_offered() && crate::potato::bot_settings::load(s.root(), bot).map(|b| b.tools.computer).unwrap_or(false)
+}
+
+pub fn bot_json(b: &BotView, computer: bool) -> Value {
     let (state, text) = state_of(b);
-    json!({
+    let mut v = json!({
         "id": b.id, "name": b.name, "state": state, "stateText": text,
         "lastLine": b.last_line, "lastAt": b.last_at, "unread": b.unread,
         "openCards": b.open_cards, "typing": b.typing,
-    })
+    });
+    if computer {
+        v["computer"] = json!(true);
+    }
+    v
 }
 
 fn message_json(m: &Message) -> Value {
@@ -118,6 +149,7 @@ pub fn route(ctx: &Ctx, req: &Request, seg: &[&str], who: &Caller) -> Response {
         ("GET", ["me"]) => me(ctx, who),
         ("DELETE", ["me"]) => {
             let revoked = ctx.pairing.lock().revoke_phone_device(&who.device_id);
+            super::control::clear(&ctx.env.screen_hub(), &who.device_id);
             ctx.changes.bump();
             match revoked {
                 Ok(_) => Response::json(200, &json!({ "ok": true })),
@@ -125,12 +157,16 @@ pub fn route(ctx: &Ctx, req: &Request, seg: &[&str], who: &Caller) -> Response {
             }
         }
         ("GET", ["changes"]) => changes(ctx, req),
+        (_, ["spaces", ..]) => super::spaces_routes::route(ctx, req, seg),
         ("GET", ["bots"]) => bots(ctx),
         ("GET", ["bots", id]) => bot(ctx, req, id),
         ("POST", ["bots", id, "read"]) => read(ctx, id),
         ("POST", ["bots", id, "send"]) => send(ctx, req, id),
         ("POST", ["bots", id, "cards", card, "answer"]) => answer(ctx, req, id, card),
         ("POST", ["bots", id, "stop"]) => stop(ctx, id),
+        ("POST", ["bots", id, "screen"]) => screen_link(ctx, req, id, who),
+        ("POST", ["bots", _, "screen", "release"]) => screen_release(ctx, who),
+        ("POST", ["bots", _, "screen", "keep"]) => screen_keep(ctx, who),
         ("POST", ["pause-all"]) => {
             let hold = ctx.env.pause_all();
             ctx.changes.bump();
@@ -152,14 +188,15 @@ pub fn route(ctx: &Ctx, req: &Request, seg: &[&str], who: &Caller) -> Response {
 
 fn me(ctx: &Ctx, who: &Caller) -> Response {
     let name = ctx.pairing.lock().device_name(&who.device_id).unwrap_or_default();
-    Response::json(
-        200,
-        &json!({
-            "deviceId": who.device_id, "name": name, "pcName": ctx.env.pc_name(),
-            "caps": who.caps.list(), "groups": ctx.env.groups_on(), "paused": ctx.env.paused(),
-            "candidates": ctx.env.candidates(),
-        }),
-    )
+    let mut v = json!({
+        "deviceId": who.device_id, "name": name, "pcName": ctx.env.pc_name(),
+        "caps": who.caps.list(), "groups": ctx.env.groups_on(), "paused": ctx.env.paused(),
+        "candidates": ctx.env.candidates(),
+    });
+    if ctx.env.spaces_on() {
+        v["spaces"] = json!(true);
+    }
+    Response::json(200, &v)
 }
 
 fn changes(ctx: &Ctx, req: &Request) -> Response {
@@ -188,7 +225,7 @@ fn bots(ctx: &Ctx) -> Response {
         200,
         &json!({
             "rev": ctx.changes.rev(), "paused": ctx.env.paused(),
-            "bots": state.bots.iter().filter(|b| !b.archived).map(bot_json).collect::<Vec<_>>(),
+            "bots": state.bots.iter().filter(|b| !b.archived).map(|b| bot_json(b, has_computer(&s, &b.id))).collect::<Vec<_>>(),
             "rooms": rooms,
         }),
     )
@@ -217,7 +254,7 @@ fn bot(ctx: &Ctx, req: &Request, id: &str) -> Response {
         200,
         &json!({
             "rev": ctx.changes.rev(),
-            "bot": bot_json(view),
+            "bot": bot_json(view, has_computer(&s, id)),
             "messages": messages.iter().map(message_json).collect::<Vec<_>>(),
             "cards": cards.iter().map(card_json).collect::<Vec<_>>(),
             "job": job.map(|j| serde_json::to_value(j).unwrap_or(Value::Null)),
@@ -390,5 +427,99 @@ fn room_send(ctx: &Ctx, req: &Request, id: &str) -> Response {
             Response::json(200, &json!({ "ok": true }))
         }
         Err(e) => err(400, "room_error", &format!("{e:?}")),
+    }
+}
+
+// ---- the bot's computer screen ---------------------------------------------------------------------------------
+
+/// A screen error as the phone API says it: `{ error: code, message }`, the code in lower case, no secret in either.
+fn screen_err(e: &ScreenError) -> Response {
+    let status = match e {
+        ScreenError::Off => 409,
+        other => other.status(),
+    };
+    err(status, &e.code().to_ascii_lowercase(), &e.message())
+}
+
+/// `POST /api/bots/{id}/screen` `{ "mode": "view" | "control" }`: a link to this bot's computer screen for THIS phone.
+/// The same hub, claims, one hour, lease and "the person said yes at the PC" rules as the desktop's Computer panel; the
+/// link is only good for this phone, on this server (`/screen/<sealed>/embed.html`). The VNC password is in the `#`
+/// fragment of `src` and nowhere else.
+fn screen_link(ctx: &Ctx, req: &Request, id: &str, who: &Caller) -> Response {
+    let v = match body(req) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let Some(mode) = v.get("mode").and_then(Value::as_str).and_then(Mode::parse) else {
+        return err(400, "bad_request", "mode is view or control.");
+    };
+    // Control is typing and clicking on the PC's computer: it needs both abilities (the gate already asked for `control`).
+    if mode == Mode::Control && !(who.caps.has(Cap::Control) && who.caps.has(Cap::Type)) {
+        return err(403, "not_allowed", "This phone is not allowed to do that (control). You can change it on your PC: Settings > Phone.");
+    }
+    let s = match service(ctx) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    if let Err(e) = s.require_bot_exists(id) {
+        return store_err(e);
+    }
+    if !has_computer(&s, id) {
+        return err(409, "no_computer", "This bot does not use a computer.");
+    }
+    let hub = ctx.env.screen_hub();
+    let audience = Audience::Device(who.device_id.clone());
+    if mode == Mode::Control {
+        // Refuse before anything is taken: the switch, a running sandbox, and the person's yes at the PC.
+        if let Err(e) = hub.ensure_running() {
+            return screen_err(&e);
+        }
+        if !hub.phone_may_control(&who.device_id) {
+            return screen_err(&ScreenError::PhoneNeedsDesktopYes);
+        }
+        // The person takes the screen exactly as the PC's "Take over" does (the bot is displaced, not fought). When the
+        // person already holds it (at the PC), nothing is taken again: that would end their own control link.
+        if hub.state().phase != "you" {
+            if let Err(e) = hub.take_over() {
+                return screen_err(&e);
+            }
+            ctx.changes.bump();
+        }
+    }
+    let query = if mode == Mode::Control { "?path=websockify&control=1" } else { "?path=websockify" };
+    match hub.link_at(id, mode, &audience, super::screen_routes::ROUTE_ROOT, query) {
+        Ok(src) => Response::json(200, &json!({ "src": src.into_inner(), "mode": mode, "expiresAtMs": hub.now_ms() + LINK_TTL_MS })),
+        Err(e) => screen_err(&e),
+    }
+}
+
+/// `POST /api/bots/{id}/screen/release`: "I'm done": the phone that was allowed to take control gives the screen back
+/// (what the PC's "Hand back" does; the bot may take a lease again).
+fn screen_release(ctx: &Ctx, who: &Caller) -> Response {
+    let hub = ctx.env.screen_hub();
+    if !hub.phone_may_control(&who.device_id) {
+        return screen_err(&ScreenError::PhoneNeedsDesktopYes);
+    }
+    match hub.hand_back() {
+        Ok(state) => {
+            if let Ok(s) = service(ctx) {
+                s.login_cards_after_hand_back(None);
+            }
+            ctx.changes.bump();
+            Response::json(200, &json!({ "ok": true, "phase": state.phase }))
+        }
+        Err(e) => screen_err(&e),
+    }
+}
+
+/// `POST /api/bots/{id}/screen/keep`: the person is still working: the lease lasts 15 more minutes.
+fn screen_keep(ctx: &Ctx, who: &Caller) -> Response {
+    let hub = ctx.env.screen_hub();
+    if !hub.phone_may_control(&who.device_id) {
+        return screen_err(&ScreenError::PhoneNeedsDesktopYes);
+    }
+    match hub.keep() {
+        Ok(()) => Response::json(200, &json!({ "ok": true })),
+        Err(e) => screen_err(&e),
     }
 }

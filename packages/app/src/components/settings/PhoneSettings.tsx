@@ -289,22 +289,31 @@ export function PhoneSettings({ api = tauriApi, subscribe = tauriListen }: { api
         ) : (
           <ul aria-label="Paired phones" style={{ margin: 0, padding: 0, listStyle: 'none' }}>
             {status.devices.map((d) => (
-              <li key={d.id} data-device={d.id} style={{ display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between', padding: '6px 0' }}>
-                <span>
-                  <span className="st-value">{d.name}</span>
-                  <small style={{ display: 'block' }}>
-                    {pairedText(d.pairedAtSecs)} · {lastUsedText(d.lastSeenSecs, now)}
-                    {d.expired ? ' · Needs a new link' : ''}
-                  </small>
-                </span>
-                <span style={{ display: 'flex', gap: 6 }}>
-                  <Btn small title="Use when your address changed. The phone keeps its name and settings." aria-label={`Re-link ${d.name}`} onClick={() => void startPairing({ via: way, relinkDeviceId: d.id })}>
-                    Re-link
-                  </Btn>
-                  <Btn small aria-label={`Revoke ${d.name}`} onClick={() => askRevoke(d)}>
-                    Revoke
-                  </Btn>
-                </span>
+              <li key={d.id} data-device={d.id} style={{ padding: '6px 0' }}>
+                <div style={{ display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span>
+                    <span className="st-value">{d.name}</span>
+                    <small style={{ display: 'block' }}>
+                      {pairedText(d.pairedAtSecs)} · {lastUsedText(d.lastSeenSecs, now)}
+                      {d.expired ? ' · Needs a new link' : ''}
+                    </small>
+                  </span>
+                  <span style={{ display: 'flex', gap: 6 }}>
+                    <Btn small title="Use when your address changed. The phone keeps its name and settings." aria-label={`Re-link ${d.name}`} onClick={() => void startPairing({ via: way, relinkDeviceId: d.id })}>
+                      Re-link
+                    </Btn>
+                    <Btn small aria-label={`Revoke ${d.name}`} onClick={() => askRevoke(d)}>
+                      Revoke
+                    </Btn>
+                  </span>
+                </div>
+                <div data-control-row style={{ display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between', marginTop: 6 }}>
+                  <span>
+                    <span className="st-value">Can control the bot's computer</span>
+                    <small style={{ display: 'block' }}>Lets this phone use the mouse and keyboard on your bots' computer.</small>
+                  </span>
+                  <Switch label="Can control the bot's computer" checked={d.controlComputer === true} onChange={(next) => void run(() => api.deviceControlSet(d.id, next))} />
+                </div>
               </li>
             ))}
           </ul>

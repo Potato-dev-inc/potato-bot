@@ -9,6 +9,8 @@ export interface PhoneDevice {
   lastSeenSecs: number | null;
   expired: boolean;
   caps: string[];
+  /** The PC's saved yes to this phone using the mouse and keyboard on the bots' computer. */
+  controlComputer?: boolean;
 }
 
 export type TunnelPhase = 'off' | 'starting' | 'running' | 'reconnecting' | 'error';
@@ -52,6 +54,8 @@ export interface PhoneApi {
   status(): Promise<PhoneStatus>;
   pairingStart(opts?: { via?: PairVia; relinkDeviceId?: string }): Promise<PairingStart>;
   deviceRevoke(deviceId: string): Promise<PhoneStatus>;
+  /** Only the PC can say this; the phone API has no route for it. */
+  deviceControlSet(deviceId: string, on: boolean): Promise<PhoneStatus>;
   setPort(port: number): Promise<PhoneStatus>;
   setCustomAddress(address: string | null): Promise<PhoneStatus>;
   tunnelSet(on: boolean): Promise<PhoneStatus>;
@@ -63,6 +67,7 @@ export function makePhoneApi(invoke: PhoneInvoke): PhoneApi {
     status: () => invoke<PhoneStatus>('phone_status'),
     pairingStart: (opts) => invoke<PairingStart>('phone_pairing_start', { via: opts?.via, relinkDeviceId: opts?.relinkDeviceId }),
     deviceRevoke: (deviceId) => invoke<PhoneStatus>('phone_device_revoke', { deviceId }),
+    deviceControlSet: (deviceId, on) => invoke<PhoneStatus>('phone_device_control_set', { deviceId, on }),
     setPort: (port) => invoke<PhoneStatus>('phone_set_port', { port }),
     setCustomAddress: (address) => invoke<PhoneStatus>('phone_set_custom_address', { address }),
     tunnelSet: (on) => invoke<PhoneStatus>('phone_tunnel_set', { on }),

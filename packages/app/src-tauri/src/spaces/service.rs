@@ -153,6 +153,8 @@ pub struct SpacesService {
     answers_rx: Mutex<BTreeMap<(SpaceId, i64), oneshot::Receiver<Answer>>>,
     notifier: Mutex<Option<Notifier>>,
     message_notifier: Mutex<Option<Notifier>>,
+    /// A second listener beside the desktop's two: the phone server wakes its change feed. Set once by the runtime.
+    observer: Mutex<Option<Notifier>>,
     tasks: Mutex<Vec<JoinHandle<()>>>,
     started: AtomicBool,
     stopped: AtomicBool,
@@ -204,6 +206,7 @@ impl SpacesService {
             answers_rx: Mutex::new(BTreeMap::new()),
             notifier: Mutex::new(None),
             message_notifier: Mutex::new(None),
+            observer: Mutex::new(None),
             tasks: Mutex::new(Vec::new()),
             started: AtomicBool::new(false),
             stopped: AtomicBool::new(false),
@@ -226,6 +229,7 @@ impl SpacesService {
 
     pub fn set_notifier(&self, n: Notifier) { *lock(&self.notifier) = Some(n); }
     pub fn set_message_notifier(&self, n: Notifier) { *lock(&self.message_notifier) = Some(n); }
+    pub fn set_observer(&self, n: Notifier) { *lock(&self.observer) = Some(n); }
 
     fn now(&self) -> u64 { (self.clock)() }
 
@@ -357,16 +361,21 @@ impl SpacesService {
     fn changed(&self) {
         let n = lock(&self.notifier).clone();
         if let Some(n) = n { n(&self.view()); }
+        self.observe(&Value::Null);
+    }
+
+    fn observe(&self, v: &Value) {
+        let o = lock(&self.observer).clone();
+        if let Some(o) = o { o(v); }
     }
 
     /// `channel` is None when the entries of several channels arrived together (the UI then refetches).
     fn messages_changed(&self, space: &SpaceId, channel: Option<&ChannelId>) {
+        let mut v = json!({ "space": space.to_hex() });
+        if let Some(c) = channel { v["channel"] = json!(c.to_hex()); }
         let n = lock(&self.message_notifier).clone();
-        if let Some(n) = n {
-            let mut v = json!({ "space": space.to_hex() });
-            if let Some(c) = channel { v["channel"] = json!(c.to_hex()); }
-            n(&v);
-        }
+        if let Some(n) = n { n(&v); }
+        self.observe(&v);
     }
 
     /// set_nodes(all member nodes + mailboxes), set_open_invites(n).

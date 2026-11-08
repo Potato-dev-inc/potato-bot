@@ -21,6 +21,10 @@ pub struct TestEnv {
     pub held: AtomicBool,
     pub hosts: Mutex<Hosts>,
     pub candidates: Mutex<Vec<String>>,
+    pub hub: Arc<crate::potato::sandbox::screen::ScreenHub>,
+    pub viewer: Mutex<Option<PathBuf>>,
+    pub spaces_on: AtomicBool,
+    pub spaces: Mutex<Option<Arc<crate::spaces::service::SpacesService>>>,
 }
 
 impl Env for TestEnv {
@@ -29,6 +33,12 @@ impl Env for TestEnv {
     }
     fn groups_on(&self) -> bool {
         self.groups.load(Ordering::SeqCst)
+    }
+    fn spaces_on(&self) -> bool {
+        self.spaces_on.load(Ordering::SeqCst)
+    }
+    fn spaces(&self) -> Option<Arc<crate::spaces::service::SpacesService>> {
+        if self.spaces_on() { self.spaces.lock().clone() } else { None }
     }
     fn pc_name(&self) -> String {
         "TEST-PC".into()
@@ -53,6 +63,12 @@ impl Env for TestEnv {
     fn paused(&self) -> bool {
         self.held.load(Ordering::SeqCst)
     }
+    fn screen_hub(&self) -> Arc<crate::potato::sandbox::screen::ScreenHub> {
+        self.hub.clone()
+    }
+    fn viewer_dir(&self) -> Option<PathBuf> {
+        self.viewer.lock().clone()
+    }
 }
 
 pub struct Kit {
@@ -65,6 +81,11 @@ pub struct Kit {
 pub const LAN: &str = "192.168.1.5:1420";
 
 pub fn kit(name: &str, service: Option<Arc<Service>>) -> Kit {
+    kit_with_hub(name, service, Arc::new(crate::potato::sandbox::screen::ScreenHub::new()))
+}
+
+/// A kit whose sandbox screen hub is the given one (its clock and source are the test's).
+pub fn kit_with_hub(name: &str, service: Option<Arc<Service>>, hub: Arc<crate::potato::sandbox::screen::ScreenHub>) -> Kit {
     let dir = std::env::temp_dir().join(format!("pm-phone-kit-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let assets = dir.join("app");
@@ -82,6 +103,10 @@ pub fn kit(name: &str, service: Option<Arc<Service>>) -> Kit {
         held: AtomicBool::new(false),
         hosts: Mutex::new(Hosts { machine: Some("test-pc".into()), ..Hosts::default() }),
         candidates: Mutex::new(vec!["http://192.168.1.5:1420".into()]),
+        hub,
+        viewer: Mutex::new(None),
+        spaces_on: AtomicBool::new(false),
+        spaces: Mutex::new(None),
     });
     let ctx = Arc::new(Ctx { pairing: pairing.clone(), env: env.clone(), limiter: Limiter::default(), changes: Arc::new(Changes::new()), assets: Some(assets) });
     Kit { ctx, env, pairing, dir }

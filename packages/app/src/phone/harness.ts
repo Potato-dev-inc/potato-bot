@@ -12,7 +12,7 @@ export const LAN2 = 'http://10.0.0.5:1420';
 export const TUNNEL = 'https://quiet-fox.trycloudflare.com';
 
 export type Behavior = 'ok' | 'timeout' | 'wrong' | 'down';
-export interface Call { origin: string; method: string; path: string; headers: Record<string, string>; body: any }
+export interface Call { origin: string; method: string; path: string; headers: Record<string, string>; body: any; keepalive?: boolean }
 
 export function bot(over: any = {}) {
   return {
@@ -34,7 +34,7 @@ export class FakeServer {
   revoked = false;
   deviceId = 'dev-1';
   pcName = 'Home PC';
-  me: any = { deviceId: 'dev-1', name: 'iPhone', pcName: 'Home PC', caps: ['watch', 'answer', 'type', 'control'], groups: false, paused: false, candidates: [LAN] };
+  me: any = { deviceId: 'dev-1', name: 'iPhone', pcName: 'Home PC', caps: ['watch', 'answer', 'type', 'control'], groups: false, spaces: false, paused: false, candidates: [LAN] };
   bots: any[] = [bot()];
   rooms: any[] = [];
   chats: Record<string, any> = { b1: chat() };
@@ -42,6 +42,17 @@ export class FakeServer {
   errors: Record<string, { status: number; error: string; message: string }> = {};
   waiters: Array<() => void> = [];
   pairError: any = null;
+  /** Reply for POST /api/bots/:id/screen. Tests replace it to script errors. */
+  screen: (id: string, body: any) => { status: number; body: any } = (_id, body) => ({
+    status: 200,
+    body: { src: '/sbx/embed.html?' + (body.mode === 'control' ? 'control=1&' : '') + 'path=websockify#vnc=pw-' + body.mode, mode: body.mode, expiresAtMs: 1_700_000_600_000 }
+  });
+  /** Spaces. Messages are keyed "sid/cid", oldest first. */
+  spacesOff = false;
+  spaces: { online: boolean; spaces: any[] } = { online: true, spaces: [] };
+  spaceMsgs: Record<string, any[]> = {};
+  /** Reply for POST .../send. Tests replace it to script errors. */
+  spaceSend: (key: string, body: any) => { status: number; body: any } | null = () => null;
   pairCandidates: string[] = [LAN];
   pushKey = Buffer.from('push-public-key-bytes-1234567890').toString('base64url');
 
@@ -71,7 +82,7 @@ export class FakeServer {
     const headers: Record<string, string> = {};
     for (const [k, v] of Object.entries(init.headers || {})) headers[k.toLowerCase()] = String(v);
     const body = init.body ? JSON.parse(init.body) : undefined;
-    this.calls.push({ origin, method: init.method || 'GET', path, headers, body });
+    this.calls.push({ origin, method: init.method || 'GET', path, headers, body, keepalive: init.keepalive });
     const beh = this.behaviors[origin] || 'down';
     const signal: AbortSignal | undefined = init.signal;
     const aborted = () => { const e: any = new Error('aborted'); e.name = 'AbortError'; return e; };
@@ -136,6 +147,11 @@ export class FakeServer {
       if (c) c.cards = c.cards.filter((x: any) => x.id !== decodeURIComponent(m![2]));
       return this.reply(200, { ok: true });
     }
+    if (p.startsWith('/api/spaces')) return this.handleSpaces(u, method, body);
+    m = /^\/api\/bots\/([^/]+)\/screen\/(keep|release)$/.exec(p);
+    if (m && method === 'POST') return this.reply(200, { ok: true });
+    m = /^\/api\/bots\/([^/]+)\/screen$/.exec(p);
+    if (m && method === 'POST') { const r = this.screen(decodeURIComponent(m[1]), body); return this.reply(r.status, r.body); }
     if (/^\/api\/bots\/[^/]+\/stop$/.test(p)) return this.reply(200, { ok: true });
     if (p === '/api/pause-all') { this.paused = true; return this.reply(200, { paused: true }); }
     if (p === '/api/resume-all') { this.paused = false; return this.reply(200, { paused: false }); }
@@ -146,6 +162,44 @@ export class FakeServer {
     if (p === '/api/push/subscribe' || p === '/api/push/presence') return this.reply(200, { ok: true });
     return this.reply(404, { error: 'not_found', message: 'Unknown.' });
   }
+
+  handleSpaces(u: URL, method: string, body: any) {
+    if (this.spacesOff) return this.reply(409, { error: 'spaces_off', message: 'Spaces is off.' });
+    const p = u.pathname;
+    if (p === '/api/spaces') return this.reply(200, this.spaces);
+    const m = /^\/api\/spaces\/([^/]+)\/channels\/([^/]+)\/(messages|read|send)$/.exec(p);
+    if (!m) return this.reply(404, { error: 'not_found', message: 'Unknown.' });
+    const key = decodeURIComponent(m[1]) + '/' + decodeURIComponent(m[2]);
+    const list = (this.spaceMsgs[key] = this.spaceMsgs[key] || []);
+    const sp = this.spaces.spaces.find((x) => x.id === decodeURIComponent(m[1]));
+    const ch = sp && sp.channels.find((x: any) => x.id === decodeURIComponent(m[2]));
+    const canWrite = ch ? ch.canWrite !== false : true;
+    if (m[3] === 'read') return this.reply(200, { ok: true });
+    if (m[3] === 'send') {
+      const forced = this.spaceSend(key, body);
+      if (forced) return this.reply(forced.status, forced.body);
+      if (!canWrite) return this.reply(403, { error: 'read_only', message: 'Read only.' });
+      const id = 'sm' + String(5000 + list.length);
+      list.push(msgOf(0, { id, mine: true, authorName: 'Me', text: body.text, atMs: 1_700_000_000_000 }));
+      return this.reply(200, { ok: true, id });
+    }
+    const limit = Number(u.searchParams.get('limit') || 50);
+    const before = u.searchParams.get('before');
+    const end = before ? Math.max(0, list.findIndex((x) => x.id === before)) : list.length;
+    const start = Math.max(0, end - limit);
+    return this.reply(200, { messages: list.slice(start, end), canWrite, hasMore: start > 0 });
+  }
+}
+
+export function msgOf(n: number, over: any = {}) {
+  return { id: 'sm' + String(n).padStart(4, '0'), authorName: 'Ann', mine: false, bot: false, text: 'message ' + n, atMs: 1_700_000_000_000 - (1000 - n) * 1000, files: [], state: 'sent', ...over };
+}
+export function spaceOf(over: any = {}) {
+  return {
+    id: 's1', name: 'Family', unread: 0,
+    channels: [{ id: 'c1', name: 'general', unread: 0, canWrite: true }, { id: 'c2', name: 'news', unread: 0, canWrite: false }],
+    ...over
+  };
 }
 
 export function memoryStorage(initial?: Record<string, string>) {
@@ -170,10 +224,16 @@ export interface MountOpts {
   lang?: string;
   origin?: string;
   nav?: any;
+  visualViewport?: any;
 }
+
+/** Long timers (the Control keep-alive, the away timer) are recorded, not run, so a test fires them on purpose. */
+export interface LongTimer { id: number; ms: number; fn: () => void }
 
 export function mount(opts: MountOpts = {}) {
   const server = opts.server || new FakeServer();
+  const longTimers: LongTimer[] = [];
+  let timerId = 1_000_000;
   const storage = memoryStorage(opts.stored === undefined ? pairedStore() : opts.stored || {});
   document.body.innerHTML = '';
   const root = document.createElement('div');
@@ -186,10 +246,24 @@ export function mount(opts: MountOpts = {}) {
     location,
     navigator,
     now: () => 1_700_000_000_000,
-    setTimeout: (f: () => void, ms: number) => globalThis.setTimeout(f, ms === 2500 ? 30 : ms),
-    crypto: webcrypto
+    setTimeout: (f: () => void, ms: number) => {
+      if (ms >= 60000) { const id = ++timerId; longTimers.push({ id, ms, fn: f }); return id as any; }
+      return globalThis.setTimeout(f, ms === 2500 ? 30 : ms);
+    },
+    clearTimeout: (id: any) => {
+      const i = longTimers.findIndex((x) => x.id === id);
+      if (i >= 0) longTimers.splice(i, 1); else globalThis.clearTimeout(id);
+    },
+    crypto: webcrypto,
+    visualViewport: opts.visualViewport
   });
-  return { root: root as HTMLElement, server, storage, app, navigator, location };
+  /** Run (and drop) the pending long timers of this length. */
+  const fire = (ms: number) => {
+    const due = longTimers.filter((x) => x.ms === ms);
+    for (const x of due) { longTimers.splice(longTimers.indexOf(x), 1); x.fn(); }
+    return due.length;
+  };
+  return { root: root as HTMLElement, server, storage, app, navigator, location, longTimers, fire };
 }
 
 export const sleep = (ms = 0) => new Promise((r) => setTimeout(r, ms));

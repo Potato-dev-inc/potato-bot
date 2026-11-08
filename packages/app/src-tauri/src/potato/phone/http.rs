@@ -243,6 +243,12 @@ fn handle(mut stream: TcpStream, ctx: &Arc<Ctx>, stop: &AtomicBool) {
         super::ws::serve(stream, ctx, &request, upgrade, stop);
         return;
     }
+    // The sandbox screen viewer and its websocket: the sealed link in the path is the credential (an iframe cannot send
+    // a bearer), checked against the pairing by `screen_routes`.
+    if super::screen_routes::is_screen_path(&request.path) {
+        super::screen_routes::serve(&mut stream, ctx, &request);
+        return;
+    }
     let head_only = request.method == "HEAD";
     let response = super::gate::dispatch(ctx, &request);
     let _ = write_response(&mut stream, &response, head_only);

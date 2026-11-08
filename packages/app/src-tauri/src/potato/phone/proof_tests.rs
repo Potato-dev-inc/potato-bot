@@ -67,6 +67,7 @@ fn phone_proof_server() {
         changes: changes(),
         bind: IpAddr::from([0, 0, 0, 0]),
         service: Box::new(move || Some(svc.clone())),
+        spaces: Arc::new(|| false),
         config: Config { enabled: true, port, custom_address: None },
     });
     phone.start();

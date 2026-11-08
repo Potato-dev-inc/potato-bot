@@ -62,6 +62,14 @@ impl Default for Changes {
 pub trait Env: Send + Sync {
     fn service(&self) -> Option<Arc<crate::potato::service::Service>>;
     fn groups_on(&self) -> bool;
+    /// Whether the Labs switch for Spaces is on. Off: the Spaces routes answer `409 spaces_off`.
+    fn spaces_on(&self) -> bool {
+        false
+    }
+    /// The running Spaces service, when Spaces is on and has started.
+    fn spaces(&self) -> Option<Arc<crate::spaces::service::SpacesService>> {
+        None
+    }
     fn pc_name(&self) -> String;
     /// Every origin a phone may try, best first.
     fn candidates(&self) -> Vec<String>;
@@ -73,6 +81,14 @@ pub trait Env: Send + Sync {
     /// Web push, when this build has it ready.
     fn push(&self) -> Option<Arc<crate::push::hub::PushHub>> {
         None
+    }
+    /// The app's one sandbox screen hub (sealed links, lease, the person's yes). Tests bring their own.
+    fn screen_hub(&self) -> Arc<crate::potato::sandbox::screen::ScreenHub> {
+        crate::potato::sandbox::screen::hub().clone()
+    }
+    /// The folder with the screen viewer (`embed.html`, `novnc/`), when this install has it.
+    fn viewer_dir(&self) -> Option<PathBuf> {
+        crate::potato::sandbox::screen_live::viewer_dir()
     }
 }
 
@@ -99,7 +115,7 @@ fn json_ok(value: Value) -> Response {
     Response::json(200, &value)
 }
 
-fn security_headers(mut r: Response, html: bool) -> Response {
+pub(super) fn security_headers(mut r: Response, html: bool) -> Response {
     r = r
         .with("Cache-Control", "no-store")
         .with("X-Content-Type-Options", "nosniff")
@@ -206,7 +222,7 @@ fn dispatch_api(ctx: &Ctx, req: &Request, path: &str, cors: &Option<String>) -> 
         TokenCheck::Expired { .. } => return Response::error(401, "unpaired", "This phone was signed out after 30 days. Scan the QR on your PC again."),
         TokenCheck::Unknown => return Response::error(401, "unpaired", "This phone is not paired. Scan the QR on your PC."),
     };
-    let need = super::api::need(req.method.as_str(), &segments);
+    let need = super::api::need_for(req, &segments);
     if let Some(cap) = need {
         if !caps.has(cap) {
             return Response::error(403, "not_allowed", &format!("This phone is not allowed to do that ({}). You can change it on your PC: Settings > Phone.", cap.as_str()));

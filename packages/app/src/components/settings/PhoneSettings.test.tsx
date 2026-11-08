@@ -62,6 +62,10 @@ beforeEach(() => {
     if (failures[command]) throw failures[command];
     if (command === 'phone_status') return status;
     if (command === 'phone_pairing_start') return { ...PAIR, via: (args?.via as string) ?? pairVia };
+    if (command === 'phone_device_control_set') {
+      status = { ...status, devices: status.devices.map((d) => (d.id === args?.deviceId ? { ...d, controlComputer: Boolean(args?.on) } : d)) };
+      return status;
+    }
     if (command === 'phone_tunnel_set') {
       status = { ...status, tunnel: args?.on ? { on: true, phase: 'running', url: 'https://one.trycloudflare.com', error: null } : { on: false, phase: 'off', url: null, error: null } };
       return status;
@@ -96,6 +100,38 @@ describe('Settings > Phone', () => {
     expect(text()).toContain('Not used yet');
     expect(text()).toContain('Paired');
     expect(text()).toContain('http://192.168.1.5:1420');
+  });
+
+  it("has a switch on each phone, \"Can control the bot's computer\", off by default, and the PC saves it through the command", async () => {
+    await mount();
+    const row = (id: string) => host.querySelector<HTMLElement>(`[data-device="${id}"]`)!;
+    const sw = (id: string) => row(id).querySelector<HTMLButtonElement>('[role="switch"]')!;
+    expect(text()).toContain("Lets this phone use the mouse and keyboard on your bots' computer.");
+    expect(sw('d1').getAttribute('aria-label')).toBe("Can control the bot's computer");
+    expect(sw('d1').getAttribute('aria-checked')).toBe('false');
+    expect(sw('d2').getAttribute('aria-checked')).toBe('false');
+    expect(commands('phone_device_control_set')).toHaveLength(0);
+    await click(sw('d1'));
+    await settle(2);
+    expect(commands('phone_device_control_set')[0][1]).toEqual({ deviceId: 'd1', on: true });
+    expect(sw('d1').getAttribute('aria-checked')).toBe('true');
+    expect(sw('d2').getAttribute('aria-checked')).toBe('false');
+    await click(sw('d1'));
+    await settle(2);
+    expect(commands('phone_device_control_set')[1][1]).toEqual({ deviceId: 'd1', on: false });
+    expect(sw('d1').getAttribute('aria-checked')).toBe('false');
+  });
+
+  it('shows a saved yes as on, and a failed save as a plain message with the switch unchanged', async () => {
+    status = baseStatus({ devices: baseStatus().devices.map((d) => (d.id === 'd2' ? { ...d, controlComputer: true } : d)) });
+    await mount();
+    const sw = (id: string) => host.querySelector<HTMLElement>(`[data-device="${id}"] [role="switch"]`)!;
+    expect(sw('d2').getAttribute('aria-checked')).toBe('true');
+    failures.phone_device_control_set = 'PHONE_NOT_FOUND: That phone is not paired any more.';
+    await click(sw('d1'));
+    await settle(2);
+    expect(text()).toContain('That phone is not paired any more.');
+    expect(sw('d1').getAttribute('aria-checked')).toBe('false');
   });
 
   it('asks before it revokes, and only then calls the command', async () => {

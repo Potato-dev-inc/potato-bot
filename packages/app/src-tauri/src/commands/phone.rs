@@ -67,3 +67,13 @@ pub async fn phone_firewall_allow() -> Result<PhoneStatus, String> {
     })
     .await
 }
+
+/// "Can control the bot's computer" for one paired phone. Only the PC can say this: the phone API has no route for it.
+#[tauri::command]
+pub async fn phone_device_control_set(device_id: String, on: bool) -> Result<PhoneStatus, String> {
+    run(move |p| {
+        p.set_computer_control(&device_id, on)?;
+        Ok(p.status())
+    })
+    .await
+}
