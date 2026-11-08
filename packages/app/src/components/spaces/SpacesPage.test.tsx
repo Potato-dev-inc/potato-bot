@@ -300,6 +300,7 @@ describe('Spaces page', () => {
     state.view = view({ spaces: [summary()] });
     state.detail = detail({ isOwner: true });
     await render();
+    await click(byLabel('Space actions'));
     const leave = button('Leave space')!;
     expect(leave.disabled).toBe(true);
     expect(leave.title).toBe("You own this space. Owners can't leave in this version.");
@@ -309,6 +310,7 @@ describe('Spaces page', () => {
     state.view = view({ spaces: [summary({ isOwner: false })] });
     state.detail = detail({ isOwner: false });
     await render();
+    await click(byLabel('Space actions'));
     await click(button('Leave space'));
     expect(text()).toContain('Leave Book club?');
     expect(text()).toContain('You will stop getting new messages. Your copy stays on this computer until you delete it.');
@@ -402,6 +404,7 @@ describe('Spaces page', () => {
       return null;
     });
     await render();
+    await click(byLabel('Space actions'));
     await click(button('Leave space'));
     await click(button('Leave'));
     expect(host.querySelector('[role="alert"]')?.textContent).toBe('You are not in this space any more.');
@@ -456,7 +459,7 @@ describe('Spaces page', () => {
     state.detail = detail({ channels: general, members: [ren, sam] });
     state.pick.mockImplementation(async () => 'C:\Users\ren\notes.txt');
     await render();
-    await click(button('Attach file'));
+    await click(byLabel('Attach file'));
     expect(state.pick).toHaveBeenCalledWith({ multiple: false, directory: false });
     expect(state.invoke).toHaveBeenCalledWith('space_file_offer', { space: 's1', channel: 'c1', path: 'C:\Users\ren\notes.txt' });
   });
@@ -470,7 +473,7 @@ describe('Spaces page', () => {
       return null;
     });
     await render();
-    await click(button('Attach file'));
+    await click(byLabel('Attach file'));
     expect(host.querySelector('.ck-spaces-composer [role="alert"]')?.textContent).toBe('Files can be up to 25 MB.');
   });
 
@@ -478,6 +481,6 @@ describe('Spaces page', () => {
     state.view = view({ spaces: [summary()] });
     state.detail = detail({ channels: general, members: [ren, sam], state: 'left' });
     await render();
-    expect(button('Attach file')).toBeNull();
+    expect(byLabel('Attach file')).toBeNull();
   });
 });

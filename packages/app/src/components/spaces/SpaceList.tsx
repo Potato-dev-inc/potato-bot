@@ -8,7 +8,7 @@ export interface SpaceListProps {
   onJoin: () => void;
 }
 
-/** The rail: one row per space, with unread count and who is online. */
+/** The rail, in the Potato list's shape: one row per space (name, one status line, unread count), the two ways in kept quiet below. */
 export function SpaceList({ spaces, selected, onSelect, onNew, onJoin }: SpaceListProps) {
   return (
     <nav className="ck-spaces-rail" aria-label="Spaces">
@@ -17,7 +17,7 @@ export function SpaceList({ spaces, selected, onSelect, onNew, onJoin }: SpaceLi
           <li key={s.id}>
             <button
               type="button"
-              className={`ck-spaces-rail-item${s.id === selected ? ' is-active' : ''}`}
+              className={`ck-spaces-rail-item${s.id === selected ? ' is-active' : ''}${s.unread > 0 ? ' is-unread' : ''}`}
               aria-current={s.id === selected ? 'page' : undefined}
               onClick={() => onSelect(s.id)}
             >
@@ -32,11 +32,11 @@ export function SpaceList({ spaces, selected, onSelect, onNew, onJoin }: SpaceLi
           </li>
         ))}
       </ul>
-      <div className="ck-spaces-actions">
-        <button type="button" className="ck-spaces-btn" onClick={onNew}>
+      <div className="ck-spaces-rail-actions">
+        <button type="button" className="ck-spaces-quiet" onClick={onNew}>
           New space
         </button>
-        <button type="button" className="ck-spaces-btn" onClick={onJoin}>
+        <button type="button" className="ck-spaces-quiet" onClick={onJoin}>
           Join a space
         </button>
       </div>

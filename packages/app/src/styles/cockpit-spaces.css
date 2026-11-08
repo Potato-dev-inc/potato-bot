@@ -1,4 +1,5 @@
-/* Spaces sheets (invite, join request, join). Monochrome: state is shown by words and weight, never colour. */
+/* Spaces sheets (invite, join, new space, bots, confirm). They sit on the shared `.ck-sheet` and `.ck-btn`; the grouped lists below
+   are the Potato settings look (a `--fill` card, hairlines between rows). State is said in words; orange is only the small badge. */
 .cockpit .ck-spaces-sheet-title {
   font-size: 15px;
   font-weight: 600;
@@ -124,7 +125,11 @@
 .cockpit .ck-spaces-quiet:focus-visible { outline: none; box-shadow: var(--focus); }
 .cockpit .ck-spaces-rail-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cockpit .ck-spaces-rail-sub { grid-column: 1 / -1; color: var(--label-3); font-size: 11px; font-weight: 400; }
-.cockpit .ck-spaces-rail .ck-spaces-actions { margin-top: auto; flex-direction: column; padding-top: 8px; }
+.cockpit .ck-spaces-rail-item.is-unread .ck-spaces-rail-name { font-weight: 600; }
+.cockpit .ck-spaces-rail-item { padding: 8px; row-gap: 2px; }
+/* The two ways in: quiet rows under a hairline, left-aligned like a list's footer. */
+.cockpit .ck-spaces-rail-actions { margin-top: auto; display: flex; flex-direction: column; align-items: flex-start; gap: 1px; padding-top: 6px; border-top: 1px solid var(--sep); }
+.cockpit .ck-spaces-rail-actions .ck-spaces-quiet { width: 100%; padding: 5px 8px; text-align: left; }
 .cockpit .ck-spaces-badge {
   min-width: 18px; padding: 0 5px; border-radius: 9px; background: var(--accent); color: var(--accent-fg);
   font-size: 11px; font-weight: 600; text-align: center;
@@ -151,6 +156,36 @@
 .cockpit .ck-spaces-channel.is-unread { color: var(--label); font-weight: 600; }
 .cockpit .ck-spaces-channel.is-active { background: var(--fill-active); color: var(--label); }
 .cockpit .ck-spaces-channels .ck-spaces-quiet { display: inline-block; margin: 6px 0 0; }
+.cockpit .ck-spaces-channels .ck-spaces-group-title { padding: 2px 8px 4px; }
+
+/* Empty state: one calm block, centred; the first action is the filled button. */
+.cockpit .ck-spaces-empty { flex: 1; min-height: 0; display: grid; place-items: center; padding: 24px 16px; }
+.cockpit .ck-spaces-empty-card { width: min(360px, 100%); display: flex; flex-direction: column; gap: 8px; }
+.cockpit .ck-spaces-empty-card .ck-sub { margin: 0; line-height: 1.5; }
+.cockpit .ck-spaces-empty-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.cockpit .ck-spaces-empty-card .ck-spaces-group-foot { padding: 0; margin-top: 4px; }
+
+/* Offline and read-only: one plain line on a hairline strip, in words. */
+.cockpit .ck-spaces-offline { flex: none; padding: 6px 16px; border-bottom: 1px solid var(--sep); background: var(--fill); color: var(--label-2); }
+.cockpit .ck-spaces-readonly { flex: none; margin: 0; padding: 10px 20px 14px; border-top: 1px solid var(--sep); font-size: 12px; color: var(--label-2); }
+
+/* The Bots here line repeats the People column's Bots list; with that column showing, it steps aside. */
+@media (min-width: 1001px) { .cockpit .ck-spaces-botsline.is-listed { display: none; } }
+
+/* A run of lines from one sender: name and Bot tag stay for screen readers only; the time and More show on hover or focus,
+   at the side of the row away from the text. On touch the small line stays in the flow so More is always there. */
+.cockpit .ck-spaces-msg.is-grouped { position: relative; margin-top: -7px; }
+.cockpit .ck-spaces-msg.is-grouped .ck-spaces-msg-author,
+.cockpit .ck-spaces-msg.is-grouped .ck-spaces-bot-tag { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.cockpit .ck-spaces-msg.is-grouped .ck-spaces-msg-line { position: absolute; top: 0; right: 0; z-index: 1; opacity: 0; transition: opacity 120ms var(--ease); }
+.cockpit .ck-spaces-msg.is-grouped.is-mine .ck-spaces-msg-line { right: auto; left: 0; }
+.cockpit .ck-spaces-msg.is-grouped:hover .ck-spaces-msg-line,
+.cockpit .ck-spaces-msg.is-grouped:focus-within .ck-spaces-msg-line,
+.cockpit .ck-spaces-msg.is-grouped .ck-spaces-msg-line:has([aria-expanded='true']) { opacity: 1; }
+@media (hover: none) {
+  .cockpit .ck-spaces-msg.is-grouped { margin-top: -4px; }
+  .cockpit .ck-spaces-msg.is-grouped .ck-spaces-msg-line { position: static; opacity: 1; min-height: 0; }
+}
 
 /* Feed: title, optional bots line, the scrolling messages, the composer pinned under them. */
 .cockpit .ck-spaces-feed { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); }
@@ -198,7 +233,7 @@
 
 /* Composer: the Potato chat box (cockpit-chat.css); this adds only the reply strip, the notes and the counter. */
 .cockpit .ck-spaces-composer-reply { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 6px 6px; font-size: 11.5px; color: var(--label-2); }
-.cockpit .ck-spaces-composer .ck-spaces-attach { align-self: center; height: 26px; font-size: 12px; }
+.cockpit .ck-spaces-composer .ck-spaces-attach { width: 28px; height: 28px; margin-left: -6px; }
 .cockpit .ck-spaces-composer .ck-spaces-hint { margin: 4px 6px 0; }
 .cockpit .ck-spaces-count { margin: 4px 6px 0; font-size: 11px; color: var(--label-3); font-variant-numeric: tabular-nums; }
 .cockpit .ck-spaces-count.is-error { color: var(--label); font-weight: 600; }
@@ -240,27 +275,28 @@
    one-line strips above the feed. Nothing is hidden, and the feed and composer keep the whole width. */
 @media (max-width: 820px) {
   .cockpit .ck-spaces-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
-  .cockpit .ck-spaces-rail { flex-direction: row; align-items: center; gap: 4px; padding: 6px 8px; border-right: 0; border-bottom: 1px solid var(--sep); overflow-x: auto; overflow-y: hidden; }
-  .cockpit .ck-spaces-rail ul { display: flex; gap: 2px; flex: none; }
+  .cockpit .ck-spaces-rail { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 2px 4px; padding: 6px 8px; border-right: 0; border-bottom: 1px solid var(--sep); overflow: hidden; }
+  /* Only the list of names scrolls, and it fades at the edge to say there is more; the two actions stay put at the end. */
+  /* The names get a full row of their own; the actions sit on the row under them, so a name is never squeezed. */
+  .cockpit .ck-spaces-rail ul,
+  .cockpit .ck-spaces-channels ul { display: flex; gap: 2px; flex: 1 1 100%; min-width: 0; overflow-x: auto; overflow-y: hidden; padding-right: 20px; scrollbar-width: none;
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent); }
+  .cockpit .ck-spaces-rail ul::-webkit-scrollbar,
+  .cockpit .ck-spaces-channels ul::-webkit-scrollbar { display: none; }
   .cockpit .ck-spaces-rail-item { display: flex; gap: 6px; width: auto; white-space: nowrap; }
   .cockpit .ck-spaces-rail-sub { display: none; }
-  .cockpit .ck-spaces-rail .ck-spaces-actions { margin: 0 0 0 auto; padding: 0; flex-direction: row; flex: none; }
-  .cockpit .ck-spaces-rail .ck-spaces-btn { height: 24px; padding: 0 8px; font-size: 12px; white-space: nowrap; }
+  .cockpit .ck-spaces-rail-actions { margin: 0; padding: 0; border-top: 0; flex-direction: row; align-items: center; flex: none; }
+  .cockpit .ck-spaces-rail-actions .ck-spaces-quiet { width: auto; padding: 2px 6px; white-space: nowrap; }
   .cockpit .ck-spaces-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
-  .cockpit .ck-spaces-channels { display: flex; align-items: center; gap: 2px; padding: 4px 8px; border-right: 0; border-bottom: 1px solid var(--sep); overflow-x: auto; overflow-y: hidden; }
-  .cockpit .ck-spaces-channels ul { display: flex; gap: 2px; flex: none; }
+  .cockpit .ck-spaces-channels { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; padding: 4px 8px; border-right: 0; border-bottom: 1px solid var(--sep); overflow: hidden; }
+  .cockpit .ck-spaces-channels .ck-spaces-group-title { display: none; }
   .cockpit .ck-spaces-channel { width: auto; }
-  .cockpit .ck-spaces-channels .ck-spaces-quiet { white-space: nowrap; margin: 0 4px; }
+  .cockpit .ck-spaces-channels .ck-spaces-quiet { flex: none; white-space: nowrap; margin: 0; }
   .cockpit .ck-spaces-feed > .ck-spaces-feed-title { display: none; }
   .cockpit .ck-spaces-msgs { padding: 10px 12px 6px; }
   .cockpit .ck-chat-composer { padding: 6px 10px 10px; }
   .cockpit .ck-spaces-botsline { padding: 4px 12px; }
   .cockpit .ck-spaces-members.is-open { width: 100%; }
-  /* The two strips scroll sideways without their Windows scrollbars. */
-  .cockpit .ck-spaces-rail,
-  .cockpit .ck-spaces-channels { scrollbar-width: none; }
-  .cockpit .ck-spaces-rail::-webkit-scrollbar,
-  .cockpit .ck-spaces-channels::-webkit-scrollbar { display: none; }
 }
 
 /* Message and member menus (D5.4): a small list under the More button; sheets use the shared scrim. */
@@ -270,6 +306,15 @@
   padding: 4px; border: 1px solid var(--sep); border-radius: 10px; background: var(--bg-float); box-shadow: var(--float-shadow);
   backdrop-filter: blur(24px) saturate(1.4); -webkit-backdrop-filter: blur(24px) saturate(1.4);
 }
+.cockpit .ck-spaces-member { position: relative; }
+.cockpit .ck-spaces-member-actions { margin-left: auto; opacity: 0; transition: opacity 120ms var(--ease); }
+.cockpit .ck-spaces-member:hover .ck-spaces-member-actions,
+.cockpit .ck-spaces-member:focus-within .ck-spaces-member-actions,
+.cockpit .ck-spaces-member-actions:has([aria-expanded='true']) { opacity: 1; }
+@media (hover: none) { .cockpit .ck-spaces-member-actions { opacity: 1; } }
+.cockpit .ck-spaces-menu-head { min-width: 200px; }
+.cockpit .ck-spaces-menu-head button:disabled { opacity: 0.45; cursor: not-allowed; }
+.cockpit .ck-spaces-menu-note { padding: 2px 8px 4px; font-size: 11.5px; line-height: 1.45; color: var(--label-3); }
 .cockpit .ck-spaces-menu-list.is-up { top: auto; bottom: 22px; }
 .cockpit .ck-spaces-menu-list button {
   background: none; border: 0; border-radius: 6px; padding: 5px 8px; text-align: left; color: var(--label);
@@ -283,21 +328,108 @@
   border-bottom: 1px solid var(--sep); background: var(--fill); font-size: 12.5px;
 }
 
-/* Bots (panel, add sheet, notes under the composer). State is said in words; the one accent is the tiny unread badge. */
+/* Notes under the composer. */
 .cockpit .ck-spaces-composer-hint { margin: 6px 6px 0; font-size: 11px; color: var(--label-3); }
 .cockpit .ck-spaces-callnote { margin: 4px 6px 0; font-size: 11.5px; color: var(--label-2); }
-.cockpit .ck-spaces-botpanel,
-.cockpit .ck-spaces-botsheet { width: min(480px, calc(100vw - 24px)); max-height: calc(100vh - 32px); overflow-y: auto; }
-.cockpit .ck-spaces-bots { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
-.cockpit .ck-spaces-bot { border: 1px solid var(--sep); border-radius: 8px; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+
+/* ---------- Sheets: one width, one title, grouped lists, a footer that never scrolls away ---------- */
+/* The shared scrim is `position: absolute; inset: 0` inside the page area, which is narrower than the window (the app's own
+   240px rail stays). A fixed 400px sheet made the grid's one auto column 400px wide, wider than that area, so the sheet was
+   centred past both edges and its buttons fell off screen. Spaces sheets pin the scrim's track to the area (`minmax(0, 1fr)`)
+   and size against it (`100%`, not `100vw`). Scoped by `:has`, so the shared Sheet and other screens are untouched. */
+.cockpit .ck-scrim:has(> .ck-spaces-sheet) { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); padding: 12px; box-sizing: border-box; }
+.cockpit .ck-sheet.ck-spaces-sheet { width: min(400px, 100%); max-width: 100%; max-height: 100%; box-sizing: border-box; gap: 12px; overflow: hidden; }
+.cockpit .ck-sheet.ck-spaces-sheet.is-wide { width: min(480px, 100%); }
+/* One thin scrollbar for every Spaces scroller: no arrow buttons, a quiet thumb. No scrollbar-width here: it would turn these rules off. */
+.cockpit .ck-spaces-msgs::-webkit-scrollbar, .cockpit .ck-spaces-sheet-scroll::-webkit-scrollbar, .cockpit .ck-spaces-rail::-webkit-scrollbar, .cockpit .ck-spaces-channels::-webkit-scrollbar, .cockpit .ck-spaces-members::-webkit-scrollbar { width: 8px; height: 8px; }
+.cockpit .ck-spaces-msgs::-webkit-scrollbar-button, .cockpit .ck-spaces-sheet-scroll::-webkit-scrollbar-button, .cockpit .ck-spaces-rail::-webkit-scrollbar-button, .cockpit .ck-spaces-channels::-webkit-scrollbar-button, .cockpit .ck-spaces-members::-webkit-scrollbar-button { display: none; }
+.cockpit .ck-spaces-msgs::-webkit-scrollbar-track, .cockpit .ck-spaces-sheet-scroll::-webkit-scrollbar-track, .cockpit .ck-spaces-rail::-webkit-scrollbar-track, .cockpit .ck-spaces-channels::-webkit-scrollbar-track, .cockpit .ck-spaces-members::-webkit-scrollbar-track { background: transparent; }
+.cockpit .ck-spaces-msgs::-webkit-scrollbar-thumb, .cockpit .ck-spaces-sheet-scroll::-webkit-scrollbar-thumb, .cockpit .ck-spaces-rail::-webkit-scrollbar-thumb, .cockpit .ck-spaces-channels::-webkit-scrollbar-thumb, .cockpit .ck-spaces-members::-webkit-scrollbar-thumb { background: var(--fill-active); border-radius: 4px; border: 2px solid transparent; background-clip: padding-box; }
+.cockpit .ck-spaces-sheet-scroll { display: flex; flex-direction: column; gap: 14px; min-height: 0; overflow-y: auto; margin: 0 -20px; padding: 0 20px; }
+.cockpit .ck-spaces-sheet .ck-sheet-actions { flex: none; margin-top: 0; padding-top: 4px; }
+.cockpit .ck-spaces-sheet .ck-sheet-actions .ck-spaces-actions-start { margin-right: auto; }
+.cockpit .ck-spaces-sheet .ck-btn.is-danger { font-weight: 600; }
+.cockpit .ck-spaces-sheet-status { flex: none; margin: 0; font-size: 12px; line-height: 1.5; color: var(--label-2); overflow-wrap: anywhere; }
+.cockpit .ck-spaces-sheet-status.is-error { color: var(--label); font-weight: 600; }
+
+/* A group: a small title, a card of rows with hairlines, a quiet foot line. */
+.cockpit .ck-spaces-group { display: flex; flex-direction: column; gap: 6px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.cockpit .ck-spaces-group-title { margin: 0; padding: 0 2px; font-size: 11px; font-weight: 600; color: var(--label-3); }
+.cockpit .ck-spaces-group-foot { margin: 0; padding: 0 2px; font-size: 11.5px; line-height: 1.5; color: var(--label-3); }
+.cockpit .ck-spaces-card { display: flex; flex-direction: column; min-width: 0; margin: 0; padding: 0 12px; border: 0; border-radius: 12px; background: var(--fill); list-style: none; }
+.cockpit .ck-spaces-card > * + * { border-top: 1px solid var(--sep); }
+.cockpit .ck-spaces-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 38px; padding: 6px 0; margin: 0; min-width: 0; font-size: 13px; color: var(--label); }
+.cockpit .ck-spaces-row.is-actions { justify-content: flex-start; flex-wrap: wrap; gap: 4px; }
+.cockpit .ck-spaces-row-text { margin: 0; min-width: 0; font-size: 12px; line-height: 1.5; color: var(--label-2); overflow-wrap: anywhere; }
+.cockpit .ck-spaces-invite-row { flex-wrap: wrap; }
+.cockpit .ck-spaces-invite-row .ck-spaces-row-text { flex: 1 1 140px; }
+.cockpit .ck-spaces-sheet .ck-spaces-card .ck-spaces-sheet-body { padding: 8px 0; }
+.cockpit .ck-spaces-sheet .ck-spaces-card .ck-spaces-hint { margin: 0; padding: 6px 0; line-height: 1.5; }
+
+/* Text and number fields: a card with the label on top (as the Potato settings cards do). */
+.cockpit .ck-spaces-sheet .ck-spaces-field { gap: 6px; padding: 10px 12px; border-radius: 12px; background: var(--fill); font-size: 12px; font-weight: 600; color: var(--label); }
+.cockpit .ck-spaces-sheet .ck-spaces-field .ck-spaces-hint { font-weight: 400; color: var(--label-3); line-height: 1.5; }
+.cockpit .ck-spaces-sheet .ck-spaces-field input,
+.cockpit .ck-spaces-sheet .ck-spaces-field textarea,
+.cockpit .ck-spaces-sheet .ck-spaces-field select {
+  width: 100%; min-width: 0; box-sizing: border-box; padding: 7px 9px; border: 1px solid var(--sep); border-radius: 8px;
+  background: var(--bg-raised); color: var(--label); font: inherit; font-size: 13px; font-weight: 400; outline: none;
+}
+.cockpit .ck-spaces-sheet .ck-spaces-field textarea { resize: vertical; line-height: 1.5; }
+.cockpit .ck-spaces-sheet .ck-spaces-field input:focus-visible,
+.cockpit .ck-spaces-sheet .ck-spaces-field textarea:focus-visible,
+.cockpit .ck-spaces-sheet .ck-spaces-field select:focus-visible { box-shadow: var(--focus); }
+.cockpit .ck-spaces-sheet .ck-spaces-field input[readonly] { color: var(--label-2); text-overflow: ellipsis; }
+.cockpit .ck-spaces-sheet .ck-spaces-note { font-size: 12px; font-weight: 400; line-height: 1.5; color: var(--label-2); }
+.cockpit .ck-spaces-sheet .ck-spaces-sheet-body { line-height: 1.5; }
+.cockpit .ck-spaces-sheet .ck-spaces-hint.is-error { color: var(--label); font-weight: 600; }
+
+/* Inside a card, a field is one row: the label on the left, the control on the right. */
+.cockpit .ck-spaces-card .ck-spaces-field { flex-direction: row; align-items: center; justify-content: space-between; gap: 12px; min-height: 38px; padding: 6px 0; border-radius: 0; background: none; font-weight: 400; }
+.cockpit .ck-spaces-card .ck-spaces-field input,
+.cockpit .ck-spaces-card .ck-spaces-field select { width: auto; min-width: 72px; max-width: 60%; text-align: right; }
+.cockpit .ck-spaces-card .ck-spaces-field select { text-align: left; }
+
+/* Switch rows and choice rows. The input stays a real checkbox or radio; only its look changes. */
+.cockpit .ck-spaces-card .ck-spaces-check { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 38px; margin: 0; padding: 6px 0; cursor: pointer; }
+.cockpit .ck-spaces-card .ck-spaces-check input { order: 2; margin: 0; accent-color: var(--label); cursor: pointer; }
+.cockpit .ck-spaces-choice { display: flex; flex-direction: column; }
+.cockpit .ck-spaces-choice > * + * { border-top: 1px solid var(--sep); }
+.cockpit .ck-spaces-choice label { display: flex; align-items: center; gap: 10px; min-height: 38px; padding: 6px 0; cursor: pointer; }
+.cockpit .ck-spaces-choice input { margin: 0; accent-color: var(--label); cursor: pointer; }
+.cockpit .ck-spaces-card .ck-spaces-check input.ck-spaces-switch,
+.cockpit .ck-spaces-switch {
+  appearance: none; -webkit-appearance: none; flex: none; position: relative; width: 36px; height: 22px; margin: 0; padding: 0; border: 0;
+  border-radius: 11px; background: var(--fill-active); cursor: pointer; transition: background-color 180ms var(--ease);
+}
+.cockpit .ck-spaces-switch::after {
+  content: ''; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: var(--bg-raised);
+  box-shadow: var(--float-shadow); transition: transform 180ms var(--ease);
+}
+.cockpit .ck-spaces-switch:checked { background: var(--primary-bg); }
+.cockpit .ck-spaces-switch:checked::after { transform: translateX(14px); background: var(--primary-fg); }
+.cockpit .ck-spaces-switch:focus-visible { outline: none; box-shadow: var(--focus); }
+
+/* Invite words: eight numbered words in two columns. */
+.cockpit .ck-spaces-sheet .ck-spaces-words { margin: 0; padding: 10px 12px 10px 32px; border-radius: 12px; background: var(--fill); gap: 6px 16px; }
+
+/* ---------- Bots panel ---------- */
+.cockpit .ck-spaces-bots { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.cockpit .ck-spaces-bot-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; }
+.cockpit .ck-spaces-bot-name { min-width: 0; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
 .cockpit .ck-spaces-bot.is-muted .ck-spaces-bot-name { color: var(--label-3); }
-.cockpit .ck-spaces-bot-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 8px; }
-.cockpit .ck-spaces-bot-name { font-weight: 600; overflow-wrap: anywhere; }
-.cockpit .ck-spaces-bot-own { border: 1px solid var(--sep); border-radius: 6px; margin: 0; padding: 6px 8px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-.cockpit .ck-spaces-bot-own legend { font-size: 12px; font-weight: 600; color: var(--label-2); padding: 0 4px; }
-.cockpit .ck-spaces-choice { display: flex; flex-wrap: wrap; gap: 4px 12px; }
-.cockpit .ck-spaces-bot-actions { flex-wrap: wrap; justify-content: flex-start; margin-top: 0; }
-.cockpit .ck-spaces-bot-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; font-size: 13px; }
-.cockpit .ck-spaces-bot-rules { border-top: 1px solid var(--sep); padding-top: 8px; display: flex; flex-direction: column; gap: 6px; }
-.cockpit .ck-spaces-chip { margin: 0; padding: 4px 8px; border: 1px solid var(--sep); border-radius: 12px; font-size: 12px; color: var(--label-2); }
-.cockpit .ck-spaces-field select { font: inherit; color: var(--label); background: var(--fill); border: 1px solid var(--sep); border-radius: 6px; padding: 6px 8px; }
+.cockpit .ck-spaces-bot-state { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 2px 10px; }
+.cockpit .ck-spaces-bot-own { min-width: 0; margin: 0; padding: 0; border: 0; }
+.cockpit .ck-spaces-bot-own legend { float: left; width: 100%; padding: 8px 0 4px; font-size: 11px; font-weight: 600; color: var(--label-3); }
+.cockpit .ck-spaces-bot-own legend + * { clear: both; }
+.cockpit .ck-spaces-bot-own > * + * { border-top: 1px solid var(--sep); }
+.cockpit .ck-spaces-bot-own > legend + * { border-top: 0; }
+.cockpit .ck-spaces-bot-own .ck-spaces-hint { margin: 0; padding: 6px 0; line-height: 1.5; }
+.cockpit .ck-spaces-bot-actions { display: flex; flex-wrap: wrap; justify-content: flex-start; gap: 2px; margin: 0; padding: 4px 0; }
+.cockpit .ck-spaces-bot-actions .ck-btn:first-child { margin-left: -8px; }
+.cockpit .ck-spaces-bot-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 8px 0; font-size: 13px; }
+.cockpit .ck-spaces-bot-confirm > span { flex: 1 1 100%; }
+.cockpit .ck-spaces-chip { margin: 0; padding: 0 2px; font-size: 11.5px; line-height: 1.5; color: var(--label-3); }
+.cockpit .ck-spaces-addrow { padding: 8px 0; }
+.cockpit .ck-spaces-addrow .ck-spaces-row-text { flex: 1 1 160px; }
+.cockpit .ck-spaces-limit { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }

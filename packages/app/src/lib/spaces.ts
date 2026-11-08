@@ -132,6 +132,9 @@ export interface SpacesApi {
   cancelJoin: (space: string) => Promise<void>;
 }
 
+/** How long to wait before asking for the view again after it failed (the service may still be starting). */
+export const VIEW_RETRY_MS = 3000;
+
 export function useSpaces(enabled: boolean): SpacesApi {
   const [view, setView] = useState<SpacesView | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -148,11 +151,26 @@ export function useSpaces(enabled: boolean): SpacesApi {
       if (alive) stop = u;
       else u();
     });
-    spacesView()
-      .then((v) => alive && setView(v))
-      .catch((e) => alive && setError(spacesErrorText(e)));
+    // The service starts on its own task after the Labs switch goes on, so the first call can land before it is up
+    // ("can't go online"). Nothing pushes an event until a command has succeeded once, so ask again until it answers.
+    let retry: ReturnType<typeof setTimeout> | null = null;
+    const load = () => {
+      spacesView()
+        .then((v) => {
+          if (!alive) return;
+          setError(null);
+          setView(v);
+        })
+        .catch((e) => {
+          if (!alive) return;
+          setError(spacesErrorText(e));
+          retry = setTimeout(load, VIEW_RETRY_MS);
+        });
+    };
+    load();
     return () => {
       alive = false;
+      if (retry) clearTimeout(retry);
       stop?.();
     };
   }, [enabled]);

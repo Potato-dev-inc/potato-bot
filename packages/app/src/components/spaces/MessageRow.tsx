@@ -24,6 +24,8 @@ export interface MessageRowProps {
   /** The message menu (it owns Reply too). Without it the row shows its own Reply link. */
   menu?: (m: SpaceMessage, reply: () => void) => ReactNode;
   onReact?: (m: SpaceMessage, code: string, on: boolean) => void;
+  /** Same sender as the line above, a moment later: the name and bot tag are said once (kept for screen readers), the time shows on hover or focus. */
+  grouped?: boolean;
   revealBlocked?: boolean;
   onRevealBlocked?: () => void;
   /** Files: what to show under a file card and what its two buttons do. */
@@ -33,8 +35,8 @@ export interface MessageRowProps {
   onSaveFile?: (m: SpaceMessage) => void;
 }
 
-export function MessageRow({ message: m, onReply, menu, onReact, revealBlocked, onRevealBlocked, fileError, fileSavedAs, onGetFile, onSaveFile }: MessageRowProps) {
-  const cls = ['ck-spaces-msg', m.isMine && 'is-mine', m.isFish && 'is-fish is-bot', m.deleted && 'is-deleted',
+export function MessageRow({ message: m, onReply, menu, onReact, grouped, revealBlocked, onRevealBlocked, fileError, fileSavedAs, onGetFile, onSaveFile }: MessageRowProps) {
+  const cls = ['ck-spaces-msg', m.isMine && 'is-mine', m.isFish && 'is-fish is-bot', grouped && 'is-grouped', m.deleted && 'is-deleted',
     m.blocked && !revealBlocked && 'is-blocked'].filter(Boolean).join(' ');
   if (m.blocked && !revealBlocked) {
     return (

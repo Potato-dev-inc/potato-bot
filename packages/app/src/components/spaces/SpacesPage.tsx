@@ -22,6 +22,7 @@ import { ChannelList } from './ChannelList';
 import { ChannelView } from './ChannelView';
 import { NewChannelSheet } from './NewChannelSheet';
 import { InviteSheet } from './InviteSheet';
+import { OpenInvitesSheet } from './OpenInvitesSheet';
 import { JoinSheet } from './JoinSheet';
 import { JoinRequestSheet } from './JoinRequestSheet';
 import { MemberList } from './MemberList';
@@ -30,6 +31,7 @@ import { NewSpaceSheet } from './NewSpaceSheet';
 import { Sheet } from '../cockpit/Sheet';
 import { ConfirmSheet } from './ConfirmSheet';
 import { MemberMenu } from './MemberMenu';
+import { SpaceMenu } from './SpaceMenu';
 import { MessageMenu } from './MessageMenu';
 
 export const NO_ONE_ONLINE = 'No one else is online right now. New messages wait until someone is.';
@@ -41,6 +43,10 @@ export function SpacesPage() {
   const [selected, setSelected] = useState<string | null>(null);
   const [joiningOpen, setJoiningOpen] = useState(false);
   const [invite, setInvite] = useState<SpaceInvite | null>(null);
+  /** The list of open invites (opens instead of making another one when the space already has one that works). */
+  const [invitesOpen, setInvitesOpen] = useState(false);
+  /** Invites made since this window opened. Their link and words are not stored anywhere readable, so only these can be shown again. */
+  const [madeInvites, setMadeInvites] = useState<Record<string, SpaceInvite>>({});
   const [channelId, setChannelId] = useState<string | null>(null);
   const [addingChannel, setAddingChannel] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -80,6 +86,15 @@ export function SpacesPage() {
   const joining = view?.joining[0] ?? null;
   const request = view?.requests[0] ?? null;
   const onNew = () => setCreating(true);
+  const openInvites = (view?.invites ?? []).filter((i) => i.space === selected && i.state === 'open' && i.expiresAtMs > now);
+  const makeInvite = async (space: string) => {
+    const i = await api.invite(space);
+    if (i) {
+      setMadeInvites((m) => ({ ...m, [i.id]: i }));
+      setInvitesOpen(false);
+      setInvite(i);
+    }
+  };
   const active = detail?.state === 'active';
   /** Run one moderation call; a failure shows as a plain line under the page. */
   const run = async (call: Promise<unknown>) => {
@@ -93,17 +108,26 @@ export function SpacesPage() {
 
   return (
     <div className="ck-spaces">
-      {view && view.spaces.length === 0 && !joiningOpen ? (
+      {(view ? view.spaces.length === 0 : api.error !== null) && !joiningOpen ? (
         <section className="ck-spaces-empty">
-          <h1 className="ck-title">Spaces</h1>
-          <p className="ck-sub">Chat with friends in small groups, computer to computer. No server keeps your messages.</p>
-          <div className="ck-spaces-actions">
-            <button type="button" className="ck-spaces-btn" onClick={onNew}>
-              New space
-            </button>
-            <button type="button" className="ck-spaces-btn" onClick={() => setJoiningOpen(true)}>
-              Join a space
-            </button>
+          <div className="ck-spaces-empty-card">
+            <h1 className="ck-title">Spaces</h1>
+            <p className="ck-sub">Chat with friends in small groups, computer to computer. No server keeps your messages.</p>
+            <div className="ck-spaces-empty-actions">
+              <button type="button" className="ck-btn ck-btn--primary" onClick={onNew}>
+                New space
+              </button>
+              <button type="button" className="ck-btn ck-btn--secondary" onClick={() => setJoiningOpen(true)}>
+                Join a space
+              </button>
+            </div>
+            <p className="ck-spaces-group-foot">Messages live on members' computers. If everyone is offline, new messages wait.</p>
+            {view && !view.online && (
+              <p className="ck-spaces-hint ck-spaces-offline" role="status">
+                You're offline. New messages will go out when you're back online.
+              </p>
+            )}
+            {!view && api.error && <p className="ck-spaces-hint" role="status">{api.error}</p>}
           </div>
         </section>
       ) : (
@@ -117,7 +141,7 @@ export function SpacesPage() {
           />
           <main className="ck-spaces-main">
             {view && !view.online && (
-              <p className="ck-spaces-hint" role="status">
+              <p className="ck-spaces-hint ck-spaces-offline" role="status">
                 You're offline. New messages will go out when you're back online.
               </p>
             )}
@@ -149,24 +173,17 @@ export function SpacesPage() {
                     <button
                       type="button"
                       className="ck-spaces-btn"
-                      onClick={async () => {
-                        const i = await api.invite(detail.id);
-                        if (i) setInvite(i);
+                      onClick={() => {
+                        if (openInvites.length > 0) setInvitesOpen(true);
+                        else void makeInvite(detail.id);
                       }}
                     >
                       Invite people
                     </button>
                   )}
                   {active && (
-                    <button
-                      type="button"
-                      className="ck-spaces-btn ck-spaces-leave"
-                      disabled={detail.isOwner}
-                      title={detail.isOwner ? OWNER_CANT_LEAVE : undefined}
-                      onClick={() => setLeaving(true)}
-                    >
-                      Leave space
-                    </button>
+                    <SpaceMenu canLeave={!detail.isOwner} leaveBlocked={detail.isOwner ? OWNER_CANT_LEAVE : undefined}
+                      onLeave={() => setLeaving(true)} />
                   )}
                 </div>
               </header>
@@ -271,22 +288,30 @@ export function SpacesPage() {
           <h2 id="ck-space-info-title" className="ck-spaces-sheet-title">
             Space info
           </h2>
-          <p className="ck-spaces-sheet-body">{detail.name}</p>
-          <p className="ck-spaces-sheet-body">
-            {detail.members.length} {detail.members.length === 1 ? 'person' : 'people'}
-          </p>
-          <p className="ck-spaces-note">
-            Messages live on members' computers. If everyone is offline, new messages wait. This computer keeps the last 90
-            days, up to 200 MB per space.
-          </p>
-          {(detail.leavePending || detail.state === 'left') && (
-            <p className="ck-spaces-note">
-              Until the owner's computer is online, people who left can still read new messages.
+          <div className="ck-spaces-sheet-scroll">
+          <div className="ck-spaces-group">
+            <div className="ck-spaces-card">
+              <p className="ck-spaces-sheet-body">{detail.name}</p>
+              <p className="ck-spaces-sheet-body">
+                {detail.members.length} {detail.members.length === 1 ? 'person' : 'people'}
+              </p>
+            </div>
+            <p className="ck-spaces-group-foot">
+              Messages live on members' computers. If everyone is offline, new messages wait. This computer keeps the last 90
+              days, up to 200 MB per space.
             </p>
-          )}
+            {(detail.leavePending || detail.state === 'left') && (
+              <p className="ck-spaces-group-foot">
+                Until the owner's computer is online, people who left can still read new messages.
+              </p>
+            )}
+          </div>
+          <div className="ck-spaces-group">
+          <div className="ck-spaces-card">
           <label className="ck-spaces-check">
             <input
               type="checkbox"
+              className="ck-spaces-switch"
               checked={showOnline}
               onChange={(e) => {
                 const on = e.target.checked;
@@ -298,9 +323,12 @@ export function SpacesPage() {
             />{' '}
             Show when I'm online
           </label>
-          <p className="ck-spaces-note">This applies to all spaces on this computer. When it is off, others see you as offline.</p>
-          <div className="ck-spaces-actions">
-            <button type="button" className="ck-spaces-btn" onClick={() => setInfoOpen(false)}>
+          </div>
+          <p className="ck-spaces-group-foot">This applies to all spaces on this computer. When it is off, others see you as offline.</p>
+          </div>
+          </div>
+          <div className="ck-sheet-actions">
+            <button type="button" className="ck-btn ck-btn--primary" onClick={() => setInfoOpen(false)}>
               Close
             </button>
           </div>
@@ -329,6 +357,19 @@ export function SpacesPage() {
             setSelected(null);
             void run(spaceForget(detail.id));
           }}
+        />
+      )}
+      {invitesOpen && detail && !invite && (
+        <OpenInvitesSheet
+          spaceName={detail.name}
+          invites={openInvites}
+          known={madeInvites}
+          nowMs={now}
+          error={api.error}
+          onShow={setInvite}
+          onCancelInvite={(i) => void api.cancelInvite(detail.id, i.id)}
+          onNew={() => void makeInvite(detail.id)}
+          onClose={() => setInvitesOpen(false)}
         />
       )}
       {invite && detail && (

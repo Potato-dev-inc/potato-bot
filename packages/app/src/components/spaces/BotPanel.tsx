@@ -1,4 +1,4 @@
-// Spaces: the bots of one space. Three kinds of control, kept apart:
+// Spaces: the bots of one space, as grouped lists. Three kinds of control, kept apart:
 // everyone (hide a bot on this PC), the bot's owner (their own bot's settings), the space owner (the rules).
 import { useEffect, useId, useRef, useState } from 'react';
 import { Sheet } from '../cockpit/Sheet';
@@ -17,7 +17,7 @@ export const MAX_BOTS_PER_PERSON = 10;
 
 type Run = (call: Promise<SpaceBotList>) => Promise<void>;
 
-/** One bot. Its owner sees the settings; everyone sees the hide switch. */
+/** One bot, one card: its name and state in words, then its owner's settings, then what everyone can do (hide it here). */
 function BotItem({ bot, canRemove, space, run }: { bot: SpaceBotRow; canRemove: boolean; space: string; run: Run }) {
   const [cap, setCap] = useState(String(bot.dayCap ?? ''));
   const [removing, setRemoving] = useState(false);
@@ -29,12 +29,14 @@ function BotItem({ bot, canRemove, space, run }: { bot: SpaceBotRow; canRemove: 
     else setCap(String(bot.dayCap ?? ''));
   };
   return (
-    <li className={`ck-spaces-bot${bot.muted ? ' is-muted' : ''}`} aria-label={bot.name}>
+    <li className={`ck-spaces-card ck-spaces-bot${bot.muted ? ' is-muted' : ''}`} aria-label={bot.name}>
       <div className="ck-spaces-bot-head">
         <span className="ck-spaces-bot-name">{bot.name}</span>
-        <span className="ck-spaces-role">{bot.mine ? 'Your bot' : `Owner: ${bot.ownerName}`}</span>
-        {bot.silenced && <span className="ck-spaces-role">Silenced</span>}
-        {bot.muted && <span className="ck-spaces-role">Hidden here</span>}
+        <span className="ck-spaces-bot-state">
+          <span className="ck-spaces-role">{bot.mine ? 'Your bot' : `Owner: ${bot.ownerName}`}</span>
+          {bot.silenced && <span className="ck-spaces-role">Silenced</span>}
+          {bot.muted && <span className="ck-spaces-role">Hidden here</span>}
+        </span>
       </div>
       {bot.mine && (
         <fieldset className="ck-spaces-bot-own">
@@ -47,7 +49,8 @@ function BotItem({ bot, canRemove, space, run }: { bot: SpaceBotRow; canRemove: 
             ))}
           </div>
           <label className="ck-spaces-check">
-            <input type="checkbox" role="switch" checked={bot.memory === true} onChange={(e) => patch({ memory: e.target.checked })} /> Memory
+            <input type="checkbox" role="switch" className="ck-spaces-switch" checked={bot.memory === true}
+              onChange={(e) => patch({ memory: e.target.checked })} /> Memory
           </label>
           <label className="ck-spaces-field">
             <span>Daily limit</span>
@@ -57,23 +60,24 @@ function BotItem({ bot, canRemove, space, run }: { bot: SpaceBotRow; canRemove: 
           <p className="ck-spaces-hint">{answeredText(bot.usedToday, bot.dayCap ?? 0)}</p>
           <p className="ck-spaces-hint">{heldBackText(bot.heldBackToday)}</p>
           <label className="ck-spaces-check">
-            <input type="checkbox" role="switch" checked={bot.silenced === true} onChange={(e) => patch({ silenced: e.target.checked })} /> Silence this bot
+            <input type="checkbox" role="switch" className="ck-spaces-switch" checked={bot.silenced === true}
+              onChange={(e) => patch({ silenced: e.target.checked })} /> Silence this bot
           </label>
         </fieldset>
       )}
-      <div className="ck-spaces-actions ck-spaces-bot-actions">
-        <button type="button" className="ck-spaces-btn" aria-pressed={bot.muted} onClick={() => patch({ muted: !bot.muted })}>
+      <div className="ck-spaces-bot-actions">
+        <button type="button" className="ck-btn ck-btn--plain ck-btn--sm" aria-pressed={bot.muted} onClick={() => patch({ muted: !bot.muted })}>
           {bot.muted ? 'Show on this computer' : 'Hide on this computer'}
         </button>
         {canRemove && !removing && (
-          <button type="button" className="ck-spaces-btn" onClick={() => setRemoving(true)}>Remove bot</button>
+          <button type="button" className="ck-btn ck-btn--plain ck-btn--sm" onClick={() => setRemoving(true)}>Remove bot</button>
         )}
       </div>
       {removing && (
         <div className="ck-spaces-bot-confirm" role="group" aria-label={`Remove ${bot.name}?`}>
           <span>Remove {bot.name} from this space?</span>
-          <button type="button" className="ck-spaces-btn" onClick={() => setRemoving(false)}>Keep</button>
-          <button type="button" className="ck-spaces-btn is-danger"
+          <button type="button" className="ck-btn ck-btn--secondary ck-btn--sm" onClick={() => setRemoving(false)}>Keep</button>
+          <button type="button" className="ck-btn ck-btn--primary ck-btn--sm is-danger"
             onClick={() => { setRemoving(false); void run(spaceBotRemove(space, bot.id)); }}>Yes, remove</button>
         </div>
       )}
@@ -105,28 +109,30 @@ function OwnerRules({ list, channels, space, run, focusSignal }: { list: SpaceBo
     return [...set];
   });
   return (
-    <section className="ck-spaces-bot-rules" aria-label="Space owner settings">
-      <h3 className="ck-spaces-feed-title">Space owner settings</h3>
-      <label className="ck-spaces-field">
-        <span>Bots per person</span>
-        <select ref={perRef} value={per} onChange={(e) => setPer(Number(e.target.value))}>
-          {Array.from({ length: MAX_BOTS_PER_PERSON + 1 }, (_, n) => <option key={n} value={n}>{n}</option>)}
-        </select>
-      </label>
-      <fieldset className="ck-spaces-bot-own">
-        <legend>Allowed channels</legend>
-        <div role="radiogroup" aria-label="Allowed channels" className="ck-spaces-choice">
-          <label><input type="radio" name="bot-channels" checked={only === null} onChange={() => setOnly(null)} /> All channels</label>
-          <label><input type="radio" name="bot-channels" checked={only !== null} onChange={() => setOnly(only ?? live.map((c) => c.id))} /> Only these</label>
+    <section className="ck-spaces-group ck-spaces-bot-rules" aria-label="Space owner settings">
+      <h3 className="ck-spaces-group-title">Space owner settings</h3>
+      <div className="ck-spaces-card">
+        <label className="ck-spaces-field">
+          <span>Bots per person</span>
+          <select ref={perRef} value={per} onChange={(e) => setPer(Number(e.target.value))}>
+            {Array.from({ length: MAX_BOTS_PER_PERSON + 1 }, (_, n) => <option key={n} value={n}>{n}</option>)}
+          </select>
+        </label>
+        <fieldset className="ck-spaces-bot-own">
+          <legend>Allowed channels</legend>
+          <div role="radiogroup" aria-label="Allowed channels" className="ck-spaces-choice">
+            <label><input type="radio" name="bot-channels" checked={only === null} onChange={() => setOnly(null)} /> All channels</label>
+            <label><input type="radio" name="bot-channels" checked={only !== null} onChange={() => setOnly(only ?? live.map((c) => c.id))} /> Only these</label>
+          </div>
+          {only !== null && live.map((c) => (
+            <label key={c.id} className="ck-spaces-check">
+              <input type="checkbox" checked={only.includes(c.id)} onChange={() => toggle(c.id)} /> # {c.name}
+            </label>
+          ))}
+        </fieldset>
+        <div className="ck-spaces-row is-actions">
+          <button type="button" className="ck-btn ck-btn--secondary ck-btn--sm" onClick={() => void run(spaceBotRules(space, per, only))}>Save bot rules</button>
         </div>
-        {only !== null && live.map((c) => (
-          <label key={c.id} className="ck-spaces-check">
-            <input type="checkbox" checked={only.includes(c.id)} onChange={() => toggle(c.id)} /> # {c.name}
-          </label>
-        ))}
-      </fieldset>
-      <div className="ck-spaces-actions">
-        <button type="button" className="ck-spaces-btn is-primary" onClick={() => void run(spaceBotRules(space, per, only))}>Save bot rules</button>
       </div>
     </section>
   );
@@ -165,33 +171,39 @@ export function BotPanel({ space, spaceName, channels, onClose }: BotPanelProps)
   const error = actionError ?? api.error;
   const othersBots = list?.bots.some((b) => !b.mine) ?? false;
   return (
-    <Sheet labelledBy={titleId} role="dialog" onClose={onClose} className="ck-spaces-sheet ck-spaces-botpanel">
+    <Sheet labelledBy={titleId} role="dialog" onClose={onClose} className="ck-spaces-sheet is-wide">
       <h2 id={titleId} className="ck-spaces-sheet-title">Bots in {spaceName}</h2>
-      {!list && !error && <p className="ck-spaces-hint" role="status">Loading bots…</p>}
-      {list && (
-        <>
-          {othersBots && <p className="ck-spaces-chip">{NON_OWNER_CHIP}</p>}
-          {list.bots.length === 0 && <p className="ck-spaces-sheet-body">No bots in this space yet.</p>}
-          <ul className="ck-spaces-bots">
-            {list.bots.map((b) => (
-              <BotItem key={b.id} bot={b} space={space} run={run} canRemove={b.mine || list.isOwner} />
-            ))}
-          </ul>
-          {list.pendingAdd.map((n) => <p key={n} className="ck-spaces-hint" role="status">{waitingText(n)}</p>)}
-          {list.addBlocked && <p className="ck-spaces-hint">{list.addBlocked}</p>}
-          {limit && <p className="ck-spaces-hint">{limitLine(limit)}</p>}
-          <div className="ck-spaces-actions">
-            {/* Stays pressable at the limit: the sheet it opens says what is already here and what to do. */}
-            <button type="button" className="ck-spaces-btn is-primary" disabled={list.addBlocked !== null} onClick={() => setAdding(true)}>
-              Add my bot
-            </button>
-          </div>
-          {list.isOwner && <OwnerRules list={list} channels={channels} space={space} run={run} focusSignal={focusRules} />}
-        </>
-      )}
-      {error && <p className="ck-spaces-hint is-error" role="alert">{error}</p>}
-      <div className="ck-spaces-actions">
-        <button type="button" className="ck-spaces-btn" onClick={onClose}>Close</button>
+      <div className="ck-spaces-sheet-scroll">
+        {!list && !error && <p className="ck-spaces-hint" role="status">Loading bots…</p>}
+        {list && (
+          <>
+            {othersBots && <p className="ck-spaces-chip">{NON_OWNER_CHIP}</p>}
+            {list.bots.length === 0 && <p className="ck-spaces-sheet-body">No bots in this space yet.</p>}
+            {list.bots.length > 0 && (
+              <ul className="ck-spaces-bots">
+                {list.bots.map((b) => (
+                  <BotItem key={b.id} bot={b} space={space} run={run} canRemove={b.mine || list.isOwner} />
+                ))}
+              </ul>
+            )}
+            <div className="ck-spaces-card">
+              {list.pendingAdd.map((n) => <p key={n} className="ck-spaces-hint" role="status">{waitingText(n)}</p>)}
+              {list.addBlocked && <p className="ck-spaces-hint">{list.addBlocked}</p>}
+              <div className="ck-spaces-row ck-spaces-addrow">
+                {limit && <p className="ck-spaces-row-text">{limitLine(limit)}</p>}
+                {/* Stays pressable at the limit: the sheet it opens says what is already here and what to do. */}
+                <button type="button" className="ck-btn ck-btn--primary" disabled={list.addBlocked !== null} onClick={() => setAdding(true)}>
+                  Add my bot
+                </button>
+              </div>
+            </div>
+            {list.isOwner && <OwnerRules list={list} channels={channels} space={space} run={run} focusSignal={focusRules} />}
+          </>
+        )}
+      </div>
+      {error && <p className="ck-spaces-sheet-status is-error" role="alert">{error}</p>}
+      <div className="ck-sheet-actions">
+        <button type="button" className="ck-btn ck-btn--secondary" onClick={onClose}>Close</button>
       </div>
     </Sheet>
   );

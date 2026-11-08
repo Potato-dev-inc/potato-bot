@@ -27,24 +27,26 @@ export function NewChannelSheet({ onCreate, onClose }: NewChannelSheetProps) {
       <h2 id={titleId} className="ck-spaces-sheet-title">
         New channel
       </h2>
-      <label className="ck-spaces-field">
-        <span>Name</span>
-        <input value={name} placeholder="books" onChange={(e) => setName(e.target.value)} />
-        <small className="ck-spaces-hint">Lowercase letters, numbers and dashes.</small>
-      </label>
-      {preview !== '' && <p className="ck-spaces-note"># {preview}</p>}
+      <div className="ck-spaces-sheet-scroll">
+        <label className="ck-spaces-field">
+          <span>Name</span>
+          <input value={name} placeholder="books" onChange={(e) => setName(e.target.value)} />
+          <small className="ck-spaces-hint">Lowercase letters, numbers and dashes.</small>
+        </label>
+        {preview !== '' && <p className="ck-spaces-note"># {preview}</p>}
+      </div>
       {error && (
-        <p className="ck-spaces-hint is-error" role="alert">
+        <p className="ck-spaces-sheet-status is-error" role="alert">
           {error}
         </p>
       )}
-      <div className="ck-spaces-actions">
-        <button type="button" className="ck-spaces-btn" onClick={onClose}>
+      <div className="ck-sheet-actions">
+        <button type="button" className="ck-btn ck-btn--secondary" onClick={onClose}>
           Cancel
         </button>
         <button
           type="button"
-          className="ck-spaces-btn is-primary"
+          className="ck-btn ck-btn--primary"
           disabled={preview === ''}
           onClick={async () => {
             const e = await onCreate(name);

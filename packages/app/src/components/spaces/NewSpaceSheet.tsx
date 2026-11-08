@@ -19,23 +19,25 @@ export function NewSpaceSheet({ onCreate, error, onClose }: NewSpaceSheetProps) 
       <h2 id={titleId} className="ck-spaces-sheet-title">
         New space
       </h2>
-      <label className="ck-spaces-field">
-        <span>Name</span>
-        <input value={name} maxLength={40} placeholder="Book club" onChange={(e) => setName(e.target.value)} />
-        <small className="ck-spaces-hint">You can change it later.</small>
-      </label>
+      <div className="ck-spaces-sheet-scroll">
+        <label className="ck-spaces-field">
+          <span>Name</span>
+          <input value={name} maxLength={40} placeholder="Book club" onChange={(e) => setName(e.target.value)} />
+          <small className="ck-spaces-hint">You can change it later.</small>
+        </label>
+      </div>
       {error && (
-        <p className="ck-spaces-hint is-error" role="alert">
+        <p className="ck-spaces-sheet-status is-error" role="alert">
           {error}
         </p>
       )}
-      <div className="ck-spaces-actions">
-        <button type="button" className="ck-spaces-btn" onClick={onClose} disabled={busy}>
+      <div className="ck-sheet-actions">
+        <button type="button" className="ck-btn ck-btn--secondary" onClick={onClose} disabled={busy}>
           Cancel
         </button>
         <button
           type="button"
-          className="ck-spaces-btn is-primary"
+          className="ck-btn ck-btn--primary"
           disabled={!ready}
           onClick={async () => {
             setBusy(true);

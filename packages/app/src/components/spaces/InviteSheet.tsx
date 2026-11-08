@@ -51,49 +51,57 @@ export function InviteSheet({ spaceName, invite, nowMs, onCancelInvite, onClose 
       <h2 id={titleId} className="ck-spaces-sheet-title">Invite someone to {spaceName}</h2>
       {open ? (
         <>
-          <p className="ck-spaces-sheet-body">
-            Send them this link. Then tell them the 8 words another way: say them out loud, or send them in a
-            different app.
-          </p>
-          <label className="ck-spaces-field">
-            <span>Invite link</span>
-            <input readOnly value={invite.link} onFocus={(e) => e.currentTarget.select()} />
-          </label>
-          <div className="ck-spaces-actions">
-            <button type="button" className="ck-spaces-btn" onClick={() => void copy()}>
-              {copied ? 'Copied' : 'Copy link'}
-            </button>
-            <button type="button" className="ck-spaces-btn" onClick={() => setShowQr((v) => !v)}>
-              {showQr ? 'Hide QR code' : 'Show QR code'}
-            </button>
-          </div>
-          <p className="ck-spaces-note">Invite words</p>
-          <ol className="ck-spaces-words" aria-label="Invite words">
-            {invite.words.map((w, i) => (
-              <li key={i} className="ck-spaces-word">{w}</li>
-            ))}
-          </ol>
-          {showQr && (
-            <div className="ck-spaces-qr">
-              {qrSrc && <img src={qrSrc} alt="Invite QR code" />}
-              <p className="ck-spaces-hint">
-                Scan this with the other computer's camera. The code holds the link and the words.
-              </p>
+          <div className="ck-spaces-sheet-scroll">
+            <p className="ck-spaces-sheet-body">
+              Send them this link. Then tell them the 8 words another way: say them out loud, or send them in a
+              different app.
+            </p>
+            <div className="ck-spaces-group">
+              <div className="ck-spaces-card">
+                <label className="ck-spaces-field">
+                  <span>Invite link</span>
+                  <input readOnly value={invite.link} onFocus={(e) => e.currentTarget.select()} />
+                </label>
+                <div className="ck-spaces-row is-actions">
+                  <button type="button" className="ck-btn ck-btn--secondary ck-btn--sm" onClick={() => void copy()}>
+                    {copied ? 'Copied' : 'Copy link'}
+                  </button>
+                  <button type="button" className="ck-btn ck-btn--secondary ck-btn--sm" onClick={() => setShowQr((v) => !v)}>
+                    {showQr ? 'Hide QR code' : 'Show QR code'}
+                  </button>
+                </div>
+              </div>
             </div>
-          )}
-          <p className="ck-spaces-hint">
-            Works once. Expires in {timeLeftText(left)}. After 5 wrong tries it stops working.
-          </p>
-          <div className="ck-spaces-actions">
-            <button type="button" className="ck-spaces-btn is-danger" onClick={onCancelInvite}>Cancel invite</button>
-            <button type="button" className="ck-spaces-btn is-primary" onClick={onClose}>Done</button>
+            <div className="ck-spaces-group">
+              <p className="ck-spaces-group-title">Invite words</p>
+              <ol className="ck-spaces-words" aria-label="Invite words">
+                {invite.words.map((w, i) => (
+                  <li key={i} className="ck-spaces-word">{w}</li>
+                ))}
+              </ol>
+            </div>
+            {showQr && (
+              <div className="ck-spaces-qr">
+                {qrSrc && <img src={qrSrc} alt="Invite QR code" />}
+                <p className="ck-spaces-hint">
+                  Scan this with the other computer's camera. The code holds the link and the words.
+                </p>
+              </div>
+            )}
+            <p className="ck-spaces-group-foot">
+              Works once. Expires in {timeLeftText(left)}. After 5 wrong tries it stops working.
+            </p>
+          </div>
+          <div className="ck-sheet-actions">
+            <button type="button" className="ck-btn ck-btn--secondary ck-spaces-actions-start is-danger" onClick={onCancelInvite}>Cancel invite</button>
+            <button type="button" className="ck-btn ck-btn--primary" onClick={onClose}>Done</button>
           </div>
         </>
       ) : (
         <>
           <p className="ck-spaces-sheet-body">{inviteEndedText(invite, left)}</p>
-          <div className="ck-spaces-actions">
-            <button type="button" className="ck-spaces-btn is-primary" onClick={onClose}>Close</button>
+          <div className="ck-sheet-actions">
+            <button type="button" className="ck-btn ck-btn--primary" onClick={onClose}>Close</button>
           </div>
         </>
       )}

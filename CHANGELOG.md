@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.9
+
+- Spaces screens redone on the Potato look: the Bots panel, the sheets, the space list, the channel list and the empty screen. Sheets fit narrow windows.
+- Opening Invite no longer makes a new invite each time. You can see open invites and cancel them, so you are never locked out at three.
+- The Spaces page no longer stays empty if it opened before Spaces was ready; it tries again on its own.
+- Messages from the same person sit together, the composer has a file button and an @ picker for bots, and sending, failed and read-only states say what is going on.
+- Still not tried: two real PCs talking to each other, and a real model answering inside a space.
+
 ## 1.0.8
 
 - New, early and off by default: Spaces, small-group chat between people's own computers, with no server keeping your messages. Turn it on in Settings > Potato Bot > Labs > Spaces. You make a private space, invite friends with a link or QR text, talk in channels, share files, and add your own bots to a channel. Bots can join a channel and answer when someone calls them.

@@ -21,6 +21,17 @@ export interface ChannelViewProps {
 
 export const BOTS_OFF_TEXT = 'Bots are off in this channel.';
 export const CALL_BOT_HINT = "Type @ and a bot's name to call it.";
+/** Lines from one sender closer together than this read as one run, like a chat. */
+export const GROUP_WITHIN_MS = 5 * 60_000;
+/** Whether `m` continues the run that `prev` started: same sender, close in time, plain text on both sides. */
+export function continuesRun(prev: SpaceMessage | undefined, m: SpaceMessage): boolean {
+  if (!prev) return false;
+  if (prev.deleted || m.deleted || prev.blocked || m.blocked || prev.file || m.file || m.replyPreview) return false;
+  if (prev.member !== m.member || prev.isFish !== m.isFish || (prev.botId ?? null) !== (m.botId ?? null)) return false;
+  const gap = m.createdAtMs - prev.createdAtMs;
+  return gap >= 0 && gap < GROUP_WITHIN_MS;
+}
+export const READ_ONLY_TEXT = "You can read this channel, but you can't write in it.";
 export const botsLine = (bots: SpaceDetailBot[]) => `Bots here: ${bots.map((b) => b.name).join(' · ')}`;
 
 export function ChannelView({ space, channel, menu, onReact, readOnly, bots = [], botsOff = false }: ChannelViewProps) {
@@ -75,7 +86,7 @@ export function ChannelView({ space, channel, menu, onReact, readOnly, bots = []
       {botsOff ? (
         <p className="ck-spaces-hint ck-spaces-botsline">{BOTS_OFF_TEXT}</p>
       ) : visible.length > 0 ? (
-        <p className="ck-spaces-hint ck-spaces-botsline">{botsLine(visible)}</p>
+        <p className="ck-spaces-hint ck-spaces-botsline is-listed">{botsLine(visible)}</p>
       ) : null}
       <ol className="ck-spaces-msgs">
         {ch.atStart ? (
@@ -83,14 +94,15 @@ export function ChannelView({ space, channel, menu, onReact, readOnly, bots = []
         ) : (
           <li><button type="button" className="ck-spaces-quiet" onClick={() => void ch.loadOlder()}>Show older messages</button></li>
         )}
-        {shown.map((m) => (
-          <MessageRow key={m.id} message={m} onReply={setReplyTo} menu={menu} onReact={onReact}
+        {shown.map((m, i) => (
+          <MessageRow key={m.id} message={m} grouped={continuesRun(shown[i - 1], m)} onReply={setReplyTo} menu={menu} onReact={onReact}
             fileError={fileErrors[m.id] ?? null} fileSavedAs={savedAs[m.id] ?? null} onGetFile={getFile} onSaveFile={saveFile}
             revealBlocked={revealed.has(m.id)} onRevealBlocked={() => setRevealed(new Set(revealed).add(m.id))} />
         ))}
       </ol>
       <div ref={end} />
       {ch.error && <p className="ck-spaces-hint is-error" role="alert">{ch.error}</p>}
+      {readOnly && <p className="ck-spaces-readonly" role="status">{READ_ONLY_TEXT}</p>}
       {!readOnly && (
         <Composer channelName={channel.name} hint={!botsOff && visible.length > 0 ? CALL_BOT_HINT : undefined}
           problem={(t) => callProblem(t, bots, botsOff)} notes={shownNotes}

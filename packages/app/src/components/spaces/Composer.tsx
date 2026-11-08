@@ -3,6 +3,20 @@ import { open as pickFile } from '@tauri-apps/plugin-dialog';
 import { MAX_TEXT_CHARS, type SpaceMessage } from '../../lib/spaces';
 import '../../styles/cockpit-chat.css';
 import '../../styles/cockpit-acp.css';
+import '../../styles/cockpit-potato-composer.css';
+
+/** The paperclip of the Potato chat composer. */
+function PaperclipIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M13 7.4l-4.6 4.6a2.6 2.6 0 0 1-3.7-3.7l5-5a1.7 1.7 0 0 1 2.4 2.4l-5 5a.8.8 0 0 1-1.2-1.2l4.4-4.4" />
+    </svg>
+  );
+}
+
+export const SENDING_TEXT = 'Sending…';
+export const SENDING_FILE_TEXT = 'Sending file…';
+export const KEPT_TEXT = 'Your message is still in the box. Press Enter to try again.';
 
 /** The counter shows from this size on (90% of the cap). */
 export const COUNT_FROM_CHARS = 3600;
@@ -56,8 +70,10 @@ export interface ComposerProps {
 
 export function Composer({ channelName, replyTo, onCancelReply, onSend, disabled, onAttach, hint, problem, notes = [], bots = [] }: ComposerProps) {
   const [text, setText] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<'message' | 'file' | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** The last failure was a message that stayed in the box (not a file). */
+  const [kept, setKept] = useState(false);
   const [caret, setCaret] = useState(0);
   const [pickAt, setPickAt] = useState(0);
   const [pickShut, setPickShut] = useState(false);
@@ -102,11 +118,11 @@ export function Composer({ channelName, replyTo, onCancelReply, onSend, disabled
   };
   const send = async () => {
     if (busy || tooLong || text.trim() === '') return;
-    setBusy(true);
+    setBusy('message');
     const err = await onSend(text);
-    setBusy(false);
-    if (err) { setError(err); return; }
-    setError(null); setText(''); setCaret(0); onCancelReply();
+    setBusy(null);
+    if (err) { setError(err); setKept(true); return; }
+    setKept(false); setError(null); setText(''); setCaret(0); onCancelReply();
   };
   const attach = async () => {
     if (!onAttach || busy) return;
@@ -118,9 +134,10 @@ export function Composer({ channelName, replyTo, onCancelReply, onSend, disabled
       return;
     }
     if (typeof picked !== 'string') return;
-    setBusy(true);
+    setBusy('file');
     const err = await onAttach(picked);
-    setBusy(false);
+    setBusy(null);
+    setKept(false);
     setError(err);
   };
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -168,7 +185,7 @@ export function Composer({ channelName, replyTo, onCancelReply, onSend, disabled
       )}
       <div className="ck-chat-composer-row">
         <textarea ref={field} className="ck-chat-composer-field" aria-label={`Message #${channelName}`}
-          placeholder={`Message #${channelName}`} rows={1} value={text} disabled={disabled || busy}
+          placeholder={`Message #${channelName}`} rows={1} value={text} disabled={disabled || !!busy}
           {...(bots.length > 0 ? {
             role: 'combobox' as const, 'aria-autocomplete': 'list' as const, 'aria-expanded': pickOpen,
             'aria-controls': 'ck-spaces-bot-menu', 'aria-activedescendant': pickOpen ? `ck-spaces-bot-opt-${pickIx}` : undefined,
@@ -178,12 +195,14 @@ export function Composer({ channelName, replyTo, onCancelReply, onSend, disabled
           onKeyDown={onKey} />
         <div className="ck-chat-composer-toolbar">
           {onAttach && (
-            <button type="button" className="ck-btn ck-btn--plain ck-spaces-attach" disabled={disabled || busy}
-              onClick={() => void attach()}>Attach file</button>
+            <button type="button" className="ck-potato-round ck-spaces-attach" aria-label="Attach file" title="Attach file"
+              disabled={disabled || !!busy} onClick={() => void attach()}>
+              <PaperclipIcon />
+            </button>
           )}
         </div>
         <button type="button" className="ck-btn ck-btn--primary ck-chat-send"
-          disabled={disabled || busy || tooLong || text.trim() === ''} onClick={() => void send()}>
+          disabled={disabled || !!busy || tooLong || text.trim() === ''} onClick={() => void send()}>
           <svg className="ck-chat-send-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
             strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M12 19V5" />
@@ -192,6 +211,7 @@ export function Composer({ channelName, replyTo, onCancelReply, onSend, disabled
           <span className="ck-chat-send-label">Send</span>
         </button>
       </div>
+      {busy && <p className="ck-spaces-callnote" role="status">{busy === 'file' ? SENDING_FILE_TEXT : SENDING_TEXT}</p>}
       {hint && <p className="ck-spaces-composer-hint">{hint}</p>}
       {typed && <p className="ck-spaces-callnote" role="status">{typed}</p>}
       {!typed && notes.map((n) => <p key={n} className="ck-spaces-callnote" role="status">{n}</p>)}
@@ -200,6 +220,7 @@ export function Composer({ channelName, replyTo, onCancelReply, onSend, disabled
       )}
       {tooLong && <p className="ck-spaces-hint is-error">This message is too long. The limit is {MAX_TEXT_CHARS} characters.</p>}
       {error && <p className="ck-spaces-hint is-error" role="alert">{error}</p>}
+      {error && kept && <p className="ck-spaces-composer-hint">{KEPT_TEXT}</p>}
     </div>
   );
 }

@@ -14,6 +14,7 @@ export function ChannelList({ channels, selected, isOwner, onSelect, onNew }: Ch
   const full = active.length >= 20;
   return (
     <nav className="ck-spaces-channels" aria-label="Channels">
+      <h2 className="ck-spaces-group-title">Channels</h2>
       <ul>
         {active.map((c) => (
           <li key={c.id}>

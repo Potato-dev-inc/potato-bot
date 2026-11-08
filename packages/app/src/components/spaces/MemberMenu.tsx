@@ -1,7 +1,8 @@
 // Spaces: the actions on one person in the people column: Remove from space (owner), Block and Unblock (me only).
-import { useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import type { SpaceMember } from '../../lib/spaces';
 import { ConfirmSheet } from './ConfirmSheet';
+import { useMenuDismiss } from './menuDismiss';
 
 export interface MemberMenuProps {
   member: SpaceMember;
@@ -14,10 +15,14 @@ export interface MemberMenuProps {
 export function MemberMenu({ member, spaceName, canRemove, onRemove, onBlock }: MemberMenuProps) {
   const [open, setOpen] = useState(false);
   const [sheet, setSheet] = useState<'remove' | 'block' | null>(null);
+  const box = useRef<HTMLSpanElement>(null);
+  const more = useRef<HTMLButtonElement>(null);
+  const close = useCallback(() => setOpen(false), []);
+  useMenuDismiss(open, box, more, close);
   if (member.isMe) return null;
   return (
-    <span className="ck-spaces-menu">
-      <button type="button" className="ck-spaces-link" aria-label={`Actions for ${member.name}`} aria-haspopup="menu"
+    <span className="ck-spaces-menu ck-spaces-member-actions" ref={box}>
+      <button type="button" ref={more} className="ck-spaces-more" aria-label={`Actions for ${member.name}`} aria-haspopup="menu"
         aria-expanded={open} onClick={() => setOpen(!open)}>More</button>
       {open && (
         <span role="menu" className="ck-spaces-menu-list">
