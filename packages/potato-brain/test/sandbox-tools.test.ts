@@ -49,6 +49,8 @@ test("the tools are the five lifted names, then the ask, then the terminal and f
     "set_wallpaper",
     "mcp_list_tools",
     "mcp_call_tool",
+    "app_observe",
+    "app_act",
   ]);
   assert.deepEqual([...SANDBOX_TOOL_NAMES].sort(), sandboxToolSpecs().map((s) => s.name).sort());
   for (const s of sandboxToolSpecs()) {
@@ -84,7 +86,7 @@ test("mcp_call_tool requires server and tool, takes optional arguments, and says
 
 test("the MCP tools are offered after set_wallpaper, through the sandbox gate", () => {
   const names = sandboxToolSpecs().map((s) => s.name);
-  assert.deepEqual(names.slice(-3), ["set_wallpaper", "mcp_list_tools", "mcp_call_tool"]);
+  assert.deepEqual(names.slice(-5, -2), ["set_wallpaper", "mcp_list_tools", "mcp_call_tool"]);
   for (const tool of sandboxTools({ call: async () => ok({}) }).filter((t) => t.spec.name.startsWith("mcp_"))) {
     assert.equal(tool.gate, "sandbox");
   }

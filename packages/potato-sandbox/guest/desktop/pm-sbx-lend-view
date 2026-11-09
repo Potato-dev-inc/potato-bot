@@ -1,0 +1,56 @@
+#!/bin/bash
+# Written for Puppet Master (flags follow pm-sbx-browser, same Google Chrome binary).
+# Opens the viewer window of one lent app: Chrome --app on the loopback page pm-sbx-control serves.
+# Its own profile under /tmp, so it never touches the bot's own browser.
+#
+# Usage: pm-sbx-lend-view <id> <title>. Env: DISPLAY (default :99), PM_SBX_LEND_PORT (default 47812), PM_SBX_LEND_WINDOW_SIZE (default 1024,768), PM_SBX_CHROME_NO_SANDBOX.
+
+set -u
+
+ID="${1:-}"
+TITLE="${2:-}"
+if ! printf '%s\n' "$ID" | grep -Eq '^[a-z0-9-]{1,32}$'; then
+  echo "pm-sbx-lend-view: bad id" >&2; exit 2
+fi
+PORT="${PM_SBX_LEND_PORT:-47812}"
+if ! printf '%s\n' "$PORT" | grep -Eq '^[0-9]{4,5}$'; then
+  echo "pm-sbx-lend-view: bad PM_SBX_LEND_PORT" >&2; exit 2
+fi
+SIZE="${PM_SBX_LEND_WINDOW_SIZE:-1024,768}"
+if ! printf '%s\n' "$SIZE" | grep -Eq '^[0-9]{2,5},[0-9]{2,5}$'; then
+  SIZE=1024,768
+fi
+BIN=/opt/google/chrome/chrome
+if [ ! -x "$BIN" ]; then
+  echo "pm-sbx-lend-view: Google Chrome is not installed (expected $BIN)" >&2; exit 1
+fi
+export DISPLAY="${DISPLAY:-:99}"
+PROFILE="/tmp/pm-lend-view-$ID"
+mkdir -p "$PROFILE" || exit 1
+rm -f "$PROFILE/SingletonLock" "$PROFILE/SingletonCookie" "$PROFILE/SingletonSocket" 2>/dev/null
+
+FLAGS=(
+  --ozone-platform=x11
+  --disable-gpu
+  --enable-unsafe-swiftshader
+  --disable-dev-shm-usage
+  --disable-background-networking
+  --disable-component-update
+  --disable-sync
+  --disable-breakpad
+  --disable-features=MediaRouter,OptimizationHints,Translate
+  --no-first-run
+  --no-default-browser-check
+  --disable-session-crashed-bubble
+  --hide-crash-restore-bubble
+  --password-store=basic
+  "--app=http://127.0.0.1:$PORT/lend/$ID"
+  "--user-data-dir=$PROFILE"
+  "--window-size=$SIZE"
+  "--class=pm-lend-$ID"
+)
+if [ "${PM_SBX_CHROME_NO_SANDBOX:-0}" = 1 ]; then
+  FLAGS+=(--no-sandbox)
+fi
+
+exec "$BIN" "${FLAGS[@]}"

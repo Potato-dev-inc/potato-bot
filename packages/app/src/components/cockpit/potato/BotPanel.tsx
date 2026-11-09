@@ -57,9 +57,11 @@ export interface BotPanelProps {
   onOpenMessage?: (messageId: string) => void;
   /** The Skills tab's calls. Tests pass a fake; the app passes nothing. */
   skills?: SkillsTransport;
+  /** Labs `potato_lend_app_enabled` on Windows: the Computer tab shows "Apps from your PC". */
+  lendOn?: boolean;
 }
 
-export function BotPanel({ bot, avatar, tab, onTab, onClose, screen, sandbox, files, onOpenSettings, through, onNotify, defaultBrain, onChanged, botSettings, settings, transport, companion, companionTransport, onOpenPane, routines, onOpenMessage, skills }: BotPanelProps) {
+export function BotPanel({ bot, avatar, tab, onTab, onClose, screen, sandbox, files, onOpenSettings, through, onNotify, defaultBrain, onChanged, botSettings, settings, transport, companion, companionTransport, onOpenPane, routines, onOpenMessage, skills, lendOn = false }: BotPanelProps) {
   const computerOff = useBotComputerOff(bot.id, tab === 'computer', botSettings);
   return (
     <div className="ck-potato-botpanel">
@@ -75,7 +77,7 @@ export function BotPanel({ bot, avatar, tab, onTab, onClose, screen, sandbox, fi
       </div>
       <div className="ck-scroll ck-potato-panel-body">
         <div className="ck-potato-tabpanel" role="tabpanel" aria-label="Computer" hidden={tab !== 'computer'}>
-          <ComputerTab bot={bot} avatar={avatar} screen={screen} sandbox={sandbox} files={files} through={through} onNotify={onNotify} onOpenSettings={onOpenSettings} computerOff={computerOff} onOpenTools={() => onTab('advanced')} />
+          <ComputerTab bot={bot} avatar={avatar} screen={screen} sandbox={sandbox} files={files} through={through} onNotify={onNotify} onOpenSettings={onOpenSettings} computerOff={computerOff} onOpenTools={() => onTab('advanced')} lendOn={lendOn} />
         </div>
         <div className="ck-potato-tabpanel" role="tabpanel" aria-label="Routines" hidden={tab !== 'routines'}>
           <RoutinesTab bot={bot} transport={routines} onOpenMessage={onOpenMessage} />

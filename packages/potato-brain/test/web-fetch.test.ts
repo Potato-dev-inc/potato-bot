@@ -48,7 +48,8 @@ test("web_fetch is in the sandbox list, with one url parameter", () => {
 test("web_fetch is owner-gated; the other computer tools are not", () => {
   const tools = sandboxTools({ call: async () => ({ ok: true, result: {} }) });
   assert.equal(tools.find((t) => t.spec.name === "web_fetch")?.gate, "sandbox_owner");
-  assert.ok(tools.filter((t) => t.spec.name !== "web_fetch").every((t) => t.gate === "sandbox"));
+  assert.ok(tools.filter((t) => t.spec.name !== "web_fetch" && !t.spec.name.startsWith("app_")).every((t) => t.gate === "sandbox"));
+  assert.ok(tools.filter((t) => t.spec.name.startsWith("app_")).every((t) => t.gate === "lend"));
 });
 
 test("a fetched page reaches the model fenced as data, with a closing tag escaped and secrets hidden", async () => {

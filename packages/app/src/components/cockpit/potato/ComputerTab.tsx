@@ -9,7 +9,9 @@ import type { FilesTransport } from '../../../lib/potato-files';
 import type { SandboxTransport } from '../../../lib/potato-sandbox';
 import type { ScreenTransport } from '../../../lib/potatoScreen';
 import { useSandbox } from '../../settings/sandbox/useSandbox';
+import type { LendTransport } from '../../../lib/potatoLend';
 import { ComputerFiles } from './ComputerFiles';
+import { ComputerLentApps } from './ComputerLentApps';
 import { ComputerMaintenance, SetUpCard, UnfinishedCard, useSandboxActions } from './ComputerMaintenance';
 import { ComputerPanel } from './ComputerPanel';
 import { SandboxWizardHost } from './SandboxWizardHost';
@@ -30,9 +32,13 @@ export interface ComputerTabProps {
   computerOff?: boolean;
   /** Opens the Advanced tab. */
   onOpenTools?: () => void;
+  /** Labs `potato_lend_app_enabled` on a Windows PC (see useLendOn): shows "Apps from your PC". Off: no card. */
+  lendOn?: boolean;
+  /** The lend calls. Tests pass a fake; the app passes nothing. */
+  lend?: LendTransport;
 }
 
-export function ComputerTab({ bot, avatar, screen, sandbox, files, through, onNotify, onOpenSettings, computerOff = false, onOpenTools }: ComputerTabProps) {
+export function ComputerTab({ bot, avatar, screen, sandbox, files, through, onNotify, onOpenSettings, computerOff = false, onOpenTools, lendOn = false, lend }: ComputerTabProps) {
   // `through` only changes who drives the bot: the sandbox screen stays available to watch or take over.
   void through;
   const off = <p className="ck-sub ck-potato-panel-empty">{PANEL_COPY.noComputer(bot.name)}</p>;
@@ -47,11 +53,13 @@ export function ComputerTab({ bot, avatar, screen, sandbox, files, through, onNo
       )}
     </p>
   );
+  const lendCard = lendOn ? <ComputerLentApps bot={bot} transport={lend} /> : null;
   const body = sandbox ? (
-    <WithSandbox bot={bot} avatar={avatar} screen={screen} sandbox={sandbox} files={files} onNotify={onNotify} onOpenSettings={onOpenSettings} whenOff={off} />
+    <WithSandbox bot={bot} avatar={avatar} screen={screen} sandbox={sandbox} files={files} onNotify={onNotify} onOpenSettings={onOpenSettings} whenOff={off} lendCard={lendCard} />
   ) : (
     <>
       <ComputerPanel bot={bot} avatar={avatar} transport={screen} onNotify={onNotify} whenOff={off} />
+      {lendCard}
       {files && <ComputerFiles bot={bot} transport={files} awake onNotify={onNotify} />}
     </>
   );
@@ -72,7 +80,8 @@ function WithSandbox({
   onNotify,
   onOpenSettings,
   whenOff,
-}: Pick<ComputerTabProps, 'bot' | 'avatar' | 'onNotify' | 'onOpenSettings' | 'files'> & { screen: ScreenTransport; sandbox: SandboxTransport; whenOff: ReactNode }) {
+  lendCard,
+}: Pick<ComputerTabProps, 'bot' | 'avatar' | 'onNotify' | 'onOpenSettings' | 'files'> & { screen: ScreenTransport; sandbox: SandboxTransport; whenOff: ReactNode; lendCard: ReactNode }) {
   const { view, refresh } = useSandbox(sandbox);
   const [wizard, setWizard] = useState(false);
   const actions = useSandboxActions(sandbox, refresh, onNotify);
@@ -100,6 +109,7 @@ function WithSandbox({
         }
         after={view && !notSetUp ? <ComputerMaintenance transport={sandbox} view={view} refresh={refresh} onOpenSettings={onOpenSettings} onNotify={onNotify} /> : null}
       />
+      {lendCard}
       {files && view && !notSetUp && (
         <ComputerFiles bot={bot} transport={files} awake={view.state === 'running'} onWake={() => void actions.start()} onNotify={onNotify} />
       )}

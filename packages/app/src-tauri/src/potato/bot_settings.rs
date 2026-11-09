@@ -421,7 +421,7 @@ pub enum Area {
 pub fn sandbox_tool_area(tool: &str) -> Option<Area> {
     match tool {
         "computer_observe" | "computer_act" | "ask_person_for_screen" | "run_terminal" | "read_file" | "write_file" | "edit_file"
-        | "list_files" | "set_wallpaper" | "mcp_list_tools" | "mcp_call_tool" | "send_file" => Some(Area::Computer),
+        | "list_files" | "set_wallpaper" | "mcp_list_tools" | "mcp_call_tool" | "send_file" | "app_observe" | "app_act" => Some(Area::Computer),
         "browser_navigate" | "browser_snapshot" | "browser_act" | "web_fetch" => Some(Area::Web),
         _ => None,
     }

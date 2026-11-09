@@ -494,6 +494,22 @@ export function makeSandboxRows(transport: SandboxTransport = tauriSandboxTransp
       ),
     },
     {
+      id: 'potato-lend-labs',
+      label: 'Lend an App',
+      hint: 'Lend an open Windows app, like LINE, to your bot. Windows only.',
+      keywords: `${KEYWORDS} lend app apps windows share open line labs early`,
+      group: 'Labs',
+      labs: { name: 'Lend an App', about: 'Lend an open Windows app, like LINE, to your bot. Windows only.' },
+      render: (env) => (
+        <LabsSwitch
+          label="Lend an App"
+          description="Lend an open Windows app, like LINE, to your bot. It shows up on the bot's computer and the bot can use it while you watch. Windows only."
+          checked={env.settings.potato_lend_app_enabled ?? false}
+          onChange={(value) => void env.patch({ potato_lend_app_enabled: value })}
+        />
+      ),
+    },
+    {
       id: 'potato-sandbox',
       label: 'Sandbox',
       hint: 'Set up, start, stop, reset or remove the small Linux computer a bot can use.',

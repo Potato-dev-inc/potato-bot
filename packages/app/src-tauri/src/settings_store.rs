@@ -20,6 +20,7 @@ pub const DEV_LABS_KEYS: &[&str] = &[
     "desk_enabled",
     "model_bridge_enabled",
     "spaces_enabled",
+    "potato_lend_app_enabled",
 ];
 
 /// Tests turn the override on through this; it is off in every test unless a test sets it.
@@ -90,6 +91,7 @@ const PATCHABLE_KEYS: &[&str] = &[
     "desk_enabled",
     "model_bridge_enabled",
     "spaces_enabled",
+    "potato_lend_app_enabled",
 ];
 
 pub fn default_public_settings() -> Value {
@@ -125,6 +127,8 @@ pub fn default_public_settings() -> Value {
         "potato_bot_enabled": true,
         // Potato Bot sandbox (Labs, needs Potato Bot): a small Linux computer the bot can use. On by default.
         "potato_sandbox_enabled": true,
+        // Lend an App (Labs, Windows): lend an open app to your bot. Off until chosen.
+        "potato_lend_app_enabled": false,
         // Bot groups (Labs, needs Potato Bot): one chat with several of your bots. Off until chosen.
         "potato_groups_enabled": false,
         // Chat over the Agent Client Protocol (Labs): agents driven through a protocol instead of a terminal

@@ -66,6 +66,8 @@ pub mod skills;
 pub mod trash;
 pub mod usage;
 pub mod keeper;
+pub mod lend;
+pub mod lend_tools;
 pub mod live;
 pub mod space_link;
 pub mod log;

@@ -1122,6 +1122,8 @@ impl Service {
         });
         // The computer is offered only to a turn whose trust allows it (never `others`).
         let item = protocol::with_capabilities(item, self.sandbox_offered() && rules::tool_access(trust).sandbox);
+        // The owner's lent apps need no sandbox: only Potato Bot on, the Lend an App flag, and the owner's turn.
+        let item = protocol::with_lend(item, self.brains.enabled() && super::live::lend_labs_on() && rules::tool_access(trust).sandbox);
         self.deliver(rt, &saved.id, &conversation, item);
         if matches!(origin, Origin::Job { .. }) {
             rt.job_turn = Some(JobTurn::Turn(saved.id.clone()));

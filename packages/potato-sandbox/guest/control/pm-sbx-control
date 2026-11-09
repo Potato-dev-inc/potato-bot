@@ -13,6 +13,7 @@ Endpoints (POST, JSON, Authorization: Bearer <token>):
   /v1/screenshot  {"display"}
   GET  /v1/mcp/tools     -> {"servers": [{"name", "status", "error", "tools": [...]}]}
   POST /v1/mcp/call      {"server", "tool", "arguments"} -> {"content": [...], "isError"}
+  POST /v1/lend/open|close|frame|events (mirror a Windows app; viewer page on 127.0.0.1:47812)
   PUT  /v1/mcp/config    {"servers": [{"name", "command", "args", "env"}]} replaces the user MCP servers
 
 Only argv lists are executed, never through a shell. Argv shapes are
@@ -64,6 +65,8 @@ subprocess.Popen = _WorkPopen
 
 BIND_HOST = "127.0.0.1"
 DEFAULT_PORT = 47801
+LEND_VIEW_PORT = 47812
+LEND_VIEW_BIN = "/usr/local/bin/pm-sbx-lend-view"
 DEFAULT_DISPLAY = ":99"
 MAX_BODY_BYTES = 256 * 1024
 MAX_ARGV = 32
@@ -150,6 +153,8 @@ class Settings:
     focus_wrapper: str
     mcp_config: str = DEFAULT_MCP_CONFIG
     mcp_log_dir: str = DEFAULT_MCP_LOG_DIR
+    lend_view: str = LEND_VIEW_BIN
+    lend_port: int = LEND_VIEW_PORT
 
 
 def display_lock(display):
@@ -555,13 +560,361 @@ def make_hub(settings):
     )
 
 
-def make_handler(settings, hub=None):
+# ---- Lend an app (mirror into the sandbox screen) ----------------------------------------------------------------
+# The host pushes frames of a Windows app and pulls input events; a loopback viewer page (shown by pm-sbx-lend-view in a
+# Chrome --app window on the sandbox desktop) draws the frame and turns mouse and keys into events. Memory only.
+# Scroll events carry dy in wheel notches (positive = down).
+LEND_FRAME_BODY_BYTES = 4 * 1024 * 1024
+LEND_MAX_EVENTS = 200
+LEND_MAX_FRAME_BYTES = 3 * 1024 * 1024
+LEND_MAX_DIM = 16_384
+LEND_POLL_SEC = 10
+LEND_MAX_WAIT_MS = 2000  # the longest /v1/lend/events may be held waiting for an event
+LEND_ID_RE = re.compile(r"[a-z0-9-]{1,32}")
+LEND_KEYS = frozenset(
+    ("enter", "tab", "escape", "backspace", "delete", "up", "down", "left", "right", "pageup", "pagedown", "home", "end")
+)
+LEND_MAX_TEXT = 1000
+CONTROL_CHARS_RE = re.compile("[\x00-\x1f\x7f-\x9f  ]")
+
+
+def lend_valid_id(value):
+    return isinstance(value, str) and LEND_ID_RE.fullmatch(value) is not None
+
+
+def lend_clean_title(value):
+    text = CONTROL_CHARS_RE.sub("", value) if isinstance(value, str) else ""
+    text = text.strip()[:80]
+    return text or "App"
+
+
+def lend_clean_event(event):
+    """A validated copy of one viewer event, or None."""
+    if not isinstance(event, dict):
+        return None
+
+    def num(key):
+        value = event.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value or abs(value) > LEND_MAX_DIM * 4:
+            return None
+        return int(value)
+
+    kind = event.get("t")
+    if kind == "click":
+        x, y = num("x"), num("y")
+        button, count = event.get("button", "left"), event.get("count", 1)
+        if x is None or y is None or button not in ("left", "right") or isinstance(count, bool) or count not in (1, 2):
+            return None
+        return {"t": "click", "x": x, "y": y, "button": button, "count": count}
+    if kind == "dblclick":
+        # The second click of a double click (the first one went out as a "click"): the host sends only DBLCLK + button up.
+        x, y = num("x"), num("y")
+        if x is None or y is None:
+            return None
+        return {"t": "dblclick", "x": x, "y": y}
+    if kind == "text":
+        text = event.get("s")
+        if not isinstance(text, str) or not text or len(text) > LEND_MAX_TEXT:
+            return None
+        return {"t": "text", "s": text}
+    if kind == "key":
+        return {"t": "key", "k": event["k"]} if event.get("k") in LEND_KEYS else None
+    if kind == "scroll":
+        x, y, dy = num("x"), num("y"), num("dy")
+        if x is None or y is None or dy is None:
+            return None
+        return {"t": "scroll", "x": x, "y": y, "dy": dy}
+    return None
+
+
+def launch_lend_view(settings, lend_id, title, w=1024, h=768):
+    """Start the viewer window for one lent app. Returns the process (None if it could not start)."""
+    try:
+        return subprocess.Popen(
+            [settings.lend_view, lend_id, title],
+            env={**child_env(settings.default_display), "PM_SBX_LEND_PORT": str(settings.lend_port),
+                 "PM_SBX_LEND_WINDOW_SIZE": f"{max(100, min(w, 1600))},{max(100, min(h, 1000))}"},
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+        )
+    except OSError:
+        return None
+
+
+class LendHub:
+    """Frames, queued events and viewer processes per lent app id. Thread safe."""
+
+    def __init__(self, launcher):
+        self._launcher = launcher  # (id, title, w, h) -> process-like (poll/terminate) or None
+        self._cond = threading.Condition()
+        self._apps = {}  # id -> {"title", "proc", "frame": None | (seq, w, h, bytes), "events": [...]}
+
+    def open(self, lend_id, title, w=1024, h=768):
+        with self._cond:
+            app = self._apps.get(lend_id)
+            if app is not None and app["proc"] is not None and app["proc"].poll() is None:
+                return
+        proc = self._launcher(lend_id, title, w, h)
+        with self._cond:
+            app = self._apps.setdefault(lend_id, {"title": title, "proc": None, "frame": None, "events": []})
+            app["title"], app["proc"] = title, proc
+        if proc is None:
+            raise RuntimeError("could not start the viewer")
+
+    def close(self, lend_id):
+        with self._cond:
+            app = self._apps.pop(lend_id, None)
+            self._cond.notify_all()
+        if app is not None and app["proc"] is not None:
+            try:
+                app["proc"].terminate()
+            except OSError:
+                pass
+
+    def close_all(self):
+        with self._cond:
+            ids = list(self._apps)
+        for lend_id in ids:
+            self.close(lend_id)
+
+    def title(self, lend_id):
+        with self._cond:
+            app = self._apps.get(lend_id)
+            return app["title"] if app else None
+
+    def put_frame(self, lend_id, seq, w, h, jpeg, captured_ms=0):
+        with self._cond:
+            app = self._apps.get(lend_id)
+            if app is None:
+                raise RequestError("app is not open")
+            if app["frame"] is None or seq >= app["frame"][0]:
+                app["frame"] = (seq, w, h, jpeg)
+                app["captured_ms"] = captured_ms  # when the host captured it (unix ms), so the viewer can log the age
+                self._cond.notify_all()
+
+    def captured_ms(self, lend_id):
+        with self._cond:
+            app = self._apps.get(lend_id)
+            return app.get("captured_ms", 0) if app else 0
+
+    def wait_frame(self, lend_id, after, timeout):
+        """The latest frame with seq > after, or None on timeout / unknown id."""
+        deadline = time.monotonic() + timeout
+        with self._cond:
+            while True:
+                app = self._apps.get(lend_id)
+                if app is None:
+                    return None
+                frame = app["frame"]
+                if frame is not None and frame[0] > after:
+                    return frame
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                self._cond.wait(remaining)
+
+    def push_event(self, lend_id, event):
+        with self._cond:
+            app = self._apps.get(lend_id)
+            if app is None:
+                return False
+            app["events"].append(event)
+            del app["events"][:-LEND_MAX_EVENTS]
+            self._cond.notify_all()  # a host long-polling /v1/lend/events answers at once
+            return True
+
+    def drain(self, lend_id, wait=0.0):
+        """The queued events. With `wait` seconds, holds until one arrives (or the app closes, or the time is up)."""
+        deadline = time.monotonic() + wait
+        with self._cond:
+            while True:
+                app = self._apps.get(lend_id)
+                if app is None:
+                    return []
+                if app["events"]:
+                    events, app["events"] = app["events"], []
+                    return events
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return []
+                self._cond.wait(remaining)
+
+
+def _lend_id(body):
+    lend_id = body.get("id")
+    if not lend_valid_id(lend_id):
+        raise RequestError("invalid id")
+    return lend_id
+
+
+def lend_open(lend, body):
+    lend_id = _lend_id(body)
+    w = _int_field(body, "w", 1024, 1, LEND_MAX_DIM)
+    h = _int_field(body, "h", 768, 1, LEND_MAX_DIM)
+    lend.open(lend_id, lend_clean_title(body.get("title")), w, h)
+    return {"ok": True}
+
+
+def lend_close(lend, body):
+    lend.close(_lend_id(body))
+    return {"ok": True}
+
+
+def lend_frame(lend, body):
+    lend_id = _lend_id(body)
+    seq = _int_field(body, "seq", 0, 0, 2**53)
+    w = _int_field(body, "w", 0, 1, LEND_MAX_DIM)
+    h = _int_field(body, "h", 0, 1, LEND_MAX_DIM)
+    encoded = body.get("jpeg_b64")
+    if not isinstance(encoded, str) or len(encoded) > LEND_MAX_FRAME_BYTES * 4 // 3 + 8:
+        raise RequestError("invalid frame")
+    try:
+        jpeg = base64.b64decode(encoded, validate=True)
+    except ValueError:
+        raise RequestError("invalid frame") from None
+    if not jpeg.startswith(JPEG_SOI) or len(jpeg) > LEND_MAX_FRAME_BYTES:
+        raise RequestError("invalid frame")
+    lend.put_frame(lend_id, seq, w, h, jpeg, _int_field(body, "ts", 0, 0, 2**53))
+    return {"ok": True}
+
+
+def lend_events(lend, body):
+    wait_ms = _int_field(body, "wait_ms", 0, 0, LEND_MAX_WAIT_MS)
+    return {"events": lend.drain(_lend_id(body), wait_ms / 1000.0)}
+
+
+LEND_PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>__TITLE__</title>
+<style>html,body{margin:0;height:100%;background:#111;overflow:hidden;font:14px sans-serif;color:#ccc}
+#f{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;display:none;user-select:none;-webkit-user-drag:none}
+#w{position:absolute;inset:0;display:flex;align-items:center;justify-content:center}</style></head><body tabindex="0">
+<div id="w"></div><img id="f" draggable="false" alt="">
+<script>
+const ID=__ID__,TITLE=__TITLE_JSON__;document.title=TITLE;
+const img=document.getElementById('f'),wait=document.getElementById('w');
+wait.textContent='Waiting for '+TITLE+'\\u2026';
+let fw=0,fh=0,seq=0,url=null;
+function send(ev){fetch('/lend/'+ID+'/input',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(ev),keepalive:true}).catch(()=>{});}
+function pos(e){if(!fw||!fh)return null;const r=img.getBoundingClientRect(),s=Math.min(r.width/fw,r.height/fh);
+const ox=r.left+(r.width-fw*s)/2,oy=r.top+(r.height-fh*s)/2,x=(e.clientX-ox)/s,y=(e.clientY-oy)/s;
+if(x<0||y<0||x>=fw||y>=fh)return null;return{x:Math.floor(x),y:Math.floor(y)};}
+img.addEventListener('mouseup',e=>{const p=pos(e);if(!p)return;
+if(e.button===2){send({t:'click',x:p.x,y:p.y,button:'right',count:1});return;}
+if(e.button!==0)return;
+/* No waiting to see whether a second click follows: the first goes out at once, the second is sent as a dblclick. */
+if(e.detail>=2){send({t:'dblclick',x:p.x,y:p.y});return;}
+send({t:'click',x:p.x,y:p.y,button:'left',count:1});});
+img.addEventListener('contextmenu',e=>e.preventDefault());
+img.addEventListener('wheel',e=>{e.preventDefault();const p=pos(e);if(!p)return;
+const dy=Math.sign(e.deltaY)*Math.max(1,Math.round(Math.abs(e.deltaY)/100));send({t:'scroll',x:p.x,y:p.y,dy:dy});},{passive:false});
+const KEYS={Enter:'enter',Tab:'tab',Escape:'escape',Backspace:'backspace',Delete:'delete',ArrowUp:'up',ArrowDown:'down',ArrowLeft:'left',ArrowRight:'right',PageUp:'pageup',PageDown:'pagedown',Home:'home',End:'end'};
+window.addEventListener('keydown',e=>{if(e.ctrlKey||e.metaKey||e.altKey)return;
+if(KEYS[e.key]){e.preventDefault();send({t:'key',k:KEYS[e.key]});}
+else if(e.key.length===1){e.preventDefault();send({t:'text',s:e.key});}});
+window.addEventListener('paste',e=>{const s=(e.clipboardData||{getData:()=>''}).getData('text');if(s){e.preventDefault();send({t:'text',s:s.slice(0,1000)});}});
+async function loop(){for(;;){try{const r=await fetch('/lend/'+ID+'/frame?after='+seq,{cache:'no-store'});
+if(r.status===204)continue;if(r.status!==200){await new Promise(z=>setTimeout(z,1000));continue;}
+const n=parseInt(r.headers.get('X-Seq'),10);fw=parseInt(r.headers.get('X-W'),10);fh=parseInt(r.headers.get('X-H'),10);
+const cap=parseInt(r.headers.get('X-Captured'),10);if(cap)console.debug('lend frame age ms (capture to viewer)',Date.now()-cap);
+const b=await r.blob(),u=URL.createObjectURL(b);img.src=u;if(url)URL.revokeObjectURL(url);url=u;
+if(n>seq)seq=n;img.style.display='block';wait.style.display='none';}
+catch(_){await new Promise(z=>setTimeout(z,1000));}}}
+loop();
+</script></body></html>"""
+
+
+def lend_page(title, lend_id):
+    def js(value):
+        return json.dumps(value).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+
+    safe = title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    page = LEND_PAGE.replace("__TITLE_JSON__", js(title)).replace("__ID__", js(lend_id)).replace("__TITLE__", safe)
+    return page.encode("utf-8")
+
+
+LEND_PATH_RE = re.compile(r"/lend/([a-z0-9-]{1,32})(/frame|/input)?")
+
+
+def make_viewer_handler(lend):
+    class ViewerHandler(BaseHTTPRequestHandler):
+        server_version = "pm-sbx-lend"
+        sys_version = ""
+
+        def log_message(self, *_args):
+            pass
+
+        def _send(self, status, body=b"", content_type="text/plain", headers=()):
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            for name, value in headers:
+                self.send_header(name, value)
+            self.end_headers()
+            try:
+                self.wfile.write(body)
+            except OSError:
+                pass
+
+        def _match(self):
+            path, _, query = self.path.partition("?")
+            match = LEND_PATH_RE.fullmatch(path)
+            return (match.group(1), match.group(2) or "", query) if match else (None, "", "")
+
+        def do_GET(self):
+            lend_id, tail, query = self._match()
+            if lend_id is None or tail == "/input":
+                return self._send(404)
+            if tail == "":
+                title = lend.title(lend_id)
+                if title is None:
+                    return self._send(404)
+                return self._send(200, lend_page(title, lend_id), "text/html; charset=utf-8")
+            after = -1
+            for part in query.split("&"):
+                if part.startswith("after="):
+                    try:
+                        after = int(part[6:])
+                    except ValueError:
+                        after = -1
+            frame = lend.wait_frame(lend_id, after, LEND_POLL_SEC)
+            if frame is None:
+                return self._send(204)
+            seq, w, h, jpeg = frame
+            self._send(200, jpeg, "image/jpeg", (("X-Seq", str(seq)), ("X-W", str(w)), ("X-H", str(h)), ("X-Captured", str(lend.captured_ms(lend_id)))))
+
+        def do_POST(self):
+            lend_id, tail, _ = self._match()
+            if lend_id is None or tail != "/input":
+                return self._send(404)
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if length < 0 or length > MAX_BODY_BYTES:
+                    return self._send(400)
+                event = lend_clean_event(json.loads(self.rfile.read(length)))
+            except ValueError:
+                return self._send(400)
+            if event is None:
+                return self._send(400)
+            self._send(200 if lend.push_event(lend_id, event) else 404)
+
+    return ViewerHandler
+
+
+class ViewerServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+
+def make_handler(settings, hub=None, lend=None):
     hub = make_hub(settings) if hub is None else hub
+    lend = LendHub(lambda i, t, w, h: launch_lend_view(settings, i, t, w, h)) if lend is None else lend
     get_routes = {"/v1/mcp/tools": lambda body: hub.snapshot()}
     post_routes = {
         "/v1/desktop": lambda body: run_desktop(settings, body),
         "/v1/screenshot": lambda body: run_screenshot(settings, body),
         "/v1/mcp/call": lambda body: run_mcp_call(hub, body),
+        "/v1/lend/open": lambda body: lend_open(lend, body),
+        "/v1/lend/close": lambda body: lend_close(lend, body),
+        "/v1/lend/frame": lambda body: lend_frame(lend, body),
+        "/v1/lend/events": lambda body: lend_events(lend, body),
     }
     put_routes = {"/v1/mcp/config": lambda body: run_mcp_config(hub, body)}
 
@@ -590,7 +943,7 @@ def make_handler(settings, hub=None):
                 self._send_json(404, {"error": "not found"})
                 return
             try:
-                response = route(self._read_json() if read_body else {})
+                response = route(self._read_json(self._body_limit()) if read_body else {})
             except RequestError as error:
                 self._send_json(400, {"error": str(error)})
                 return
@@ -602,12 +955,15 @@ def make_handler(settings, hub=None):
                 return
             self._send_json(200, response)
 
-        def _read_json(self):
+        def _body_limit(self):
+            return LEND_FRAME_BODY_BYTES if self.path == "/v1/lend/frame" else MAX_BODY_BYTES
+
+        def _read_json(self, limit=MAX_BODY_BYTES):
             try:
                 length = int(self.headers.get("Content-Length", "0"))
             except ValueError:
                 raise RequestError("invalid content length") from None
-            if length < 0 or length > MAX_BODY_BYTES:
+            if length < 0 or length > limit:
                 raise RequestError("request body too large")
             try:
                 body = json.loads(self.rfile.read(length))
@@ -645,6 +1001,8 @@ def load_settings(env):
         focus_wrapper=env.get("PM_SBX_FOCUS_OR_LAUNCH", default_focus),
         mcp_config=env.get("PM_SBX_MCP_CONFIG", DEFAULT_MCP_CONFIG),
         mcp_log_dir=env.get("PM_SBX_MCP_LOG_DIR", DEFAULT_MCP_LOG_DIR),
+        lend_view=env.get("PM_SBX_LEND_VIEW", LEND_VIEW_BIN),
+        lend_port=parse_port(env.get("PM_SBX_LEND_PORT", str(LEND_VIEW_PORT))),
     )
 
 
@@ -657,13 +1015,19 @@ def main(env=None):
     hub = make_hub(settings)
     signal.signal(signal.SIGTERM, lambda _signo, _frame: sys.exit(0))
     hub.start()
-    server = ThreadingHTTPServer((BIND_HOST, settings.port), make_handler(settings, hub))
+    lend = LendHub(lambda i, t, w, h: launch_lend_view(settings, i, t, w, h))
+    server = ThreadingHTTPServer((BIND_HOST, settings.port), make_handler(settings, hub, lend))
+    viewer = ViewerServer((BIND_HOST, settings.lend_port), make_viewer_handler(lend))
+    threading.Thread(target=viewer.serve_forever, daemon=True).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
         server.server_close()
+        viewer.shutdown()
+        viewer.server_close()
+        lend.close_all()
         hub.close()
     return 0
 

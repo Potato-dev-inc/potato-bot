@@ -123,7 +123,7 @@ before(async () => {
 });
 
 const rows: Array<[string, readonly string[], boolean]> = [
-  ["sandbox tools (incl. send_file)", SANDBOX_TOOL_NAMES, true],
+  ["sandbox tools (incl. send_file)", SANDBOX_TOOL_NAMES.filter((n) => !n.startsWith("app_")), true],
   ["scratchpad", SCRATCHPAD_TOOL_NAMES, true],
   ["search_history and read_history", HISTORY_TOOL_NAMES, true],
   ["schedule tools", SCHEDULE_TOOL_NAMES, true],

@@ -150,6 +150,28 @@ const offered = (r: Rig, n: number): string[] => reachable(r.provider.calls[n]);
 
 // ---- offering the tools -----------------------------------------------------------------------------
 
+test("the lent-app tools follow capabilities.lend alone: no computer needed, owner only", async () => {
+  const r = await rig(new Scripted([says("1"), says("2"), says("3"), says("4")]));
+  const apps = (n: number): string[] => offered(r, n).filter((x) => x === "app_observe" || x === "app_act").sort();
+  const ask = async (id: string, over: Record<string, unknown>): Promise<void> => {
+    r.bridge.push(sendMsg({ id, ...over }));
+    await r.bridge.waitFor((e) => e["type"] === "reply" && e["inReplyTo"] === id);
+  };
+  try {
+    await ask("a", {});
+    await ask("b", { capabilities: { lend: true } });
+    await ask("c", { capabilities: { sandbox: true, lend: false } });
+    await ask("d", { capabilities: { lend: true }, from: { id: "x", name: "Stranger", trust: "others" } });
+    assert.deepEqual(apps(0), [], "no capabilities: none");
+    assert.deepEqual(apps(1), ["app_act", "app_observe"], "lend alone offers them");
+    assert.deepEqual(offered(r, 1).filter((n) => n === "computer_observe" || n === "run_terminal"), [], "and none of the sandbox tools");
+    assert.deepEqual(apps(2), [], "sandbox alone does not");
+    assert.deepEqual(apps(3), [], "a stranger never gets them");
+  } finally {
+    await r.done();
+  }
+});
+
 test("the six tools are offered only on a turn where the app says the bot has a computer", async () => {
   const r = await rig(new Scripted([says("plain"), says("with a computer"), says("and again plain")]));
   try {
@@ -163,7 +185,8 @@ test("the six tools are offered only on a turn where the app says the bot has a 
     assert.deepEqual(offered(r, 0).filter((n) => (SANDBOX_TOOL_NAMES as readonly string[]).includes(n)), [], "no capabilities field: no computer");
     assert.deepEqual(
       offered(r, 1).filter((n) => (SANDBOX_TOOL_NAMES as readonly string[]).includes(n)).sort(),
-      [...SANDBOX_TOOL_NAMES].sort(),
+      SANDBOX_TOOL_NAMES.filter((n) => n !== "app_observe" && n !== "app_act").sort(),
+      "the lent-app tools have their own capability",
     );
     assert.deepEqual(offered(r, 2).filter((n) => (SANDBOX_TOOL_NAMES as readonly string[]).includes(n)), [], "false means no");
     assert.ok(offered(r, 0).includes("ask_helper"), "the helper tool is offered either way");

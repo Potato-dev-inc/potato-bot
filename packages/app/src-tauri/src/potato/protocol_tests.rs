@@ -260,6 +260,13 @@ fn the_result_items_and_the_capabilities_are_what_the_brain_reads() {
     assert_eq!(with["type"], "send");
     assert_eq!(with["text"], "hi");
     assert_eq!(with_capabilities(json!({"v":1,"type":"persona","pack":"fish"}), false)["capabilities"]["sandbox"], false);
+    // lent apps are a separate capability: on with the sandbox off, and never invented where there are no capabilities
+    let lent = with_lend(with_capabilities(json!({"type":"send"}), false), true);
+    assert_eq!(lent["capabilities"], json!({"sandbox": false, "lend": true}));
+    assert!(with_lend(json!({"type":"send"}), true).get("capabilities").is_none());
+    // Lend off: the key is absent, so the payload is unchanged
+    let off = with_lend(with_capabilities(json!({"type":"send"}), false), false);
+    assert_eq!(off["capabilities"], json!({"sandbox": false}));
 }
 
 #[test]

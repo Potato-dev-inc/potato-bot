@@ -216,3 +216,11 @@ test("the core list names real tools and the finder matches by name and by words
   assert.match(searchTools("qqqqxx", hidden), /No tool matches/);
   assert.equal(searchTools("", hidden).split("\n").length, hidden.length);
 });
+
+test("lent-app tools stay in the list on a long (bridged) owner turn when the app said lend", async () => {
+  const lent = await firstRequest({ ...OWNER, lend: true }, true);
+  assert.ok(names(lent).includes(USE_TOOL_NAME), "the list is long enough to be bridged");
+  assert.ok(names(lent).includes("app_observe") && names(lent).includes("app_act"), "app tools are in the list, not behind find_tool");
+  const notLent = await firstRequest(OWNER, true);
+  assert.ok(!names(notLent).includes("app_observe") && !names(notLent).includes("app_act"), "without lend they are not offered at all");
+});

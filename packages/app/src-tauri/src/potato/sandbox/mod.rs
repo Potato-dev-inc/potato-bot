@@ -239,6 +239,15 @@ pub trait Sandbox: Send + Sync {
     fn agent_home_remove(&self, _image: &str) -> SbxResult<()> {
         Err(SandboxError::new("SANDBOX_SHELL_UNSUPPORTED", "This sandbox cannot delete an agent's space."))
     }
+    /// Is the computer up right now? Cheap: never starts it and runs nothing inside it. Lend an App's mirror asks this.
+    fn lend_ready(&self) -> bool {
+        false
+    }
+    /// One POST to the control service's `/v1/lend/*` routes (the mirror of a lent Windows app). Never starts the
+    /// computer: when it is not up the error is `SANDBOX_NOT_RUNNING`. Default: unsupported.
+    fn lend_post(&self, _path: &str, _body: &serde_json::Value) -> SbxResult<serde_json::Value> {
+        Err(SandboxError::new("SANDBOX_NOT_RUNNING", "The computer is not running."))
+    }
     /// Reads a file inside the sandbox (at most `max` bytes).
     fn read_file(&self, _path: &str, _max: usize) -> SbxResult<Vec<u8>> {
         Err(SandboxError::new("SANDBOX_FILES_UNSUPPORTED", "This sandbox cannot read files."))
@@ -735,6 +744,16 @@ impl Sandbox for WslSandbox {
         ready.client.mcp_config(servers)?;
         self.lifecycle.touch(now_ms());
         Ok(())
+    }
+
+    fn lend_ready(&self) -> bool {
+        self.lifecycle.running_client().is_some()
+    }
+
+    fn lend_post(&self, path: &str, body: &serde_json::Value) -> SbxResult<serde_json::Value> {
+        let client = self.lifecycle.running_client().ok_or_else(|| SandboxError::new("SANDBOX_NOT_RUNNING", "The computer is not running."))?;
+        // Not `touch`: the mirror must not keep the computer from its idle stop.
+        Ok(client.post(path, body.clone())?)
     }
 
     fn secret_config(&self, servers: &serde_json::Value) -> SbxResult<()> {

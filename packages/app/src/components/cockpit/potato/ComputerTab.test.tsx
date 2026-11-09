@@ -7,6 +7,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fakeSandboxTransport, type FakeSandboxTransport, type FakeSandboxSeed } from '../../../lib/potato-sandbox';
 import { fakeScreenTransport, type FakeScreenTransport } from '../../../lib/potatoScreen';
+import type { LendTransport } from '../../../lib/potatoLend';
 import { ComputerTab, type ComputerTabProps } from './ComputerTab';
 import { buttonByText } from './test-helpers';
 
@@ -206,5 +207,28 @@ describe('the Computer switch of the bot (Advanced > Tools)', () => {
   it('says nothing when the switch is on', async () => {
     await mount({ computerOff: false });
     expect(host.querySelector('.ck-potato-computer-toolsoff')).toBeNull();
+  });
+});
+
+describe('Apps from your PC', () => {
+  const lendStub = (): LendTransport => ({
+    candidates: async () => [],
+    start: async () => ({ id: 'x', hwnd: 1, pid: 2, appName: 'LINE', title: '', mode: 'visible', phase: 'bot' }),
+    list: async () => [],
+    bringBack: async () => {},
+    setMode: async () => {},
+    takeOver: async () => {},
+    handBack: async () => {},
+    thumbnail: async () => '',
+  });
+
+  it('shows the card when the Labs flag is on', async () => {
+    await mount({ lendOn: true, lend: lendStub() });
+    expect(host.querySelector('.ck-potato-lend')?.textContent).toContain('Apps from your PC');
+  });
+
+  it('is not in the tab when the Labs flag is off', async () => {
+    await mount({ lendOn: false, lend: lendStub() });
+    expect(host.querySelector('.ck-potato-lend')).toBeNull();
   });
 });

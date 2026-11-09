@@ -1,11 +1,19 @@
 # Changelog
 
+## 1.0.14
+
+- New Lab: Lend an App (Windows only, off by default). Turn it on in Settings > Labs, then lend an open app from your PC, for example LINE, to your bot from the Computer tab ("Apps from your PC").
+- Visible mode puts a border on the app; you can Take control and Hand back at any time. Hidden mode lets the bot work on it see-through.
+- The bot can look at the app and act in it with the new `app_observe` and `app_act` tools. It never moves your real mouse, it will not type into password fields, and it works only in your own direct chats.
+- If the bot's sandbox is running, the lent app also shows as a window on the bot's screen. After a sandbox restart the view reconnects.
+- Not tried on a clean PC yet.
+
 ## 1.0.13
 
 - Spaces chat on the PC looks like a group chat now: everyone, you and the bots included, is on the left with a round picture, name and time, and a person's next lines sit under their name.
 - Bots have a square picture, a BOT tag and whose bot it is.
 - A reply shows a small line above it with who and what it answers; click it to jump there.
-- @names are highlighted, and a message that mentions you is marked.
+- Names called with `@` are highlighted, and a message that mentions you is marked.
 - Hovering a message shows its time and its menu on that message, not off to the side. Days are split by a date line.
 - The phone keeps its chat bubbles.
 

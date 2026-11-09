@@ -69,6 +69,8 @@ interface SteerWaiting {
   tools: ToolLevel;
   /** the app said this bot has a computer on this turn */
   sandbox?: boolean;
+  /** the app said this owner has lent apps on this turn */
+  lend?: boolean;
   /** a routine's own run (its sender is the routine, not a person) */
   routine?: boolean;
   text: string;
@@ -215,6 +217,8 @@ export class PotatoChannel {
   private calls = new Map<string, PendingCall>();
   /** conversation id -> the app said this bot has a computer (the last send for it) */
   private computer = new Map<string, boolean>();
+  /** conversation id -> the app said lent apps are usable (capabilities.lend of the last send) */
+  private lendCaps = new Map<string, boolean>();
   private handled: string[] = [];
   /** one runner (gate state, silence budget) per room id */
   private rooms = new Map<string, RoomRunner>();
@@ -751,12 +755,15 @@ export class PotatoChannel {
     const caps = m["capabilities"];
     const sandbox = isRecord(caps) && caps["sandbox"] === true;
     this.computer.set(conversationId, sandbox);
+    const lend = isRecord(caps) && caps["lend"] === true;
+    this.lendCaps.set(conversationId, lend);
 
     const turn: SteerWaiting = {
       conversationId,
       replyTo: id,
       trust,
       sandbox,
+      lend,
       tools,
       routine: fromId === "routine",
       text,
@@ -913,6 +920,7 @@ export class PotatoChannel {
       replyTo: requestId,
       trust: ask.trust,
       sandbox: this.computer.get(ask.conversationId) ?? false,
+      lend: this.lendCaps.get(ask.conversationId) ?? false,
       tools: ask.tools,
       text: "",
       reason: `helper ${status}`,
@@ -946,6 +954,7 @@ export class PotatoChannel {
         where: t.conversationId,
         tools: t.tools,
         ...(t.sandbox ? { sandbox: true } : {}),
+        ...(t.lend ? { lend: true } : {}),
         owner: t.trust !== "others",
         ...(t.routine ? { routine: true } : {}),
         group: t.conversationId.includes(":ch:"),

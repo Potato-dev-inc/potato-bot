@@ -43,6 +43,64 @@ export const PURCHASE_CARD_FIELDS = ["number", "expiry", "cvc", "postal_code"] a
 const DIRECTIONS = ["up", "down", "left", "right"] as const;
 const MOUSE_BUTTONS = ["left", "right"] as const;
 
+export const APP_KEY_NAMES = [
+  "enter",
+  "tab",
+  "escape",
+  "backspace",
+  "delete",
+  "up",
+  "down",
+  "left",
+  "right",
+  "pageup",
+  "pagedown",
+  "home",
+  "end",
+] as const;
+export const APP_ACT_ACTIONS = ["click", "double_click", "type", "key", "scroll"] as const;
+
+export const APP_OBSERVE_TOOL: OpenAiFunctionTool = {
+  type: "function",
+  function: {
+    name: "app_observe",
+    description:
+      "Look at an app on the owner's real Windows PC that they lent to you. Without app it lists the lent apps (id, name, phase, mode). With app (its id or name) it returns the app's controls (ref, role, name, value) and, by default, a picture of its window. " +
+      "Use the refs with app_act. Reading is allowed even while the person has control (phase you). If nothing is lent, tell the person to lend an app from the Computer tab.",
+    parameters: {
+      type: "object",
+      properties: {
+        app: { type: "string", description: "The lent app's id (like l1) or its name. Leave out to list the lent apps." },
+        image: { type: "boolean", description: "Attach a picture of the window. Default true." },
+      },
+    },
+  },
+};
+
+export const APP_ACT_TOOL: OpenAiFunctionTool = {
+  type: "function",
+  function: {
+    name: "app_act",
+    description:
+      "Control a real app on the owner's Windows PC that they lent to you (click, double_click, type, key, scroll). Prefer ref from the latest app_observe; x and y are pixels of the last app_observe picture. " +
+      "The person can take control at any time: if the error is LEASE_HELD_BY_PERSON, stop and wait for them. Never type passwords; ask the person. Never send a message or submit anything the owner did not ask for. Look again (app_observe) after you act.",
+    parameters: {
+      type: "object",
+      properties: {
+        app: { type: "string", description: "The lent app's id or name." },
+        action: { type: "string", enum: [...APP_ACT_ACTIONS] },
+        ref: { type: "string", description: "click, double_click, scroll: a ref from app_observe (like e12)." },
+        x: { type: "number", description: "click, double_click, scroll: pixel x in the last app_observe picture (when there is no ref)." },
+        y: { type: "number", description: "Pixel y in the last app_observe picture." },
+        text: { type: "string", description: "type: the text to type into the focused control (click it first)." },
+        key: { type: "string", enum: [...APP_KEY_NAMES], description: "key: the key to press." },
+        delta: { type: "number", description: "scroll: wheel notches, positive up and negative down. Default -3." },
+      },
+      required: ["app", "action"],
+    },
+  },
+};
+
 export const COMPUTER_OBSERVE_TOOL: OpenAiFunctionTool = {
   type: "function",
   function: {

@@ -5,6 +5,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  APP_ACT_TOOL,
+  APP_OBSERVE_TOOL,
   BROWSER_ACT_KINDS,
   BROWSER_ACT_TOOL,
   BROWSER_NAVIGATE_TOOL,
@@ -114,4 +116,16 @@ test("browser_act lists the seven kinds and a field hint for each action", () =>
 test("browser_navigate needs a url, and browser_snapshot takes no arguments", () => {
   assert.deepEqual(BROWSER_NAVIGATE_TOOL.function.parameters["required"], ["url"]);
   assert.deepEqual(BROWSER_SNAPSHOT_TOOL.function.parameters, { type: "object", properties: {} });
+});
+
+test("the lent-app tools exist and are sandbox tools", async () => {
+  const { SANDBOX_TOOL_NAMES } = await import("../src/core/sandbox-tools.ts");
+  assert.equal(APP_OBSERVE_TOOL.function.name, "app_observe");
+  assert.equal(APP_ACT_TOOL.function.name, "app_act");
+  assert.ok((SANDBOX_TOOL_NAMES as readonly string[]).includes("app_observe"));
+  assert.ok((SANDBOX_TOOL_NAMES as readonly string[]).includes("app_act"));
+  const act = APP_ACT_TOOL.function.parameters as { required: string[]; properties: Record<string, { enum?: string[] }> };
+  assert.deepEqual(act.required, ["app", "action"]);
+  assert.deepEqual(act.properties["action"]?.enum, ["click", "double_click", "type", "key", "scroll"]);
+  assert.ok(act.properties["key"]?.enum?.includes("pagedown"));
 });

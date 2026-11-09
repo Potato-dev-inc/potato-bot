@@ -336,6 +336,11 @@ impl ControlClient {
         Ok(ActResult { completed, observation })
     }
 
+    /// One POST to any `/v1` route (Lend an App's `/v1/lend/*` calls). Same retry rule as the others.
+    pub fn post(&self, path: &str, body: Value) -> Result<Value, ControlError> {
+        self.call(path, body)
+    }
+
     /// The MCP tools the guest offers (GET /v1/mcp/tools).
     pub fn mcp_tools(&self) -> Result<Value, ControlError> {
         self.call_method("GET", "/v1/mcp/tools", None)

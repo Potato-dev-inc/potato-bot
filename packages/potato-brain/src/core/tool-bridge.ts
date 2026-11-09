@@ -44,6 +44,10 @@ export const CORE_EXTRA_TOOLS: ReadonlySet<string> = new Set([
   "job_done",
   "run_subagent",
   "skill_read",
+  // The owner's lent Windows apps: offered only on a turn where the app said `lend`, so never a cost otherwise. A bot that only
+  // finds them through find_tool never learns it was lent an app, and tells the person it has no such tools.
+  "app_observe",
+  "app_act",
 ]);
 
 const FIND_MAX = 6;

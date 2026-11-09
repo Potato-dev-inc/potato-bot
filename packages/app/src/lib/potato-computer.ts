@@ -68,3 +68,30 @@ export function sandboxLine(view: SandboxView): string {
 export function screenReady(state: SandboxState | null): boolean {
   return state === null || state === 'running';
 }
+
+/** The "Apps from your PC" card and its picker (Labs `potato_lend_app_enabled`, Windows only). */
+export const LEND_COPY = {
+  title: 'Apps from your PC',
+  empty: (name: string) => `${name} can use Windows apps you already have open, like LINE.`,
+  lendButton: 'Lend an open app',
+  stateFree: 'Waiting',
+  stateBot: (name: string) => `Used by ${name}`,
+  stateYou: 'You have control',
+  stateNeedsYou: (name: string, reason: string | null) => (reason ? `${name} needs you: ${reason}` : `${name} needs you`),
+  takeControl: 'Take control',
+  handBack: 'Hand back',
+  bringBack: 'Bring back',
+  modeLabel: 'Show the app',
+  visible: 'Visible',
+  hidden: 'Hidden',
+  pickerTitle: 'Lend an app',
+  pickerIntro: 'Pick an app you have open on this PC.',
+  willUse: (name: string) => `${name} will use this app as you.`,
+  elevated: "Runs as administrator, can't be lent",
+  visibleHint: 'Stays where it is, with a border',
+  hiddenHint: 'Invisible to you, still works',
+  noWindows: 'No open apps to lend. Open an app, then try again.',
+  lend: 'Lend',
+  cancel: 'Cancel',
+  loading: 'Looking for open apps…',
+};

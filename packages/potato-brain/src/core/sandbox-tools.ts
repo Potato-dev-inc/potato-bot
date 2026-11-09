@@ -25,6 +25,8 @@ import type { PruneMessage, PromptPart } from "../lifted/context-pruning.ts";
 import { redactSecrets } from "../lifted/redact-secrets.ts";
 import { outcomeOf } from "./step-label.ts";
 import {
+  APP_ACT_TOOL,
+  APP_OBSERVE_TOOL,
   BROWSER_ACT_TOOL,
   BROWSER_NAVIGATE_TOOL,
   BROWSER_SNAPSHOT_TOOL,
@@ -54,6 +56,8 @@ export const SANDBOX_TOOL_NAMES = [
   "mcp_list_tools",
   "mcp_call_tool",
   "send_file",
+  "app_observe",
+  "app_act",
 ] as const;
 export type SandboxToolName = (typeof SANDBOX_TOOL_NAMES)[number];
 
@@ -410,6 +414,8 @@ export function sandboxToolSpecs(): ToolSpec[] {
     setWallpaperSpec(),
     mcpListToolsSpec(),
     mcpCallToolSpec(),
+    toSpec(APP_OBSERVE_TOOL),
+    toSpec(APP_ACT_TOOL),
   ];
 }
 
@@ -520,7 +526,7 @@ export function sandboxTools(opts: SandboxToolsOptions): ExtraTool[] {
     return {
       spec,
       // web_fetch reads the web for the owner only; every other computer tool is offered to any turn with a computer.
-      gate: name === "web_fetch" ? "sandbox_owner" : "sandbox",
+      gate: name === "web_fetch" ? "sandbox_owner" : name === "app_observe" || name === "app_act" ? "lend" : "sandbox",
       async run(args, ctx) {
         const vision = sees(ctx.model);
         let reply: SandboxReply;

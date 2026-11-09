@@ -550,6 +550,17 @@ impl Lifecycle {
         }
     }
 
+    /// A client for the control service when the sandbox is already up. Never starts it and runs no command inside
+    /// it, so it is cheap to ask often (Lend an App's mirror asks every few seconds).
+    pub fn running_client(&self) -> Option<ControlClient> {
+        let mut inner = self.inner.lock();
+        if inner.phase != Phase::Ready || !inner.holder.as_mut().is_some_and(|h| h.alive()) {
+            return None;
+        }
+        let token = inner.secrets.as_ref()?.token.clone();
+        Some(ControlClient::new(self.control_port, token))
+    }
+
     fn start_cancelled(&self) -> bool {
         self.cancel_start.load(Ordering::SeqCst)
     }
@@ -618,6 +629,7 @@ impl Lifecycle {
             "set -e\n\
              tr -d '\\r' < {GUEST_SHARE}/desktop/pm-sbx-start-desktop.sh > /usr/local/bin/pm-sbx-start-desktop && chmod 0755 /usr/local/bin/pm-sbx-start-desktop\n\
              tr -d '\\r' < {GUEST_SHARE}/desktop/pm-sbx-browser > /usr/local/bin/pm-sbx-browser && chmod 0755 /usr/local/bin/pm-sbx-browser\n\
+             tr -d '\\r' < {GUEST_SHARE}/desktop/pm-sbx-lend-view > /usr/local/bin/pm-sbx-lend-view && chmod 0755 /usr/local/bin/pm-sbx-lend-view\n\
              tr -d '\\r' < {GUEST_SHARE}/desktop/pm-sbx-zorin-look.sh > /usr/local/bin/pm-sbx-zorin-look && chmod 0755 /usr/local/bin/pm-sbx-zorin-look\n\
              tr -d '\\r' < {GUEST_SHARE}/control/pm-sbx-control > /usr/local/bin/pm-sbx-control && chmod 0755 /usr/local/bin/pm-sbx-control\n\
              tr -d '\\r' < {GUEST_SHARE}/control/pm-sbx-focus-or-launch > /usr/local/bin/pm-sbx-focus-or-launch && chmod 0755 /usr/local/bin/pm-sbx-focus-or-launch\n\

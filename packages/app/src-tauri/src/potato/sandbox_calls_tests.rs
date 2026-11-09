@@ -114,6 +114,8 @@ fn all_the_tools_are_the_names_and_none_is_a_way_to_another_caller() {
         Tool::McpListTools,
         Tool::McpCallTool,
         Tool::SendFile,
+        Tool::AppObserve,
+        Tool::AppAct,
     ]
     .iter()
     .map(|t| t.name())
@@ -866,7 +868,7 @@ fn the_trust_of_a_call_never_comes_from_the_brain_and_the_brain_cannot_name_a_ca
     assert!(service.contains("rt.turn_trust.get(&conversation_id)"), "the engine looks the trust up");
     assert!(service.contains("if !self.own_conversation(bot, &conversation_id)"), "a call is for the brain's own bot only");
     // anything the model could make the dispatcher do goes through the same tool list
-    assert_eq!(TOOL_NAMES.len(), 16);
+    assert_eq!(TOOL_NAMES.len(), 18);
 }
 
 // ---- the first navigation of a fresh sandbox starts Chrome
@@ -1474,4 +1476,131 @@ fn a_connector_is_not_used_in_a_room_or_by_another_bot() {
     // Switched off: refused too.
     super::mcp::set_enabled(&f.root, "cgate3", "github", false, f.fake.as_ref()).unwrap();
     assert_eq!(f.mcp(&f.ctx("cgate3"), "get_issue").unwrap_err().code, "CONNECTOR_NOT_CONNECTED");
+}
+
+// ---- lent apps (app_observe / app_act): arguments only, no windows
+
+fn app_args(tool: Tool, args: Value) -> Result<Request, CallError> {
+    validate(tool, &args, None, &Options::default())
+}
+
+#[test]
+fn app_observe_reads_an_optional_app_and_image_flag() {
+    assert_eq!(app_args(Tool::AppObserve, json!({})).unwrap(), Request::AppObserve { app: None, image: true });
+    assert_eq!(
+        app_args(Tool::AppObserve, json!({ "app": " LINE ", "image": false })).unwrap(),
+        Request::AppObserve { app: Some("LINE".into()), image: false }
+    );
+    assert_eq!(app_args(Tool::AppObserve, json!({ "image": "yes" })).unwrap_err().code, "BAD_ARGS");
+    assert!(Request::AppObserve { app: None, image: true }.is_read_only());
+}
+
+#[test]
+fn app_act_takes_a_ref_or_both_pixels_and_refuses_the_rest() {
+    use super::lend_tools::{AppAction, Target};
+    let act = |args: Value| app_args(Tool::AppAct, args);
+    assert_eq!(
+        act(json!({ "app": "l1", "action": "click", "ref": "e3" })).unwrap(),
+        Request::AppAct { app: "l1".into(), action: AppAction::Click(Target::Ref("e3".into())) }
+    );
+    assert_eq!(
+        act(json!({ "app": "l1", "action": "double_click", "x": 10.4, "y": 20.6 })).unwrap(),
+        Request::AppAct { app: "l1".into(), action: AppAction::DoubleClick(Target::Point(10, 21)) }
+    );
+    // a ref wins over pixels
+    assert_eq!(
+        act(json!({ "app": "l1", "action": "click", "ref": "e1", "x": 1, "y": 2 })).unwrap(),
+        Request::AppAct { app: "l1".into(), action: AppAction::Click(Target::Ref("e1".into())) }
+    );
+    for bad_args in [
+        json!({ "action": "click", "ref": "e1" }),
+        json!({ "app": "l1" }),
+        json!({ "app": "l1", "action": "drag", "x": 1, "y": 2 }),
+        json!({ "app": "l1", "action": "click" }),
+        json!({ "app": "l1", "action": "click", "x": 5 }),
+        json!({ "app": "l1", "action": "click", "x": 1e9, "y": 1 }),
+        json!({ "app": "l1", "action": "type" }),
+        json!({ "app": "l1", "action": "type", "text": "" }),
+        json!({ "app": "l1", "action": "key" }),
+        json!({ "app": "l1", "action": "key", "key": "f13" }),
+        json!({ "app": "l1", "action": "scroll", "delta": 2 }),
+        json!({ "app": "l1", "action": "scroll", "ref": "e1", "delta": "up" }),
+    ] {
+        assert_eq!(act(bad_args.clone()).unwrap_err().code, "BAD_ARGS", "{bad_args}");
+    }
+}
+
+#[test]
+fn app_act_type_key_and_scroll_are_read_into_their_actions() {
+    use super::lend_tools::{AppAction, Target};
+    let act = |args: Value| match app_args(Tool::AppAct, args).unwrap() {
+        Request::AppAct { action, .. } => action,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(act(json!({ "app": "l1", "action": "type", "text": "hello" })), AppAction::Type { text: "hello".into(), target: None });
+    assert_eq!(act(json!({ "app": "l1", "action": "type", "text": "hi", "ref": "e2" })), AppAction::Type { text: "hi".into(), target: Some("e2".into()) });
+    for (name, vk) in [("enter", 0x0D), ("Tab", 0x09), ("escape", 0x1B), ("backspace", 0x08), ("delete", 0x2E), ("up", 0x26), ("down", 0x28), ("left", 0x25), ("right", 0x27), ("pageup", 0x21), ("pagedown", 0x22), ("home", 0x24), ("end", 0x23)] {
+        assert_eq!(act(json!({ "app": "l1", "action": "key", "key": name })), AppAction::Key(vk), "{name}");
+    }
+    assert_eq!(act(json!({ "app": "l1", "action": "scroll", "ref": "e1" })), AppAction::Scroll { target: Target::Ref("e1".into()), notches: -3 });
+    assert_eq!(act(json!({ "app": "l1", "action": "scroll", "x": 1, "y": 2, "delta": 500 })), AppAction::Scroll { target: Target::Point(1, 2), notches: 20 });
+}
+
+#[test]
+fn the_lent_app_helpers_resolve_apps_convert_pixels_and_spot_password_boxes() {
+    use super::lend::session::{LentView, Mode, Phase};
+    use super::lend_tools::*;
+    let view = |id: &str, name: &str, phase: Phase| LentView { id: id.into(), hwnd: 1, pid: 1, app_name: name.into(), title: format!("{name} window"), mode: Mode::Visible, phase, reason: None };
+    let apps = vec![view("l1", "LINE", Phase::Free), view("l2", "Notepad", Phase::You), view("l3", "Notepad++", Phase::Free)];
+    assert_eq!(resolve(&apps, "L2").unwrap().id, "l2");
+    assert_eq!(resolve(&apps, "line").unwrap().id, "l1");
+    assert_eq!(resolve(&apps, "Notepad").unwrap().id, "l2", "an exact name beats a longer one");
+    assert_eq!(resolve(&apps, "notepad+").unwrap().id, "l3");
+    assert_eq!(resolve(&apps, "paint").unwrap_err().code, "NO_SUCH_APP");
+    assert_eq!(resolve(&apps, "window").unwrap_err().code, "BAD_ARGS", "ambiguous");
+    assert_eq!(list_json(&[])["message"], "No apps are lent. Ask the person to lend one from the Computer tab.");
+    let listed = list_json(&apps);
+    assert_eq!(listed["apps"][1], json!({ "id": "l2", "name": "Notepad", "phase": "you", "mode": "visible" }));
+
+    // the picture includes the frame: client = picture - client origin
+    assert_eq!(picture_to_client(110, 140, (8, 31)), (102, 109));
+    let edit = |r: &str, name: &str, rect| ObsElem { r#ref: r.into(), role: "edit".into(), name: name.into(), value: None, rect };
+    assert_eq!(centre(&edit("e1", "x", (10, 20, 100, 30))), (60, 35));
+    let elems = vec![edit("e1", "Search", (0, 0, 400, 400)), edit("e2", "Password", (50, 50, 100, 20)), edit("e3", "密碼", (50, 100, 100, 20))];
+    assert!(is_password_field(&elems[1]) && is_password_field(&elems[2]) && !is_password_field(&elems[0]));
+    assert!(password_at(&elems, 60, 60), "the smallest box under the point wins");
+    assert!(!password_at(&elems, 300, 300));
+    assert_eq!(wheel_delta(-3), -360);
+
+    // the answer caps the elements and tells the model when the person has the app
+    let many: Vec<ObsElem> = (0..200).map(|i| ObsElem { r#ref: format!("e{i}"), role: "button".into(), name: "b".into(), value: Some("v".into()), rect: (0, 0, 1, 1) }).collect();
+    let out = observe_json(&apps[1], &many, false, Some((640, 480)));
+    assert_eq!(out["elements"].as_array().unwrap().len(), MAX_ELEMENTS);
+    assert_eq!(out["truncated"], true);
+    assert_eq!(out["image_size"], json!({ "w": 640, "h": 480 }));
+    assert!(out["note"].as_str().unwrap().contains("person has control"));
+    assert!(super::sandbox::control::picture_size(b"nope").is_none());
+    let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+    png.extend_from_slice(&[0, 0, 2, 128, 0, 0, 1, 224]);
+    assert_eq!(super::sandbox::control::picture_size(&png), Some((640, 480)));
+
+    // a picture shrunk to 1280 wide: its pixels scale back to the 2560-wide window; no scale known or same size: unchanged
+    assert_eq!(picture_to_window(100, 50, Some((1280, 720, 2560, 1440))), (200, 100));
+    assert_eq!(picture_to_window(100, 50, Some((640, 480, 640, 480))), (100, 50));
+    assert_eq!(picture_to_window(100, 50, None), (100, 50));
+}
+
+#[test]
+fn a_lent_app_call_needs_the_bot_on_the_owner_and_the_labs_switch_before_anything() {
+    let f = Fixture::new("lend-gates");
+    let ctx = f.ctx("mochi");
+    let gates = Gates { bot_on: true, sandbox_on: false };
+    // the sandbox switch is not needed; the Lend an App switch is (off by default)
+    let e = f.calls.execute(None, gates, &ctx, "app_observe", &json!({})).unwrap_err();
+    assert_eq!(e.code, "LEND_OFF");
+    let off = f.calls.execute(None, Gates { bot_on: false, sandbox_on: true }, &ctx, "app_observe", &json!({})).unwrap_err();
+    assert_eq!(off.code, "POTATO_OFF");
+    let mut stranger = f.ctx("mochi");
+    stranger.trust = Trust::Others;
+    assert_eq!(f.calls.execute(None, gates, &stranger, "app_act", &json!({})).unwrap_err().code, "TOOL_NOT_ALLOWED");
 }

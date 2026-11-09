@@ -78,6 +78,8 @@ export interface PotatoPageProps {
   cockpit?: import('../../../hooks/useCockpit').CockpitApi;
   /** The Labs switch `potato_groups_enabled` (with Potato Bot on). Off: no Groups block and no New group sheet. */
   groupsOn?: boolean;
+  /** The Labs switch `potato_lend_app_enabled` on Windows. Off: no "Apps from your PC" card on the Computer tab. */
+  lendOn?: boolean;
   /** The groups calls. Absent: the app's own. */
   roomsTransport?: RoomsTransport;
   /** The Search chats page's call to the app. Absent: the app's own. */
@@ -85,7 +87,7 @@ export interface PotatoPageProps {
 }
 
 export function PotatoPage(props: PotatoPageProps) {
-  const { state, version, transport, companionTransport, companions, openBotId, onOpenBot, onChanged, onCompanionsChanged, onNotify, onOpenSettings, onOpenCompanion, onOpenPane, paneExists, screenTransport, sandboxTransport, filesTransport = tauriFilesTransport, botSettings, routines, panes, onOpenNewAgent, cockpit, groupsOn = false, roomsTransport = tauriRoomsTransport, searchTransport = tauriSearchTransport } = props;
+  const { state, version, transport, companionTransport, companions, openBotId, onOpenBot, onChanged, onCompanionsChanged, onNotify, onOpenSettings, onOpenCompanion, onOpenPane, paneExists, screenTransport, sandboxTransport, filesTransport = tauriFilesTransport, botSettings, routines, panes, onOpenNewAgent, cockpit, groupsOn = false, lendOn = false, roomsTransport = tauriRoomsTransport, searchTransport = tauriSearchTransport } = props;
   const [sheetOpen, setSheetOpen] = useState(false);
   // Bot groups: the group whose chat is open, and the New group sheet.
   const [openRoomId, setOpenRoomId] = useState<string | null>(null);
@@ -350,6 +352,7 @@ export function PotatoPage(props: PotatoPageProps) {
         screen={screenTransport}
         sandbox={sandboxTransport}
         files={screenTransport ? filesTransport : undefined}
+        lendOn={lendOn}
         onOpenSettings={onOpenSettings}
         through={through}
         onNotify={onNotify}

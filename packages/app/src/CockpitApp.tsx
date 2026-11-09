@@ -4,6 +4,7 @@ import { useCockpit } from './hooks/useCockpit';
 import { useCompanions } from './hooks/useCompanions';
 import { usePotatoState, readOpenBot, writeOpenBot } from './hooks/usePotato';
 import { useGroupsOn } from './components/cockpit/potato/useGroupsOn';
+import { useLendOn } from './components/cockpit/potato/useLendOn';
 import { cockpitApi } from './lib/cockpit-api';
 import { tauriCompanionTransport } from './lib/companion';
 import { tauriPotatoTransport } from './lib/potato';
@@ -44,6 +45,7 @@ export default function CockpitApp() {
   const [paneId, setPaneId] = useState<string | null>(null);
   const [potatoBotId, setPotatoBotId] = useState<string | null>(readOpenBot);
   const groupsOn = useGroupsOn();
+  const lendOn = useLendOn();
   const spacesOn = useSpacesEnabled();
 
   const potatoOn = potato.state?.enabled === true;
@@ -152,6 +154,7 @@ export default function CockpitApp() {
             companions={companions.companions}
             openBotId={potatoBotId}
             groupsOn={groupsOn}
+            lendOn={lendOn}
             onOpenBot={openPotatoBot}
             onChanged={() => {
               potato.refresh();

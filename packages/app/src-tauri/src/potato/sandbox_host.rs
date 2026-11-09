@@ -165,6 +165,14 @@ fn manager_unchecked() -> Arc<Manager> {
     manager
 }
 
+/// The sandbox when the switch is on and the manager already exists. Never builds it (Lend an App's mirror asks this often).
+pub fn existing_sandbox() -> Option<Arc<dyn Sandbox>> {
+    if !enabled() {
+        return None;
+    }
+    MANAGER.get().map(|m| m.sandbox().clone())
+}
+
 /// "Stop everything": Fish's computer goes to sleep now if it was up. Returns whether it was up and is now asleep.
 pub fn sleep() -> bool {
     match MANAGER.get() {

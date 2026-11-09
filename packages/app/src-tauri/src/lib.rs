@@ -385,6 +385,14 @@ pub fn run() {
             commands::potato_sandbox_switch_os,
             commands::potato_sandbox_vercel_install,
             commands::potato_sandbox_vercel_status,
+            commands::potato_lend_bring_back,
+            commands::potato_lend_candidates,
+            commands::potato_lend_hand_back,
+            commands::potato_lend_list,
+            commands::potato_lend_set_mode,
+            commands::potato_lend_start,
+            commands::potato_lend_take_over,
+            commands::potato_lend_thumbnail,
             commands::potato_screen_hand_back,
             commands::potato_screen_keep,
             commands::potato_screen_link,
@@ -568,6 +576,8 @@ pub fn run() {
             }
             // The Computer panel: the screen hub, its 1 s keeper and the `potato://screen` event.
             potato::sandbox::screen_live::start(Some(app.handle().clone()));
+            // Lend an App: the registry of lent windows, its 100 ms keeper and the `potato://lend` event.
+            potato::lend::session::start(Some(app.handle().clone()));
             // A room a crash left on the relay is ended now (its own thread: it may wait for the network).
             app.handle().listen("pty://panes-changed", move |_event| {
                 bridge::push_panes_sse(&registry_for_panes);
@@ -608,6 +618,8 @@ pub fn run() {
                 crash::record_exit(&app_paths::app_data_dir(), None, "Exit");
                 // The link ends with the app: best effort, the relay's time limit ends it otherwise.
                 standby::shutdown();
+                // Lent windows are put back as they were (a hidden one must not stay see-through).
+                potato::lend::session::hub().release_all();
                 // The keyboard hook of My computers goes with the app.
                 // Potato Bot's brains leave with the app: asked first, then their whole tree is stopped.
                 potato::live::stop_all(std::time::Duration::from_secs(2));

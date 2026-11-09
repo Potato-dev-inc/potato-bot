@@ -31,6 +31,8 @@ use crate::companion::broad::Places;
 pub const LABS_KEY: &str = "potato_bot_enabled";
 /// The Sandbox Labs switch. It does nothing unless Potato Bot is on too.
 pub const SANDBOX_LABS_KEY: &str = "potato_sandbox_enabled";
+/// Lend an App (Labs): the person lends an open Windows app to their bot. Off by default.
+pub const LEND_LABS_KEY: &str = "potato_lend_app_enabled";
 /// Bot groups. Does nothing unless Potato Bot is on too. Off by default.
 #[cfg_attr(not(test), allow(dead_code))] // read by the group screen (G9)
 pub const GROUPS_LABS_KEY: &str = "potato_groups_enabled";
@@ -43,6 +45,7 @@ static BRIDGE_PORT: AtomicU16 = AtomicU16::new(0);
 /// The Sandbox Labs switch and the sandbox, kept here until the service exists (settings are applied once at
 /// startup, possibly before it).
 static SANDBOX_LABS: AtomicBool = AtomicBool::new(false);
+static LEND_LABS: AtomicBool = AtomicBool::new(false);
 static SANDBOX_PORT: Mutex<Option<Port>> = Mutex::new(None);
 
 pub fn service() -> Option<Arc<Service>> {
@@ -67,6 +70,16 @@ pub fn labs_on(public: &Value) -> bool {
 }
 
 /// The Sandbox Labs switch in a settings value: on only when it is exactly `true`.
+/// Whether Lend an App is on right now (the last applied settings).
+pub fn lend_labs_on() -> bool {
+    LEND_LABS.load(Ordering::SeqCst)
+}
+
+/// The Lend an App switch in a settings value: on only when it is exactly `true`.
+pub fn lend_labs_in(public: &Value) -> bool {
+    public.get(LEND_LABS_KEY).and_then(Value::as_bool).unwrap_or(false)
+}
+
 pub fn sandbox_labs_on(public: &Value) -> bool {
     public.get(SANDBOX_LABS_KEY).and_then(Value::as_bool).unwrap_or(false)
 }
@@ -98,6 +111,7 @@ pub fn apply_settings(public: &Value) {
     super::sandbox::screen_live::apply_settings(public);
     let sandbox = sandbox_labs_on(public);
     SANDBOX_LABS.store(sandbox, Ordering::SeqCst);
+    LEND_LABS.store(lend_labs_in(public), Ordering::SeqCst);
     if let Some(service) = service() {
         service.set_sandbox_enabled(sandbox);
     }

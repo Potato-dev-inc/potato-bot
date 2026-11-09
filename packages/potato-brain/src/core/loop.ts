@@ -80,9 +80,11 @@ export interface ExtraTool {
    * run under the tool-loop guard and the context trimming. `"owner"`: offered only on the owner's turn
    * (`TurnOptions.owner`). `"owner_person"`: as "owner", but not on a routine's own run (`TurnOptions.routine`).
    * No gate: offered on every turn.
+   * `"lend"`: the owner's lent Windows apps: offered when the app said `capabilities.lend` (`TurnOptions.lend`) on an owner turn,
+   * with no computer needed (the sandbox may be off). Run under the same tool-loop guard as the sandbox tools.
    * `"sandbox_owner"`: as "sandbox", and only on the owner's turns (`TurnOptions.owner`, routine runs included).
    */
-  gate?: "sandbox" | "sandbox_owner" | "owner" | "owner_person" | "room";
+  gate?: "sandbox" | "sandbox_owner" | "lend" | "owner" | "owner_person" | "room";
   /** May wait (a sandbox tool waits for the app's answer). A thrown error becomes a plain failure text. */
   run(
     args: Record<string, unknown>,
@@ -188,7 +190,7 @@ export const ROOM_OFF_TOOLS: ReadonlySet<string> = new Set([
 
 /** The gates that mean the bot's computer: the tool-loop guard and the context trimming apply to them. */
 function isSandboxGate(gate: ExtraTool["gate"]): boolean {
-  return gate === "sandbox" || gate === "sandbox_owner";
+  return gate === "sandbox" || gate === "sandbox_owner" || gate === "lend";
 }
 
 export interface MoodStore {
@@ -471,6 +473,8 @@ export interface TurnOptions {
   note?: string;
   /** the app said this bot has a computer: offer the tools whose gate is `"sandbox"` */
   sandbox?: boolean;
+  /** the app said the owner has lent apps on this turn: offer the tools whose gate is `"lend"` */
+  lend?: boolean;
   /** a turn in a group of bots: the tools in ROOM_OFF_TOOLS are not offered */
   room?: boolean;
   /**
@@ -608,6 +612,7 @@ export class Agent {
   private subTurn: { serial: number; count: number } = { serial: -1, count: 0 };
   private toolLevel: ToolLevel = "full";
   private turnSandbox = false;
+  private turnLend = false;
   private turnOwner = false;
   private turnRoutine = false;
   private turnRoom = false;
@@ -847,7 +852,8 @@ export class Agent {
         !this.spaceNoHostTools() &&
         this.spaceAllows(tool.spec.name) &&
         !(this.turnRoom && ROOM_OFF_TOOLS.has(tool.spec.name)) &&
-        (!isSandboxGate(tool.gate) || this.turnSandbox) &&
+        (!isSandboxGate(tool.gate) || tool.gate === "lend" || this.turnSandbox) &&
+        (tool.gate !== "lend" || (this.turnLend && this.turnOwner)) &&
         (tool.gate !== "sandbox_owner" || this.turnOwner) &&
         (tool.gate !== "room" || this.turnRoom) &&
         (tool.gate !== "owner" || this.turnOwner) &&
@@ -1466,6 +1472,7 @@ ${escapePromptData(body)}
     this.turnSpace = space;
     this.spaceTainted = false;
     this.turnSandbox = opts.sandbox === true && !guest;
+    this.turnLend = opts.lend === true && !guest;
     this.turnOwner = opts.owner === true && !guest;
     this.turnRoutine = opts.routine === true && !space;
     this.turnRoom = opts.room === true || space !== null;

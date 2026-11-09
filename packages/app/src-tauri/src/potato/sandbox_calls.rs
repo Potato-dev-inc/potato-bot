@@ -61,7 +61,7 @@ use super::rooms::store::{self as rstore, RoomFrom, RoomLine, Speaker};
 use super::store::{self, FileCard, FromKind, Message, MsgKind};
 
 #[cfg_attr(not(test), allow(dead_code))]
-pub const TOOL_NAMES: [&str; 16] = [
+pub const TOOL_NAMES: [&str; 18] = [
     "computer_observe",
     "computer_act",
     "browser_navigate",
@@ -78,6 +78,8 @@ pub const TOOL_NAMES: [&str; 16] = [
     "mcp_list_tools",
     "mcp_call_tool",
     "send_file",
+    "app_observe",
+    "app_act",
 ];
 /// The longest description a `send_file` card carries (the card keeps it short).
 pub const MAX_SEND_DESCRIPTION_CHARS: usize = 300;
@@ -119,9 +121,17 @@ pub enum Tool {
     SetWallpaper,
     McpListTools,
     McpCallTool,
+    /// A lent Windows app (`lend_tools.rs`): runs on the owner's PC, not in the sandbox.
+    AppObserve,
+    AppAct,
 }
 
 impl Tool {
+    /// The lent-app tools do not use the sandbox: no VM, no screen lease, no Sandbox switch.
+    pub fn is_lent_app(self) -> bool {
+        matches!(self, Tool::AppObserve | Tool::AppAct)
+    }
+
     /// Does the answer to this tool carry text from outside the chat (a page, a file, a command's output, a tool server, the
     /// screen)? A turn that called one cannot change the bot's own settings (`service/self_flow.rs`). Writing a file, sending
     /// one, listing a folder and asking the person to look do not bring text in.
@@ -147,6 +157,8 @@ impl Tool {
             "set_wallpaper" => Tool::SetWallpaper,
             "mcp_list_tools" => Tool::McpListTools,
             "mcp_call_tool" => Tool::McpCallTool,
+            "app_observe" => Tool::AppObserve,
+            "app_act" => Tool::AppAct,
             _ => return None,
         })
     }
@@ -170,6 +182,8 @@ impl Tool {
             Tool::SetWallpaper => "set_wallpaper",
             Tool::McpListTools => "mcp_list_tools",
             Tool::McpCallTool => "mcp_call_tool",
+            Tool::AppObserve => "app_observe",
+            Tool::AppAct => "app_act",
         }
     }
 }
@@ -236,6 +250,10 @@ pub enum Request {
     McpList,
     /// One MCP tool call. Counts as one action; never repeated (it may already have run).
     McpCall { server: String, tool: String, arguments: Value },
+    /// A lent app: its controls (and a picture). Read only.
+    AppObserve { app: Option<String>, image: bool },
+    /// One input to a lent app.
+    AppAct { app: String, action: super::lend_tools::AppAction },
 }
 
 /// A wallpaper is a picture inside the sandbox or one plain colour.
@@ -487,7 +505,7 @@ fn wallpaper_target(obj: &Map<String, Value>) -> Result<WallpaperTarget, CallErr
 impl Request {
     /// Calls that only look or read: repeating one cannot change anything on the computer.
     pub fn is_read_only(&self) -> bool {
-        matches!(self, Request::Observe | Request::Snapshot | Request::ReadFile { .. } | Request::ListFiles { .. } | Request::McpList | Request::WebFetch { .. })
+        matches!(self, Request::Observe | Request::Snapshot | Request::AppObserve { .. } | Request::ReadFile { .. } | Request::ListFiles { .. } | Request::McpList | Request::WebFetch { .. })
         // `SendFile` is not read-only: it posts a chat message, so it is never repeated.
     }
 }
@@ -500,6 +518,8 @@ pub fn validate(tool: Tool, args: &Value, pointer: Option<(i32, i32)>, opts: &Op
     Ok(match tool {
         Tool::ComputerObserve => Request::Observe,
         Tool::BrowserSnapshot => Request::Snapshot,
+        Tool::AppObserve => super::lend_tools::parse_observe(obj)?,
+        Tool::AppAct => super::lend_tools::parse_act(obj)?,
         Tool::AskPersonForScreen => {
             let reason = obj.get("reason").and_then(Value::as_str).map(str::trim).unwrap_or("");
             if reason.is_empty() {
@@ -698,6 +718,10 @@ impl Calls {
     fn run_call(&self, port: Option<&Port>, gates: Gates, ctx: &Context, tool: &str, args: &Value) -> Result<Value, CallError> {
         if !gates.bot_on {
             return Err(CallError::new("POTATO_OFF", "Potato Bot is switched off."));
+        }
+        // A lent app is on the owner's PC: no VM, no Sandbox switch.
+        if let Some(app_tool) = Tool::parse(tool).filter(|t| t.is_lent_app()) {
+            return self.run_app_call(gates, ctx, app_tool, args);
         }
         if !gates.sandbox_on {
             return Err(CallError::new("SANDBOX_OFF", "The bot's computer is switched off. Turn on Sandbox in Settings > General > Labs."));
@@ -1095,7 +1119,7 @@ impl Calls {
         }
     }
 
-    fn spend(&self, ctx: &Context, now: i64, cost: u32) -> Result<(), CallError> {
+    pub(super) fn spend(&self, ctx: &Context, now: i64, cost: u32) -> Result<(), CallError> {
         let cap = store::load_settings(&self.root).map(|s| s.sandbox_actions_per_day).unwrap_or(super::cost::DEFAULT_SANDBOX_ACTIONS);
         let day = self.host.local_day(now);
         match super::cost::spend_sandbox_actions(&self.root, &day, &ctx.bot, cost, cap) {
@@ -1180,6 +1204,7 @@ impl Calls {
             }
             // Answered before the screen is touched (`execute`); never reaches the sandbox.
             Request::AskPerson { .. } => Err(CallError::new("BAD_ARGS", "That is not a screen action.")),
+            Request::AppObserve { .. } | Request::AppAct { .. } => Err(CallError::new("BAD_ARGS", "That is a lent-app tool, not a screen action.")),
             Request::McpList => {
                 let mut reply = sandbox.mcp_tools()?;
                 if let Value::Object(map) = &mut reply {
@@ -1549,7 +1574,7 @@ pub(super) fn front_page_text(sandbox: &dyn Sandbox, obs: &Observation) -> Optio
 }
 
 /// Every string in an answer goes through the redactor (a page can print a key). The picture's bytes are left alone.
-fn redact(value: &mut Value) {
+pub(super) fn redact(value: &mut Value) {
     match value {
         Value::String(s) => *s = crate::redact::text(s).into_inner(),
         Value::Array(items) => items.iter_mut().for_each(redact),

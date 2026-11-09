@@ -122,6 +122,8 @@ export const SettingsSchema = z.object({
   potato_bot_enabled: z.boolean().optional(),
   /** Potato Bot sandbox (Settings › General › Labs, needs Potato Bot): a small Linux computer (a WSL 2 distro the app owns) the bot can use with a screen and keyboard. Off unless chosen. Rust: potato::sandbox. */
   potato_sandbox_enabled: z.boolean().optional(),
+  /** Lend an App (Settings › General › Labs, needs Potato Bot, Windows only): lend an open Windows app to the bot. Off unless chosen. Rust: potato::live (LEND_LABS_KEY). */
+  potato_lend_app_enabled: z.boolean().optional(),
   /** Bot groups (Settings › General › Labs, needs Potato Bot): a group of 2 to 5 bots in one chat. Off unless chosen. Rust: potato::rooms. */
   potato_groups_enabled: z.boolean().optional(),
   /** Chat over the Agent Client Protocol (Settings › General › Labs): agents driven through a protocol instead of their terminal screen. Off unless chosen, and also the kill switch. Rust: acp. */

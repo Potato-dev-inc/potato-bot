@@ -409,6 +409,19 @@ pub fn with_capabilities(mut item: Value, sandbox: bool) -> Value {
     item
 }
 
+/// Adds `capabilities.lend`: the owner's lent Windows apps may be used on this turn (Lend an App Labs flag on, the owner talking).
+/// Independent of `sandbox`: the apps need no sandbox computer. Call after `with_capabilities`.
+/// The key is added only when `lend` is true: a missing `lend` means off, so payloads are unchanged with Lend off.
+pub fn with_lend(mut item: Value, lend: bool) -> Value {
+    if !lend {
+        return item;
+    }
+    if let Some(Value::Object(caps)) = item.get_mut("capabilities") {
+        caps.insert("lend".into(), json!(true));
+    }
+    item
+}
+
 /// The answer to a `sandbox_call`. `result` is JSON the dispatcher already cleaned.
 pub fn sandbox_result_ok(call_id: &str, result: Value) -> Value {
     item("sandbox_result", json!({ "callId": call_id, "ok": true, "result": result }))
