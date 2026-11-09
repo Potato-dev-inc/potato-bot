@@ -29,6 +29,7 @@ async fn spaces(tag: &str) -> (Arc<SpacesService>, Dir, SpaceId) {
     let net = hub.node(NodeKey([1; 32]), perms.clone());
     let keystore = KeyStore::with_backend(Arc::new(MemoryBackend::new()), "link");
     let svc = SpacesService::new(net, perms, keystore, dir.0.clone(), Arc::new(|| 1_700_000_000_000));
+    svc.set_display_name("Me").unwrap();
     svc.start_with(false).await.unwrap();
     let space = SpaceId::from_hex(&svc.create_space("Book club").await.unwrap()).unwrap();
     std::mem::forget(hub);

@@ -177,6 +177,8 @@ pub fn run() {
             spaces::commands::space_file_save,
             spaces::commands::space_presence,
             spaces::commands::space_show_online,
+            spaces::commands::spaces_display_name,
+            spaces::commands::spaces_set_display_name,
             spaces::commands::space_bot_list,
             spaces::commands::space_bot_candidates,
             spaces::commands::space_bot_add,

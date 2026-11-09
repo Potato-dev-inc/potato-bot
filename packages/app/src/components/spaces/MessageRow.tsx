@@ -15,8 +15,10 @@ export function timeOf(ms: number): string {
 }
 
 /** What a message looks like, from the Potato chat: yours is a filled bubble, a bot's an outlined one, a person's plain text. */
+/** A bot line is signed by its owner's key, but it is the bot talking: never "mine", whoever owns the bot. */
+const isMineRow = (m: SpaceMessage) => m.isMine && !m.isFish;
 const bubbleClass = (m: SpaceMessage) =>
-  m.isFish ? 'ck-potato-bubble ck-potato-bubble--bot' : m.isMine ? 'ck-potato-bubble ck-potato-bubble--you' : 'ck-chat-text';
+  m.isFish ? 'ck-potato-bubble ck-potato-bubble--bot' : isMineRow(m) ? 'ck-potato-bubble ck-potato-bubble--you' : 'ck-chat-text';
 
 export interface MessageRowProps {
   message: SpaceMessage;
@@ -36,7 +38,7 @@ export interface MessageRowProps {
 }
 
 export function MessageRow({ message: m, onReply, menu, onReact, grouped, revealBlocked, onRevealBlocked, fileError, fileSavedAs, onGetFile, onSaveFile }: MessageRowProps) {
-  const cls = ['ck-spaces-msg', m.isMine && 'is-mine', m.isFish && 'is-fish is-bot', grouped && 'is-grouped', m.deleted && 'is-deleted',
+  const cls = ['ck-spaces-msg', isMineRow(m) && 'is-mine', m.isFish && 'is-fish is-bot', grouped && 'is-grouped', m.deleted && 'is-deleted',
     m.blocked && !revealBlocked && 'is-blocked'].filter(Boolean).join(' ');
   if (m.blocked && !revealBlocked) {
     return (
@@ -51,6 +53,7 @@ export function MessageRow({ message: m, onReply, menu, onReact, grouped, reveal
       <div className="ck-spaces-msg-line">
         <span className="ck-spaces-msg-author">{m.authorName}</span>
         {m.isFish && <span className="ck-spaces-bot-tag">Bot</span>}
+        {m.isFish && m.ownerName && <span className="ck-spaces-msg-owner" title="Who brought this bot">{m.ownedByMe ? 'yours' : m.ownerName}</span>}
         <time className="ck-spaces-msg-time" dateTime={new Date(m.createdAtMs).toISOString()}>{timeOf(m.createdAtMs)}</time>
         {!m.deleted && !menu && (
           <span className="ck-spaces-msg-actions">
@@ -64,7 +67,7 @@ export function MessageRow({ message: m, onReply, menu, onReact, grouped, reveal
       )}
       {m.deleted ? (
         <p className="ck-spaces-msg-text">
-          {m.isMine && !m.deleted.byOwner ? 'You deleted this message.'
+          {isMineRow(m) && !m.deleted.byOwner ? 'You deleted this message.'
             : m.deleted.byOwner ? 'Deleted by the owner.' : `${m.deleted.byName} deleted this message.`}
         </p>
       ) : m.file ? (

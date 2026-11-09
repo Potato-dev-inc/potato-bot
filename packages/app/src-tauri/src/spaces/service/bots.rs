@@ -39,7 +39,7 @@ fn refusal_code(r: Refusal) -> &'static str {
 
 const NOT_YOURS_REMOVE: &str = "Only the owner of the space or the bot's own owner can remove a bot.";
 /// A claim waits this long for the space owner's PC (and is forgotten after it).
-const CLAIM_WAIT_MS: u64 = 7 * 24 * 60 * 60 * 1000;
+pub(super) const CLAIM_WAIT_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 const NO_POTATO: &str = "Potato Bot isn't running, so there is no bot to bring in.";
 
 /// The roster's own words for a refused bot op, as one plain sentence.
@@ -317,7 +317,7 @@ impl SpacesService {
                 .filter(|l| sp.roster.bots.contains_key(&l.bot) || (l.claimed_ms > 0 && !sp.roster.bot_owners.contains_key(&l.bot)))
                 .filter_map(|l| l.potato)
                 .collect();
-            let mine = member_name(sp, &sp.me.member_key());
+            let mine = self.display_name().unwrap_or_else(|| member_name(sp, &sp.me.member_key()));
             let list: Vec<Value> = all
                 .iter()
                 .filter(|c: &&Candidate| !taken.contains(&c.id))

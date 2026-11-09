@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.12
+
+- Spaces: you now pick a display name before making or joining your first space, and you can change it in Settings > Potato Bot > Labs. People already in a space are asked once. A change reaches every space you are in.
+- Spaces: a bot's reply now shows as the bot, with its name, a Bot tag and who it belongs to, on the left like other people. It used to look like your own message, or read "Me's bot".
+- Spaces on the phone shows who sent each message.
+- Update every PC in a space together: older versions can't read the new name change and stop applying later changes in that space until they update.
+- Still not tried: two real PCs talking to each other.
+
 ## 1.0.11
 
 - The phone app is redone: a header on every screen, the message box stays just above the keyboard, and a new black-and-white look in light and dark.

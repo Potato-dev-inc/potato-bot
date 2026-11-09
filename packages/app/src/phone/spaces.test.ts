@@ -126,6 +126,23 @@ describe('Channel messages', () => {
     expect(q(m, '.botmark').textContent).toBe('bot');
     expect(hasText(m.root, 'File: plan.pdf (2 KB)')).toBe(true);
   });
+  it("shows a bot's line as theirs with the bot's name, even when the PC calls it mine", async () => {
+    const s = withSpaces();
+    s.spaceMsgs['s1/c1'] = [
+      msgOf(1, { authorName: 'Ren', mine: true, text: 'hi bot' }),
+      // the PC signs a bot's line with its owner's key: an older PC said mine:true for it
+      msgOf(2, { authorName: 'Ren的fish', bot: true, mine: true, ownerName: 'Ren', ownedByMe: true, text: 'hello Ren' }),
+      msgOf(3, { authorName: 'Sam的cat', bot: true, mine: false, ownerName: 'Sam', ownedByMe: false, text: 'meow' })
+    ];
+    const m = await mountList({ server: s });
+    await openChannel(m);
+    const rows = qa(m, '.msg');
+    expect(rows.map((x) => x.classList.contains('mine'))).toEqual([true, false, false]);
+    expect(rows.map((x) => x.classList.contains('theirs'))).toEqual([false, true, true]);
+    expect(qa(m, '.who-name').map((x) => x.textContent)).toEqual(['Ren的fish', 'Sam的cat']);
+    expect(qa(m, '.botmark').length).toBe(2);
+    expect(qa(m, '.who-owner').map((x) => x.textContent)).toEqual(['yours', 'Sam']);
+  });
   it('renders message text as plain text', async () => {
     const s = withSpaces();
     s.spaceMsgs['s1/c1'] = [msgOf(1, { text: '<img src=x onerror=alert(1)>' })];

@@ -21,7 +21,7 @@ use super::invite::{new_invite, qr_text, InviteRecord, InviteState, InviteTicket
 use super::join::{self, Answer, JoinHost, JoinOutcome, JoinRequestFrame, Lockouts, RefuseReason, Verdict};
 use super::limits::*;
 use super::links::{LinkTable, Offer, Outgoing};
-use super::log::{clean_text, kind_of, Body, Entry, EntryHeader, KIND_BOT, KIND_BOT_CLAIM, KIND_BOT_DROP, KIND_DELETE, KIND_LEAVE, KIND_TEXT, MAX_MENTIONS, MAX_TEXT_BYTES, REACTIONS};
+use super::log::{clean_text, kind_of, Body, Entry, EntryHeader, KIND_BOT, KIND_BOT_CLAIM, KIND_BOT_DROP, KIND_DELETE, KIND_LEAVE, KIND_NAME_CLAIM, KIND_TEXT, MAX_MENTIONS, MAX_TEXT_BYTES, REACTIONS};
 use super::moderation::remove_ops;
 use super::net::{NetError, PeerHint, SpaceLink, SpaceNet, SpacePermissions, SpaceStream};
 use super::ratelimit::{author_over_limit, LinkMeter, Meter, Over};
@@ -35,6 +35,7 @@ use crate::spaces::keystore::KeyStore;
 
 mod bots;
 mod files;
+mod names;
 mod presence;
 pub use bots::{BotPatch, BotPort};
 use files::{file_value, FileJobs};
@@ -43,8 +44,8 @@ use super::presence::Presence;
 pub type Notifier = Arc<dyn Fn(&Value) + Send + Sync>;
 pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 
-/// The name used for me until a "your name in Spaces" setting exists (DECISION-OPEN, plan default).
-const MY_NAME: &str = "Me";
+/// What create and join answer with when this PC has no Spaces display name yet; the screen asks for one first.
+const NEEDS_NAME: &str = "needs_display_name";
 const FIRST_FRAME_WAIT: Duration = Duration::from_secs(10);
 const DIAL_EVERY: Duration = Duration::from_secs(30);
 const HOUSEKEEPING_EVERY: Duration = Duration::from_secs(60);
@@ -180,6 +181,8 @@ pub struct SpacesService {
     /// Why the last line handed to one of my bots was refused by the one running it (off, no key, over its money limit,
     /// busy). Cleared when a later line is taken. The screen reads it so a call that nobody answers is explained.
     bot_refused: Mutex<BTreeMap<BotId, &'static str>>,
+    /// My name in every space (kept in `settings.json`). None until the person picks one.
+    display_name: Mutex<Option<String>>,
 }
 
 fn space_of(hex: &str) -> Result<SpaceId, String> { SpaceId::from_hex(hex).ok_or_else(|| "That space is not known.".to_string()) }
@@ -191,6 +194,7 @@ impl SpacesService {
         -> Arc<Self>
     {
         let show_online = presence::load_show_online(&dir);
+        let display_name = presence::load_display_name(&dir);
         Arc::new(Self {
             net,
             perms,
@@ -224,6 +228,7 @@ impl SpacesService {
             bots_port: Mutex::new(None),
             bot_pending: Mutex::new(BTreeMap::new()),
             bot_refused: Mutex::new(BTreeMap::new()),
+            display_name: Mutex::new(display_name),
         })
     }
 
@@ -354,7 +359,7 @@ impl SpacesService {
         json!({
             "spaces": spaces, "requests": requests, "joining": joining, "invites": invites,
             "online": self.started.load(Ordering::SeqCst), "relayed": lock(&self.links).all_relayed(),
-            "showOnline": self.show_online(),
+            "showOnline": self.show_online(), "displayName": self.display_name(),
         })
     }
 
@@ -399,12 +404,13 @@ impl SpacesService {
         // `clean_name` turns an empty name into "Someone", which a space may not use: an empty name is refused first.
         let name = clean_name(name);
         if name == "Someone" { return Err("Give the space a name.".into()); }
+        let my_name = self.require_display_name()?;
         let me = self.identity()?;
         let (id, channel) = (SpaceId::random(), ChannelId::random());
         let key = random_bytes::<32>();
         let now = self.now();
         self.keystore.set_epoch_key(&space_tag(&id), 1, &key)?;
-        let (roster, op) = Roster::genesis(&me, id, &name, MY_NAME, channel, &key, now).map_err(|e| e.0)?;
+        let (roster, op) = Roster::genesis(&me, id, &name, &my_name, channel, &key, now).map_err(|e| e.0)?;
         let dir = self.dir.join(id.to_hex());
         std::fs::create_dir_all(&dir).map_err(|_| "Could not make a folder for the space.".to_string())?;
         let store = SpaceStore::open(&dir.join("space.sqlite")).map_err(db)?;
@@ -413,7 +419,7 @@ impl SpacesService {
         store.meta_set("space_id", id.to_hex().as_bytes()).map_err(db)?;
         store.meta_set("my_member", &me.member_key().0).map_err(db)?;
         store.meta_set("my_device", &me.device_key().0).map_err(db)?;
-        store.meta_set("name_in_space", MY_NAME.as_bytes()).map_err(db)?;
+        store.meta_set("name_in_space", my_name.as_bytes()).map_err(db)?;
         let mut keys = EpochKeys::default();
         keys.0.insert(1, key);
         lock(&self.spaces).insert(id, OpenSpace { id, store, roster, keys, me });
@@ -474,6 +480,7 @@ impl SpacesService {
         };
         ticket.check_not_expired(self.now()).map_err(|_| "This invite has run out. Ask for a new one.".to_string())?;
         if lock(&self.spaces).contains_key(&ticket.space) { return Err("You are already in this space.".into()); }
+        let my_name = self.require_display_name()?;
         let me = self.identity()?;
         lock(&self.joining).insert(
             ticket.space,
@@ -481,7 +488,7 @@ impl SpacesService {
         );
         self.changed();
         let svc = self.clone();
-        tokio::spawn(async move { svc.run_join(ticket, secret, me).await });
+        tokio::spawn(async move { svc.run_join(ticket, secret, me, my_name).await });
         Ok(())
     }
 
@@ -499,14 +506,14 @@ impl SpacesService {
         self.changed();
     }
 
-    async fn run_join(self: Arc<Self>, ticket: InviteTicket, secret: [u8; SECRET_BYTES], me: Arc<SpaceIdentity>) {
+    async fn run_join(self: Arc<Self>, ticket: InviteTicket, secret: [u8; SECRET_BYTES], me: Arc<SpaceIdentity>, my_name: String) {
         let space = ticket.space;
         let svc = self.clone();
         let on_wait = move |by: u64| svc.set_joining(space, "waiting", 0, Some(by));
-        let outcome = join::run_joiner(&*self.net, &ticket, &secret, &me, MY_NAME, self.now(), None, &on_wait).await;
+        let outcome = join::run_joiner(&*self.net, &ticket, &secret, &me, &my_name, self.now(), None, &on_wait).await;
         match outcome {
             Ok(JoinOutcome::Joined { roster, epoch_key, hints, ops }) => {
-                match self.finish_join(me, roster, epoch_key, hints, ops) {
+                match self.finish_join(me, roster, epoch_key, hints, ops, &my_name) {
                     Ok(()) => {
                         self.set_joining(space, "joined", 0, None);
                         self.dial_round().await;
@@ -532,7 +539,7 @@ impl SpacesService {
         }
     }
 
-    fn finish_join(&self, me: Arc<SpaceIdentity>, roster: Roster, epoch_key: [u8; 32], hints: Vec<PeerHint>, ops: Vec<ControlOp>)
+    fn finish_join(&self, me: Arc<SpaceIdentity>, roster: Roster, epoch_key: [u8; 32], hints: Vec<PeerHint>, ops: Vec<ControlOp>, my_name: &str)
         -> Result<(), String>
     {
         let id = roster.space;
@@ -544,7 +551,7 @@ impl SpacesService {
         store.meta_set("space_id", id.to_hex().as_bytes()).map_err(db)?;
         store.meta_set("my_member", &me.member_key().0).map_err(db)?;
         store.meta_set("my_device", &me.device_key().0).map_err(db)?;
-        store.meta_set("name_in_space", MY_NAME.as_bytes()).map_err(db)?;
+        store.meta_set("name_in_space", my_name.as_bytes()).map_err(db)?;
         let mut keys = EpochKeys::default();
         for e in 1..=roster.epoch {
             let key = if e == roster.epoch { Some(epoch_key) } else { roster.open_epoch_key(&me, e) };
@@ -906,7 +913,7 @@ impl SpacesService {
                         match e.header.kind {
                             KIND_TEXT | KIND_BOT if s => lines.push(stored_id),
                             KIND_DELETE => deletes.extend(e.header.refers),
-                            KIND_BOT_CLAIM | KIND_BOT_DROP if sp.is_owner() => {
+                            KIND_BOT_CLAIM | KIND_BOT_DROP | KIND_NAME_CLAIM if sp.is_owner() => {
                                 if let Some(body) = sp.keys.0.get(&e.header.epoch).and_then(|k| e.open(k).ok()) {
                                     asks.push((e.header.device, e.header.created_ms, body));
                                 }
@@ -934,7 +941,12 @@ impl SpacesService {
             self.changed();
         }
         self.after_stored(space, &lines, &deletes);
+        let (name_asks, asks): (Vec<_>, Vec<_>) = asks.into_iter().partition(|a| matches!(a.2, Body::NameClaim { .. }));
         if !asks.is_empty() { self.owner_bot_asks(space, asks); }
+        if !name_asks.is_empty() {
+            let list = name_asks.into_iter().filter_map(|(d, at, b)| match b { Body::NameClaim { name, sig } => Some((d, at, name, sig)), _ => None }).collect();
+            self.owner_name_asks(space, list);
+        }
         // The owner's PC answers a stored Leave at once: RemoveMember + Rotate, no question asked.
         for m in leavers { let _ = self.remove_locked(space, &m, RemoveReason::Left); }
     }
@@ -1613,8 +1625,9 @@ fn message_json(sp: &OpenSpace, row: &MessageRow, reacts: &[(EntryId, String, u3
 {
     let is_fish = row.kind == KIND_BOT;
     let author = member_name(sp, &row.member);
-    let bot_name = row.bot.and_then(|b| sp.roster.bots.get(&b)).map(|b| b.name.clone());
-    let author_name = if is_fish { bot_name.clone().unwrap_or_else(|| format!("{author}'s bot")) } else { author };
+    // A removed bot keeps the last name it had; "Bot" only for an id this PC never heard a name for.
+    let bot_name = row.bot.and_then(|b| sp.roster.bots.get(&b).map(|x| x.name.clone()).or_else(|| sp.roster.bot_names.get(&b).cloned()));
+    let author_name = if is_fish { bot_name.clone().unwrap_or_else(|| "Bot".to_string()) } else { author.clone() };
     let deleted = match row.deleted_by {
         Some(by) => json!({ "byName": member_name(sp, &by), "byOwner": by == sp.roster.owner }),
         None => Value::Null,
@@ -1638,7 +1651,10 @@ fn message_json(sp: &OpenSpace, row: &MessageRow, reacts: &[(EntryId, String, u3
     };
     json!({
         "id": row.id.to_hex(), "channel": row.channel.to_hex(), "member": row.member.to_hex(),
-        "authorName": author_name, "isFish": is_fish, "botId": row.bot.map(|b| b.to_hex()), "botName": bot_name, "isMine": row.member == *me,
+        "authorName": author_name, "isFish": is_fish, "botId": row.bot.map(|b| b.to_hex()), "botName": bot_name,
+        // A bot line is signed by its owner's member key, but it is the bot talking: never "mine" on the screen.
+        "isMine": !is_fish && row.member == *me, "ownerName": if is_fish { json!(author) } else { Value::Null },
+        "ownedByMe": is_fish && row.member == *me,
         "createdAtMs": row.created_ms,
         "text": text,
         "replyTo": row.reply_to.map(|r| r.to_hex()), "replyPreview": reply_preview,

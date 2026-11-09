@@ -41,6 +41,13 @@ pub(crate) struct Node {
 fn hint(n: NodeKey) -> PeerHint { PeerHint { node: n, relay: String::new(), lan: Vec::new() } }
 
 pub(crate) fn make(hub: &Arc<MemoryHub>, n: u8, clock: &Arc<AtomicU64>, keystore: Option<KeyStore>, dir: Option<TempDir>) -> Node {
+    let node = make_unnamed(hub, n, clock, keystore, dir);
+    if node.svc.display_name().is_none() { node.svc.set_display_name("Me").unwrap(); }
+    node
+}
+
+/// A PC that has not picked its Spaces name yet (create and join must ask for one).
+pub(crate) fn make_unnamed(hub: &Arc<MemoryHub>, n: u8, clock: &Arc<AtomicU64>, keystore: Option<KeyStore>, dir: Option<TempDir>) -> Node {
     let key = NodeKey([n; 32]);
     let perms = SpacePermissions::new();
     let net = hub.node(key, perms.clone());
@@ -654,4 +661,67 @@ async fn control_ops_reach_the_disk_before_the_roster_in_memory() {
     assert!(!ok);
     let after = a.svc.with_open(&space, |sp| (sp.roster.seq, sp.roster.channel(&ChannelId([78; 8])).is_some())).unwrap();
     assert_eq!(after, (seq, false));
+}
+
+// ---- my name in Spaces ------------------------------------------------------------------------------------------------
+
+#[tokio::test]
+async fn create_and_join_need_a_display_name_first() {
+    let (hub, clk) = (MemoryHub::new(), clock());
+    let a = node(&hub, 1, &clk).await;
+    let hex = a.svc.create_space("Book club").await.unwrap();
+    let invite = a.svc.create_invite(&hex).await.unwrap();
+    let words: Vec<String> = invite["words"].as_array().unwrap().iter().map(|w| w.as_str().unwrap().to_string()).collect();
+    let b = make_unnamed(&hub, 2, &clk, None, None);
+    b.svc.start_with(false).await.unwrap();
+    assert_eq!(b.svc.display_name(), None);
+    assert_eq!(b.svc.create_space("Mine").await.err().as_deref(), Some("needs_display_name"));
+    assert_eq!(b.svc.start_join(invite["link"].as_str().unwrap(), &words.join(" ")).await.err().as_deref(), Some("needs_display_name"));
+    assert!(b.svc.view()["spaces"].as_array().unwrap().is_empty());
+    assert!(b.svc.view()["joining"].as_array().unwrap().is_empty());
+    assert!(b.svc.set_display_name("   ").is_err());
+    assert_eq!(b.svc.set_display_name("  Sam ").unwrap(), "Sam");
+    assert_eq!(b.svc.view()["displayName"], "Sam");
+    let mine = b.svc.create_space("Mine").await.unwrap();
+    let who = b.svc.with_open(&SpaceId::from_hex(&mine).unwrap(), |sp| {
+        sp.roster.members.values().map(|m| m.name.clone()).collect::<Vec<_>>()
+    });
+    assert_eq!(who, Some(vec!["Sam".to_string()]));
+}
+
+#[tokio::test]
+async fn the_display_name_survives_a_restart_and_keeps_the_other_settings() {
+    let (hub, clk) = (MemoryHub::new(), clock());
+    let a = make_unnamed(&hub, 1, &clk, None, None);
+    a.svc.set_show_online(false).unwrap();
+    a.svc.set_display_name("Ren").unwrap();
+    let b = make_unnamed(&hub, 1, &clk, Some(a.keystore.clone()), Some(TempDir(a.dir.0.clone())));
+    std::mem::forget(a);
+    assert_eq!(b.svc.display_name().as_deref(), Some("Ren"));
+    assert!(!b.svc.show_online());
+}
+
+#[tokio::test]
+async fn joining_uses_my_name_and_renaming_reaches_every_space() {
+    let (hub, clk) = (MemoryHub::new(), clock());
+    let a = node(&hub, 1, &clk).await;
+    a.svc.set_display_name("Alice").unwrap();
+    let hex = a.svc.create_space("Book club").await.unwrap();
+    let space = SpaceId::from_hex(&hex).unwrap();
+    let b = make_unnamed(&hub, 2, &clk, None, None);
+    b.svc.set_display_name("Bob").unwrap();
+    b.svc.start_with(false).await.unwrap();
+    join(&a, &b, &hex).await;
+    eventually("a link", || a.svc.link_count() == 1 && b.svc.link_count() == 1).await;
+    let names = |n: &Node| n.svc.with_open(&space, |sp| sp.roster.members.values().map(|m| m.name.clone()).collect::<Vec<_>>()).unwrap();
+    assert!(names(&a).contains(&"Bob".to_string()));
+    assert!(names(&a).contains(&"Alice".to_string()));
+    // a member renames: the owner's PC publishes it, both PCs show it
+    b.svc.set_display_name("Robert").unwrap();
+    eventually("a sees Robert", || names(&a).contains(&"Robert".to_string())).await;
+    eventually("b sees Robert", || names(&b).contains(&"Robert".to_string())).await;
+    assert!(!names(&a).contains(&"Bob".to_string()));
+    // the owner renames: the member's PC learns it from the control op
+    a.svc.set_display_name("Alicia").unwrap();
+    eventually("b sees Alicia", || names(&b).contains(&"Alicia".to_string())).await;
 }

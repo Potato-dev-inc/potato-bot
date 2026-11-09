@@ -10,6 +10,7 @@ import {
   spaceReact,
   spaceRemoveMember,
   spaceShowOnline,
+  spacesSetDisplayName,
   spacesErrorText,
   usePresenceReporter,
   useSpace,
@@ -28,6 +29,7 @@ import { JoinRequestSheet } from './JoinRequestSheet';
 import { MemberList } from './MemberList';
 import { BotPanel } from './BotPanel';
 import { NewSpaceSheet } from './NewSpaceSheet';
+import { DisplayNameSheet } from './DisplayNameSheet';
 import { Sheet } from '../cockpit/Sheet';
 import { ConfirmSheet } from './ConfirmSheet';
 import { MemberMenu } from './MemberMenu';
@@ -50,6 +52,12 @@ export function SpacesPage() {
   const [channelId, setChannelId] = useState<string | null>(null);
   const [addingChannel, setAddingChannel] = useState(false);
   const [creating, setCreating] = useState(false);
+  /** What the person wanted when we asked for their name first. */
+  const [askName, setAskName] = useState<'create' | 'join' | 'existing' | null>(null);
+  /** Already in spaces from before names existed: asked once per visit, Cancel keeps the old name. */
+  const [askedExisting, setAskedExisting] = useState(false);
+  const [nameSaved, setNameSaved] = useState<string | null>(null);
+  const [nameError, setNameError] = useState<string | null>(null);
   const [peopleOpen, setPeopleOpen] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
   const [botsOpen, setBotsOpen] = useState(false);
@@ -85,7 +93,26 @@ export function SpacesPage() {
   const current = detail?.channels.find((c) => c.id === channelId && !c.archived) ?? null;
   const joining = view?.joining[0] ?? null;
   const request = view?.requests[0] ?? null;
-  const onNew = () => setCreating(true);
+  // `null` is "asked and none yet"; a view without the field (older backend) is never asked.
+  const needName = nameSaved === null && view?.displayName === null;
+  useEffect(() => {
+    if (needName && !askedExisting && !askName && view && view.spaces.length > 0) { setAskedExisting(true); setAskName('existing'); }
+  }, [needName, askedExisting, askName, view]);
+  const onNew = () => (needName ? (setNameError(null), setAskName('create')) : setCreating(true));
+  const onJoinOpen = () => (needName ? (setNameError(null), setAskName('join')) : setJoiningOpen(true));
+  const saveName = async (name: string): Promise<boolean> => {
+    try {
+      const r = await spacesSetDisplayName(name);
+      setNameSaved(r.displayName);
+      setNameError(null);
+      if (askName === 'create') setCreating(true);
+      else if (askName === 'join') setJoiningOpen(true);
+      return true;
+    } catch (e) {
+      setNameError(spacesErrorText(e));
+      return false;
+    }
+  };
   const openInvites = (view?.invites ?? []).filter((i) => i.space === selected && i.state === 'open' && i.expiresAtMs > now);
   const makeInvite = async (space: string) => {
     const i = await api.invite(space);
@@ -117,7 +144,7 @@ export function SpacesPage() {
               <button type="button" className="ck-btn ck-btn--primary" onClick={onNew}>
                 New space
               </button>
-              <button type="button" className="ck-btn ck-btn--secondary" onClick={() => setJoiningOpen(true)}>
+              <button type="button" className="ck-btn ck-btn--secondary" onClick={onJoinOpen}>
                 Join a space
               </button>
             </div>
@@ -137,7 +164,7 @@ export function SpacesPage() {
             selected={selected}
             onSelect={setSelected}
             onNew={onNew}
-            onJoin={() => setJoiningOpen(true)}
+            onJoin={onJoinOpen}
           />
           <main className="ck-spaces-main">
             {view && !view.online && (
@@ -269,6 +296,7 @@ export function SpacesPage() {
           onClose={() => setAddingChannel(false)}
         />
       )}
+      {askName && <DisplayNameSheet error={nameError} onSave={saveName} onClose={() => setAskName(null)} />}
       {creating && (
         <NewSpaceSheet
           error={api.error}

@@ -112,7 +112,7 @@ fn apply_body(s: &SpaceStore, roster: &Roster, e: &Entry, id: &EntryId, member: 
             apply_delete(s, roster, &target, member, now_ms)
         }
         // A bot claim or drop is for the owner's PC to act on (`service/bots.rs`); it is never a message in the feed.
-        Body::Leave | Body::BotClaim { .. } | Body::BotDrop { .. } | Body::Reserved(_) => Ok(false),
+        Body::Leave | Body::BotClaim { .. } | Body::BotDrop { .. } | Body::NameClaim { .. } | Body::Reserved(_) => Ok(false),
     }
 }
 

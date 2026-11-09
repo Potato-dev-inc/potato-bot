@@ -18,6 +18,8 @@ use crate::secure_core::sign;
 pub const CONTROL_DOMAIN: &[u8] = b"pm/spaces/control/v1";
 /// A member signs "this bot is mine" with this domain; the owner then publishes it in an `AddBot` op.
 pub const BOT_DOMAIN: &[u8] = b"pm/spaces/bot/v1";
+/// A member signs their own new name with this domain (`SetName`).
+pub const NAME_DOMAIN: &[u8] = b"pm/spaces/name/v1";
 pub const MAGIC: &[u8; 4] = b"PMSC";
 pub const MAX_MAILBOXES: usize = 2;
 const MAX_BODY: usize = 60_000;
@@ -75,6 +77,9 @@ pub enum OpBody {
     RemoveMailbox { node: NodeKey },
     RemoveBot { bot: BotId },
     SetBotRules { rules: BotRules },
+    /// A member renames themself. `sig` is that member's own signature over `name_claim_bytes`; the owner publishes it.
+    /// Older builds do not know this op type and stop replaying the control log at it.
+    SetName { member: MemberKey, name: String, sig: [u8; 64] },
 }
 
 const T_GENESIS: u8 = 1;
@@ -90,6 +95,7 @@ const T_ADD_MAILBOX: u8 = 10;
 const T_REMOVE_MAILBOX: u8 = 11;
 const T_REMOVE_BOT: u8 = 12;
 const T_SET_BOT_RULES: u8 = 13;
+const T_SET_NAME: u8 = 14;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ControlOp {
@@ -196,6 +202,7 @@ pub fn encode_body(body: &OpBody) -> (u8, Vec<u8>) {
             }
             T_SET_BOT_RULES
         }
+        OpBody::SetName { member, name, sig } => { w.fixed(&member.0).str(name).fixed(sig); T_SET_NAME }
     };
     (t, w.finish())
 }
@@ -265,6 +272,7 @@ pub fn decode_body(op_type: u8, body: &[u8]) -> Result<OpBody, RosterError> {
             };
             OpBody::SetBotRules { rules: BotRules { per_person, channels } }
         }
+        T_SET_NAME => OpBody::SetName { member: MemberKey(r.fixed()?), name: r.str(160)?, sig: r.fixed()? },
         _ => return fail("unknown op type"),
     };
     r.done()?;
@@ -346,6 +354,20 @@ pub fn bot_claim_bytes(space: &SpaceId, bot: &BotId, member: &MemberKey, name: &
     w.finish()
 }
 
+/// The bytes a member signs to take a new name: space, member key, name.
+pub fn name_claim_bytes(space: &SpaceId, member: &MemberKey, name: &str) -> Vec<u8> {
+    let mut w = Writer::new();
+    w.fixed(&space.0).fixed(&member.0).str(name);
+    w.finish()
+}
+
+/// Builds a `SetName` body for `me` renaming themself. The owner of the space publishes it in a control op.
+pub fn new_name_claim(me: &SpaceIdentity, space: &SpaceId, name: &str) -> OpBody {
+    let member = me.member_key();
+    let sig = me.sign_as_member(NAME_DOMAIN, &name_claim_bytes(space, &member, name));
+    OpBody::SetName { member, name: name.to_string(), sig }
+}
+
 /// Builds an `AddBot` body for `me`'s own bot. The owner of the space publishes it in a control op.
 pub fn new_bot_claim(me: &SpaceIdentity, space: &SpaceId, bot: BotId, name: &str) -> OpBody {
     let member = me.member_key();
@@ -385,6 +407,8 @@ pub struct Roster {
     /// Every bot id that was ever added, with its owner. Never shrinks: an old BotText is judged by this, not by
     /// the bots on the roster today.
     pub bot_owners: BTreeMap<BotId, MemberKey>,
+    /// The last name every bot ever had, kept after the bot or its owner is removed, so old lines keep their name.
+    pub bot_names: BTreeMap<BotId, String>,
     pub bot_rules: BotRules,
     /// Every grant ever published, by (epoch, device).
     pub grants: BTreeMap<(u32, DeviceKey), SealedKey>,
@@ -450,7 +474,7 @@ impl Roster {
             space, name: name.clone(), kind: *kind, owner: op.signer, members,
             channels: vec![Channel { id: *channel, name: "general".into(), archived: false }],
             epoch: 1, seq: 1, head: op.hash(), mailboxes: Vec::new(),
-            bots: BTreeMap::new(), bot_owners: BTreeMap::new(), bot_rules: BotRules::default(),
+            bots: BTreeMap::new(), bot_owners: BTreeMap::new(), bot_names: BTreeMap::new(), bot_rules: BotRules::default(),
             grants, gone: BTreeMap::new(), past: BTreeMap::new(), past_ms: BTreeMap::new(), needs_rotate: false,
         })
     }
@@ -559,6 +583,7 @@ impl Roster {
                 }
                 if self.bots_of(member).len() as u32 >= self.bot_rules.per_person { return fail("too many bots"); }
                 self.bot_owners.insert(*bot, *member);
+                self.bot_names.insert(*bot, name.clone());
                 self.bots.insert(*bot, Bot { id: *bot, member: *member, name: name.clone(), added_ms: op.created_ms });
                 Ok(())
             }
@@ -577,6 +602,16 @@ impl Roster {
                 }
                 self.bot_rules = rules.clone();
                 Ok(())
+            }
+            OpBody::SetName { member, name, sig } => {
+                if clean_name(name) != *name || name == "Someone" { return fail("bad member name"); }
+                if !sign::verify(&member.0, NAME_DOMAIN, &name_claim_bytes(&self.space, member, name), sig) {
+                    return fail("bad name signature");
+                }
+                match self.members.get_mut(member) {
+                    Some(m) => { m.name = name.clone(); Ok(()) }
+                    None => fail("not a member"),
+                }
             }
             OpBody::AddMailbox { node } => {
                 if self.mailboxes.contains(node) { return fail("mailbox exists"); }

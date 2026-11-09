@@ -382,3 +382,63 @@ fn a_bot_id_that_was_ever_on_the_roster_is_never_given_out_again() {
     assert_eq!(err(r.next_op(&owner(), bot_for(&owner(), 1, "Owner的fish"), NOW)), "bot id used");
     assert_eq!(r.bot_owners.get(&BotId([1; 8])), Some(&sam().member_key()));
 }
+
+// ---- a member renames themself --------------------------------------------------------------------------------------
+
+#[test]
+fn a_member_can_rename_themself_and_the_op_replays() {
+    let (mut r, g) = genesis();
+    let sam_key = sam().member_key();
+    let add_body = add_member_body(&r, &sam());
+    let add = step(&mut r, add_body).unwrap();
+    let op = step(&mut r, new_name_claim(&sam(), &space(), "Samantha")).unwrap();
+    assert_eq!(r.members[&sam_key].name, "Samantha");
+    assert_eq!(r.members[&owner().member_key()].name, "Owner");
+    assert_eq!(ControlOp::from_bytes(&op.to_bytes()).unwrap(), op);
+    // a second PC replaying the same ops ends with the same names
+    let again = Roster::replay(space(), &[g, add, op]).unwrap();
+    assert_eq!(again.members[&sam_key].name, "Samantha");
+}
+
+#[test]
+fn nobody_can_rename_someone_else() {
+    let mut r = with_sam();
+    // Sam signs a rename for the owner's key: the claim is signed by the wrong key.
+    let claim = name_claim_bytes(&space(), &owner().member_key(), "Boss");
+    let sig = sam().sign_as_member(NAME_DOMAIN, &claim);
+    let body = OpBody::SetName { member: owner().member_key(), name: "Boss".into(), sig };
+    assert_eq!(err(step(&mut r, body)), "bad name signature");
+    // Sam's own valid claim, pointed at the owner's key.
+    let OpBody::SetName { name, sig, .. } = new_name_claim(&sam(), &space(), "Boss") else { panic!() };
+    let body = OpBody::SetName { member: owner().member_key(), name, sig };
+    assert_eq!(err(step(&mut r, body)), "bad name signature");
+    assert_eq!(r.members[&owner().member_key()].name, "Owner");
+}
+
+#[test]
+fn a_rename_with_a_bad_signature_or_name_or_member_is_refused() {
+    let mut r = with_sam();
+    let OpBody::SetName { member, name, mut sig } = new_name_claim(&sam(), &space(), "Samantha") else { panic!() };
+    sig[0] ^= 1;
+    assert_eq!(err(step(&mut r, OpBody::SetName { member, name: name.clone(), sig })), "bad name signature");
+    // a signature for another name does not carry over
+    let OpBody::SetName { sig: other, .. } = new_name_claim(&sam(), &space(), "Other") else { panic!() };
+    assert_eq!(err(step(&mut r, OpBody::SetName { member, name, sig: other })), "bad name signature");
+    // names must already be clean
+    assert_eq!(err(step(&mut r, new_name_claim(&sam(), &space(), "Someone"))), "bad member name");
+    assert_eq!(err(step(&mut r, new_name_claim(&sam(), &space(), "  Sam   Two "))), "bad member name");
+    // a stranger is not a member
+    let stranger = SpaceIdentity::for_test(9);
+    assert_eq!(err(step(&mut r, new_name_claim(&stranger, &space(), "Eve"))), "not a member");
+    assert_eq!(r.members[&sam().member_key()].name, "Sam");
+}
+
+#[test]
+fn a_removed_bot_keeps_its_last_name_in_the_roster() {
+    let mut r = with_sam();
+    let bot = BotId([4; 8]);
+    step(&mut r, new_bot_claim(&sam(), &space(), bot, "Sam的fish")).unwrap();
+    step(&mut r, OpBody::RemoveBot { bot }).unwrap();
+    assert!(!r.bots.contains_key(&bot));
+    assert_eq!(r.bot_names.get(&bot).map(String::as_str), Some("Sam的fish"));
+}

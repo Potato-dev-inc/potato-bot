@@ -185,6 +185,20 @@ pub async fn space_show_online(app: AppHandle, on: bool) -> Result<Value, String
     Ok(svc.view())
 }
 
+/// `spaces_display_name`: my name in Spaces (null until set). Create and join answer `needs_display_name` without one.
+#[tauri::command]
+pub async fn spaces_display_name(app: AppHandle) -> Result<Value, String> {
+    Ok(json!({ "displayName": ready(&app)?.display_name() }))
+}
+
+/// `spaces_set_display_name`: keep the name and rename me in every space I am in.
+#[tauri::command]
+pub async fn spaces_set_display_name(app: AppHandle, name: String) -> Result<Value, String> {
+    let svc = ready(&app)?;
+    let name = svc.set_display_name(&name)?;
+    Ok(json!({ "displayName": name, "view": svc.view() }))
+}
+
 // ---- bots in a space (JSON is camelCase; see `SpacesService::bot_list` for the fields) ----------------------------
 
 #[tauri::command]

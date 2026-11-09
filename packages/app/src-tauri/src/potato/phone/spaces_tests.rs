@@ -261,3 +261,145 @@ fn the_phone_routes_call_only_read_and_send() {
     }
     assert!(source.contains(".send_text("), "a phone message goes through the desktop's own send");
 }
+
+// ---- evidence: who sent what, on two PCs (ignored; writes JSON for screenshot pages) ----------------------------------
+
+struct EvSink {
+    got: std::sync::Mutex<Vec<crate::spaces::bot_bridge::Delivery>>,
+    list: Vec<crate::spaces::bot_bridge::Candidate>,
+}
+impl EvSink {
+    fn new(id: &str) -> std::sync::Arc<EvSink> {
+        std::sync::Arc::new(EvSink {
+            got: std::sync::Mutex::new(Vec::new()),
+            list: vec![crate::spaces::bot_bridge::Candidate { id: id.into(), name: id.into() }],
+        })
+    }
+    fn count(&self) -> usize { self.got.lock().unwrap().len() }
+    fn last(&self) -> crate::spaces::bot_bridge::Delivery { self.got.lock().unwrap().last().cloned().expect("a delivery") }
+}
+impl crate::spaces::bot_bridge::BotSink for EvSink {
+    fn deliver(&self, d: &crate::spaces::bot_bridge::Delivery) -> Result<(), crate::spaces::bot_bridge::Refusal> {
+        self.got.lock().unwrap().push(d.clone());
+        Ok(())
+    }
+    fn candidates(&self) -> Vec<crate::spaces::bot_bridge::Candidate> { self.list.clone() }
+}
+impl crate::spaces::diary::DiaryHome for EvSink {
+    fn vault_of(&self, _: &str) -> Option<std::path::PathBuf> { None }
+}
+
+/// Two people (Ren owns the space, Sam joined) and their bots (Hoot, Pip) talk in #general. Each PC's desktop payloads and phone
+/// API payloads are written to `$EVIDENCE_DIR/{ren,sam}.json`. Run:
+/// `EVIDENCE_DIR=... cargo test --lib evidence_names_two_people_two_bots -- --ignored --nocapture`
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "writes evidence JSON to $EVIDENCE_DIR; run by hand"]
+async fn evidence_names_two_people_two_bots() {
+    use crate::spaces::bot_bridge::conversation_of;
+    use crate::spaces::memnet::MemoryHub;
+    use crate::spaces::service_tests::{clock, join, make};
+
+    let dir = std::path::PathBuf::from(std::env::var("EVIDENCE_DIR").expect("set EVIDENCE_DIR"));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let hub = MemoryHub::new();
+    let clk = clock();
+    let a = make(&hub, 1, &clk, None, None);
+    a.svc.set_display_name("Ren").unwrap();
+    a.svc.start_with(false).await.unwrap();
+    let b = make(&hub, 2, &clk, None, None);
+    b.svc.set_display_name("Sam").unwrap();
+    b.svc.start_with(false).await.unwrap();
+    let hex = a.svc.create_space("Weekend hike").await.unwrap();
+    join(&a, &b, &hex).await;
+    eventually("a link", || a.svc.link_count() == 1 && b.svc.link_count() == 1).await;
+    let space = crate::spaces::ids::SpaceId::from_hex(&hex).unwrap();
+
+    let (sink_a, sink_b) = (EvSink::new("hoot"), EvSink::new("pip"));
+    a.svc.set_bot_port(Some(sink_a.clone()));
+    b.svc.set_bot_port(Some(sink_b.clone()));
+    a.svc.bot_add(&hex, "hoot", "Hoot").unwrap();
+    b.svc.bot_add(&hex, "pip", "Pip").unwrap();
+    eventually("both bots on both PCs", || {
+        a.svc.with_open(&space, |sp| sp.roster.bots.len()) == Some(2) && b.svc.with_open(&space, |sp| sp.roster.bots.len()) == Some(2)
+    })
+    .await;
+    // the roster must show Pip as Sam's on Sam's PC before Sam can call it
+    eventually("pip is Sam's here", || b.svc.bot_list(&hex).unwrap()["bots"].as_array().unwrap().iter().any(|x| x["name"] == "Pip" && x["mine"] == true)).await;
+
+    let ch = general(&a, &space).to_hex();
+    let step = |clk: &std::sync::Arc<std::sync::atomic::AtomicU64>| { clk.fetch_add(2 * 60_000, Ordering::SeqCst); };
+    let mut want = 0usize;
+
+    // 1. Ren asks Hoot
+    step(&clk);
+    a.svc.send_text(&hex, &ch, "Morning Sam! I'd love a hike this Saturday. @Hoot what's a good easy trail near us?", None).await.unwrap();
+    want += 1;
+    eventually("hoot is called", || sink_a.count() == 1).await;
+    // 2. Hoot answers (the real reply path)
+    step(&clk);
+    let d = sink_a.last();
+    a.svc
+        .bot_reply(&d.bot_local, &d.id, &conversation_of(&d.space, &d.channel),
+            "Try the Ridge Loop. It is about 6 km, takes around two hours, is mostly shaded and has a lookout halfway round.")
+        .unwrap();
+    want += 1;
+    eventually("both have 2", || texts(&a, &space).len() == want && texts(&b, &space).len() == want).await;
+    // 3. Sam calls Pip
+    step(&clk);
+    b.svc.send_text(&hex, &ch, "The Ridge Loop sounds perfect. I'll bring sandwiches. @Pip what else should we pack?", None).await.unwrap();
+    want += 1;
+    eventually("pip is called", || sink_b.count() == 1).await;
+    // 4. Pip answers
+    step(&clk);
+    let d = sink_b.last();
+    b.svc
+        .bot_reply(&d.bot_local, &d.id, &conversation_of(&d.space, &d.channel),
+            "Water (one litre each), a light jacket, sunscreen and a few snacks. Start early, it gets warm by midday.")
+        .unwrap();
+    want += 1;
+    eventually("both have 4", || texts(&a, &space).len() == want && texts(&b, &space).len() == want).await;
+    // 5. Sam
+    step(&clk);
+    b.svc.send_text(&hex, &ch, "Thanks both! Is 8am at the trailhead okay for you, Ren?", None).await.unwrap();
+    want += 1;
+    eventually("both have 5", || texts(&a, &space).len() == want && texts(&b, &space).len() == want).await;
+    // 6. Ren
+    step(&clk);
+    a.svc.send_text(&hex, &ch, "8am works for me. I'll bring a first-aid kit. See you Saturday!", None).await.unwrap();
+    want += 1;
+    eventually("both have 6", || texts(&a, &space).len() == want && texts(&b, &space).len() == want).await;
+
+    // ---- the payloads, per PC ----
+    for (who, n) in [("ren", &a), ("sam", &b)] {
+        let svc = &n.svc;
+        let k = kit(&format!("ev-{who}"), None);
+        k.env.spaces_on.store(true, Ordering::SeqCst);
+        *k.env.spaces.lock() = Some(svc.clone());
+        let (device_id, token) = k.pair();
+        let get = |path: &str| {
+            let r = k.authed(&token, "GET", path, "");
+            assert_eq!(r.status, 200, "{path}: {}", r.body_json());
+            r.body_json()
+        };
+        let phone_spaces = get("/api/spaces");
+        let phone_msgs = get(&format!("/api/spaces/{hex}/channels/{ch}/messages?limit=50"));
+        let phone_me = get("/api/me");
+        let doc = json!({
+            "who": who,
+            "spaceId": hex, "channelId": ch,
+            "desktop": {
+                "spaces_display_name": { "displayName": svc.display_name() },
+                "spaces_view": svc.view(),
+                "space_detail": svc.detail(&hex).unwrap(),
+                "space_messages": svc.messages(&hex, &ch, None, 200).unwrap(),
+                "space_bot_list": svc.bot_list(&hex).unwrap(),
+            },
+            "phone": { "me": phone_me, "spaces": phone_spaces, "messages": phone_msgs, "token": token, "deviceId": device_id },
+        });
+        std::fs::write(dir.join(format!("{who}.json")), serde_json::to_string_pretty(&doc).unwrap()).unwrap();
+        let _ = std::fs::remove_dir_all(&k.dir);
+    }
+    a.svc.stop().await;
+    b.svc.stop().await;
+}

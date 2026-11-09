@@ -104,9 +104,11 @@ fn file_list(m: &Value) -> Vec<Value> {
 
 fn message_out(m: &Value) -> Value {
     let has_file = m["file"].is_object();
+    let bot = m["isFish"].as_bool().unwrap_or(false);
     json!({
-        "id": m["id"], "authorName": m["authorName"], "mine": m["isMine"].as_bool().unwrap_or(false),
-        "bot": m["isFish"].as_bool().unwrap_or(false),
+        // A bot line is never "mine" (the service already says so; this keeps it true if that ever slips).
+        "id": m["id"], "authorName": m["authorName"], "mine": !bot && m["isMine"].as_bool().unwrap_or(false),
+        "bot": bot, "ownerName": m["ownerName"], "ownedByMe": m["ownedByMe"].as_bool().unwrap_or(false),
         // A file message's text upstream is just the file's name; the phone gets it in `files`.
         "text": if has_file { json!("") } else { m["text"].clone() },
         "atMs": m["createdAtMs"], "files": file_list(m),

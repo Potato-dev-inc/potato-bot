@@ -1376,12 +1376,14 @@ export function mountPhoneApp(root, deps) {
     v.onViewport = () => { if (pinned) scroll.scrollTop = scroll.scrollHeight; };
     v.onVisibility = (vis) => { if (vis) maybeRead(); };
 
+    // A bot line is signed by its owner's key, so an older PC may still say mine:true for it. It is the bot talking: always theirs.
+    const isMine = (m) => !!m.mine && !m.bot;
     function msgEl(m, pos) {
-      const mine = !!m.mine;
+      const mine = isMine(m);
       const row = h('div', { class: 'msg ' + (mine ? 'mine' : 'theirs'), 'data-id': m.id, 'data-pos': pos, 'data-state': m.state || 'sent' });
       const bubble = h('div', { class: 'bubble' });
       if (!mine && (pos === 'single' || pos === 'first')) {
-        bubble.append(h('div', { class: 'who' }, h('span', { class: 'who-name', text: m.authorName || '' }), m.bot ? h('span', { class: 'botmark', text: t('spaces.bot') }) : null));
+        bubble.append(h('div', { class: 'who' }, h('span', { class: 'who-name', text: m.authorName || '' }), m.bot ? h('span', { class: 'botmark', text: t('spaces.bot') }) : null, m.bot && m.ownerName ? h('span', { class: 'who-owner', text: m.ownedByMe ? t('spaces.bot_yours') : m.ownerName }) : null));
       }
       if (m.text) bubble.append(h('div', { class: 'txt', text: m.text }));
       for (const f of m.files || []) bubble.append(h('div', { class: 'attach', text: t('chat.file', { name: f.name + (f.size != null ? ' (' + fmtSize(f.size) + ')' : '') }) }));
@@ -1400,7 +1402,7 @@ export function mountPhoneApp(root, deps) {
       if (!all.length) {
         msgs.replaceChildren(...(v.loaded ? [h('div', { class: 'empty' }, h('div', { class: 'empty-ico', 'aria-hidden': 'true' }), h('p', { text: t('spaces.channel_empty') }))] : []));
       } else {
-        const keys = all.map((m) => (m.mine ? 'you' : 'a:' + (m.bot ? 'b:' : '') + (m.authorName || '')));
+        const keys = all.map((m) => (isMine(m) ? 'you' : 'a:' + (m.bot ? 'b:' : '') + (m.authorName || '')));
         const ats = all.map((m) => Number(m.atMs) || 0);
         msgs.replaceChildren(...all.map((m, i) => msgEl(m, groupPos(keys, ats, i))));
       }

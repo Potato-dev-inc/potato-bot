@@ -16,6 +16,28 @@ pub(super) fn load_show_online(dir: &Path) -> bool {
         .unwrap_or(true)
 }
 
+fn read_settings(dir: &Path) -> Value {
+    std::fs::read(dir.join(SETTINGS_FILE))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}))
+}
+
+/// Writes one key of `settings.json` and keeps the others.
+pub(super) fn write_setting(dir: &Path, key: &str, value: Value) -> Result<(), String> {
+    let fail = || "Could not save that setting.".to_string();
+    std::fs::create_dir_all(dir).map_err(|_| fail())?;
+    let mut all = read_settings(dir);
+    all[key] = value;
+    std::fs::write(dir.join(SETTINGS_FILE), all.to_string()).map_err(|_| fail())
+}
+
+/// This PC's name in Spaces, if one was set.
+pub(super) fn load_display_name(dir: &Path) -> Option<String> {
+    read_settings(dir)["displayName"].as_str().map(str::to_string).filter(|n| !n.is_empty())
+}
+
 impl SpacesService {
     /// Report my state ("online" or "away"). Peers hear it at once.
     pub fn set_my_presence(&self, state: &str) -> Result<(), String> {
@@ -27,9 +49,7 @@ impl SpacesService {
 
     /// Turn "Show when I'm online" on or off and keep it in `settings.json`. Off: nothing about me is sent.
     pub fn set_show_online(&self, on: bool) -> Result<(), String> {
-        std::fs::create_dir_all(&self.dir).map_err(|_| "Could not save that setting.".to_string())?;
-        std::fs::write(self.dir.join(SETTINGS_FILE), json!({ "showOnline": on }).to_string())
-            .map_err(|_| "Could not save that setting.".to_string())?;
+        write_setting(&self.dir, "showOnline", json!(on))?;
         self.show_online.store(on, Ordering::SeqCst);
         if on { self.presence_tick(); }
         self.changed();

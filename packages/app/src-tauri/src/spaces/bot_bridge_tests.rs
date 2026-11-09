@@ -594,3 +594,35 @@ async fn a_muted_bot_is_hidden_on_the_viewers_pc_only() {
     assert_eq!(b.svc.messages(&space.to_hex(), &ch, None, 10).unwrap().as_array().unwrap().len(), 1);
     assert_eq!(a.svc.messages(&space.to_hex(), &general(&a, &space).to_hex(), None, 10).unwrap().as_array().unwrap().len(), 2);
 }
+
+#[tokio::test]
+async fn a_bot_line_is_never_mine_and_a_removed_bot_keeps_its_name() {
+    let (a, b, space, sink, bot) = rig().await;
+    say(&b, &space, "@Ren的fish hi there").await;
+    eventually("delivered", || sink.count() == 1).await;
+    let d = sink.last();
+    a.svc.bot_reply("nimbus", &d.id, &bb::conversation_of(&d.space, &d.channel), "Hello!").unwrap();
+    eventually("b shows it", || texts(&b, &space).last().map(|t| t.as_str()) == Some("Hello!")).await;
+    let (sh, ch) = (space.to_hex(), general(&a, &space).to_hex());
+    let bot_row = |n: &Node| {
+        let all = n.svc.messages(&sh, &ch, None, 10).unwrap();
+        all.as_array().unwrap().iter().find(|m| m["isFish"] == true).cloned().expect("a bot row")
+    };
+    // On the bot owner's own PC the line is signed by the owner's member key, but it is the bot talking.
+    let on_a = bot_row(&a);
+    assert_eq!((on_a["isMine"].clone(), on_a["ownedByMe"].clone()), (serde_json::json!(false), serde_json::json!(true)));
+    assert_eq!((on_a["authorName"].clone(), on_a["ownerName"].clone()), (serde_json::json!("Ren的fish"), serde_json::json!("Me")));
+    let on_b = bot_row(&b);
+    assert_eq!((on_b["isMine"].clone(), on_b["ownedByMe"].clone()), (serde_json::json!(false), serde_json::json!(false)));
+    // a person's own line is still mine
+    let all = b.svc.messages(&sh, &ch, None, 10).unwrap();
+    assert_eq!(all[0]["isMine"], true);
+    assert_eq!(all[0]["ownedByMe"], false);
+    // after the bot is removed its old line keeps the name it had
+    a.svc.bot_remove(&sh, &bot.to_hex()).unwrap();
+    eventually("b dropped the bot", || b.svc.with_open(&space, |sp| sp.roster.bots.is_empty()) == Some(true)).await;
+    for n in [&a, &b] {
+        let r = bot_row(n);
+        assert_eq!((r["authorName"].clone(), r["botName"].clone()), (serde_json::json!("Ren的fish"), serde_json::json!("Ren的fish")));
+    }
+}

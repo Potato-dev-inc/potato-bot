@@ -36,6 +36,8 @@ pub const KIND_BOT: u8 = 7;
 pub const KIND_BOT_CLAIM: u8 = 8;
 /// A member takes their own bot off the roster. Hidden from the feed.
 pub const KIND_BOT_DROP: u8 = 9;
+/// A member asks the space owner's PC to publish their new name. Hidden from the feed. Older builds see a reserved kind.
+pub const KIND_NAME_CLAIM: u8 = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogError(pub &'static str);
@@ -71,6 +73,8 @@ pub enum Body {
     BotClaim { bot: BotId, name: String, sig: [u8; 64] },
     /// Only the author's own bot is taken off.
     BotDrop { bot: BotId },
+    /// `sig` is the author's member signature over `roster::name_claim_bytes` (domain `NAME_DOMAIN`).
+    NameClaim { name: String, sig: [u8; 64] },
     Reserved(u8),
 }
 
@@ -176,6 +180,7 @@ pub fn kind_of(body: &Body) -> u8 {
         Body::BotText { .. } => KIND_BOT,
         Body::BotClaim { .. } => KIND_BOT_CLAIM,
         Body::BotDrop { .. } => KIND_BOT_DROP,
+        Body::NameClaim { .. } => KIND_NAME_CLAIM,
         Body::Reserved(k) => *k,
     }
 }
@@ -206,6 +211,10 @@ pub fn encode_body(body: &Body) -> Result<Vec<u8>, LogError> {
             w.fixed(&bot.0).str(name).fixed(sig);
         }
         Body::BotDrop { bot } => { w.fixed(&bot.0); }
+        Body::NameClaim { name, sig } => {
+            if name.chars().count() > NAME_MAX_CHARS || name.is_empty() { return Err(LogError("bad name")); }
+            w.str(name).fixed(sig);
+        }
         Body::Reserved(_) => return Err(LogError("reserved kind")),
     }
     Ok(w.finish())
@@ -214,7 +223,7 @@ pub fn encode_body(body: &Body) -> Result<Vec<u8>, LogError> {
 pub fn decode_body(kind: u8, plain: &[u8]) -> Result<Body, LogError> {
     let bad = |_| LogError("bad body");
     if kind >= 64 { return Err(LogError("bad kind")); }
-    if kind == 2 || (10..64).contains(&kind) { return Ok(Body::Reserved(kind)); }
+    if kind == 2 || (11..64).contains(&kind) { return Ok(Body::Reserved(kind)); }
     let mut r = Reader::new(plain);
     if r.u8().map_err(bad)? != 1 { return Err(LogError("bad body version")); }
     let body = match kind {
@@ -253,6 +262,11 @@ pub fn decode_body(kind: u8, plain: &[u8]) -> Result<Body, LogError> {
             Body::BotClaim { bot, name, sig: r.fixed().map_err(bad)? }
         }
         KIND_BOT_DROP => Body::BotDrop { bot: BotId(r.fixed().map_err(bad)?) },
+        KIND_NAME_CLAIM => {
+            let name = r.str(NAME_MAX_CHARS * 4).map_err(bad)?;
+            if name.chars().count() > NAME_MAX_CHARS || name.is_empty() { return Err(LogError("bad name")); }
+            Body::NameClaim { name, sig: r.fixed().map_err(bad)? }
+        }
         _ => return Err(LogError("bad kind")),
     };
     r.done().map_err(bad)?;

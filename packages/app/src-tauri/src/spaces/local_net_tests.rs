@@ -50,6 +50,7 @@ async fn side(name: &str) -> Side {
     let svc = SpacesService::new(
         link.net(), link.perms(), TeamKeys::with_backend(backend, name), dir.0.clone(), Arc::new(now_ms),
     );
+    svc.set_display_name(name).unwrap();
     svc.start().await.expect("the endpoint should start on loopback");
     Side { svc, link, _dir: dir }
 }

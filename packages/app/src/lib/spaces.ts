@@ -84,7 +84,14 @@ export interface SpacesView {
   relayed: boolean;
   /** "Show when I'm online" (all spaces on this computer). */
   showOnline: boolean;
+  /** My name in every space. null until I pick one (create and join ask for it first). */
+  displayName?: string | null;
 }
+
+export const NEEDS_DISPLAY_NAME = 'needs_display_name';
+export const spacesDisplayName = () => invoke<{ displayName: string | null }>('spaces_display_name');
+export const spacesSetDisplayName = (name: string) =>
+  invoke<{ displayName: string; view: SpacesView }>('spaces_set_display_name', { name });
 
 export const spacesView = () => invoke<SpacesView>('spaces_view');
 export const spaceCreate = (name: string) => invoke<{ space: string; view: SpacesView }>('space_create', { name });
@@ -98,6 +105,8 @@ export const spaceJoinCancel = (space: string) => invoke<SpacesView>('space_join
 
 /** Text for an error thrown by a Spaces command. Commands already return plain sentences. */
 export function spacesErrorText(e: unknown): string {
+  const text = typeof e === 'string' ? e : e instanceof Error ? e.message : '';
+  if (text.trim() === NEEDS_DISPLAY_NAME) return 'Pick the name people will see first.';
   if (typeof e === 'string' && e.trim() !== '') return e;
   if (e instanceof Error && e.message.trim() !== '') return e.message;
   return 'Something went wrong. Try again.';
@@ -290,7 +299,11 @@ export interface SpaceMessage {
   isFish: boolean;
   botId?: string | null;
   botName?: string | null;
+  /** Said by me. Never true for a bot line, even my own bot's. */
   isMine: boolean;
+  /** A bot line: the name of the person who owns the bot, and whether that is me. */
+  ownerName?: string | null;
+  ownedByMe?: boolean;
   createdAtMs: number;
   text: string;
   replyTo: string | null;
