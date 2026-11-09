@@ -28,7 +28,7 @@ const ITEMS: TrashItem[] = [
 
 const flush = () =>
   act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setImmediate(resolve));
   });
 
 const rows = () => [...host.querySelectorAll<HTMLElement>('.ck-potato-trash-row')];

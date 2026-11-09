@@ -26,7 +26,10 @@ fn a_recorded_cost_comes_back_by_message_id() {
 #[test]
 fn only_the_newest_costs_are_kept() {
     let root = temp("cap");
-    for i in 0..(KEEP + 3) {
+    // KEEP entries already on disk (a file written in one go), then three real records push the oldest out
+    let seeded: Vec<String> = (0..KEEP).map(|i| format!(r#"{{"id":"m-{i}","nano":1}}"#)).collect();
+    std::fs::write(path(&root), format!(r#"{{"entries":[{}]}}"#, seeded.join(","))).unwrap();
+    for i in KEEP..(KEEP + 3) {
         record(&root, &format!("m-{i}"), 1).unwrap();
     }
     let costs = load(&root);

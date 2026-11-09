@@ -14,7 +14,7 @@ use serde_json::json;
 
 use super::potato_screen::{gate, serve};
 use crate::bridge::http::{read_request, split_target, write_json};
-use crate::mobile_pairing::{self, Cap, Caller, Caps};
+use crate::mobile_pairing::{self, Cap, Caps};
 use crate::potato::sandbox::screen::{Audience, Mode, ScreenHub, ScreenSource, LINK_TTL_MS};
 use crate::potato::sandbox::secrets::ScreenSecrets;
 use crate::potato::sandbox::{SbxResult, ScreenTarget};

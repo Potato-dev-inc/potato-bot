@@ -32,7 +32,7 @@ function baseSettings(over: Partial<Settings> | undefined): Settings {
 export async function settle(times = 4): Promise<void> {
   for (let i = 0; i < times; i += 1) {
     await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setImmediate(resolve));
     });
   }
 }

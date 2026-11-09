@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use serde_json::{json, Value};
+use serde_json::json;
 
 use super::bot_settings::{self, McpServer};
 use super::mcp::{self, NewServer};

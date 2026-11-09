@@ -349,7 +349,7 @@ describe('CSS guards (rules written down; the pixels are not proven here)', () =
   });
   it('the Bots here line steps aside on wide windows, grouped lines reveal time on hover and focus', () => {
     expect(css).toMatch(/min-width: 1001px\) \{ \.cockpit \.ck-spaces-botsline\.is-listed \{ display: none/);
-    expect(css).toMatch(/is-grouped:focus-within \.ck-spaces-msg-line/);
+    expect(css).toMatch(/is-grouped:focus-within \.ck-spaces-msg-time/);
     expect(css).toMatch(/ck-spaces-member:focus-within \.ck-spaces-member-actions/);
   });
 });

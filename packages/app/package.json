@@ -1,6 +1,6 @@
 {
   "name": "@puppet-master/app",
-  "version": "1.0.12",
+  "version": "1.0.13",
   "private": true,
   "type": "module",
   "scripts": {
@@ -11,6 +11,8 @@
     "tauri": "tauri",
     "typecheck": "tsc --noEmit --incremental --tsBuildInfoFile ../../node_modules/.cache/pm/tsc-app.tsbuildinfo",
     "test": "vitest run",
+    "test:safe": "vitest run --pool=forks",
+    "test:changed": "vitest run --changed",
     "test:watch": "vitest"
   },
   "dependencies": {

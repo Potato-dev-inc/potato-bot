@@ -172,58 +172,90 @@
 /* The Bots here line repeats the People column's Bots list; with that column showing, it steps aside. */
 @media (min-width: 1001px) { .cockpit .ck-spaces-botsline.is-listed { display: none; } }
 
-/* A run of lines from one sender: name and Bot tag stay for screen readers only; the time and More show on hover or focus,
-   at the side of the row away from the text. On touch the small line stays in the flow so More is always there. */
-.cockpit .ck-spaces-msg.is-grouped { position: relative; margin-top: -7px; }
-.cockpit .ck-spaces-msg.is-grouped .ck-spaces-msg-author,
-.cockpit .ck-spaces-msg.is-grouped .ck-spaces-bot-tag { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-.cockpit .ck-spaces-msg.is-grouped .ck-spaces-msg-line { position: absolute; top: 0; right: 0; z-index: 1; opacity: 0; transition: opacity 120ms var(--ease); }
-.cockpit .ck-spaces-msg.is-grouped.is-mine .ck-spaces-msg-line { right: auto; left: 0; }
-.cockpit .ck-spaces-msg.is-grouped:hover .ck-spaces-msg-line,
-.cockpit .ck-spaces-msg.is-grouped:focus-within .ck-spaces-msg-line,
-.cockpit .ck-spaces-msg.is-grouped .ck-spaces-msg-line:has([aria-expanded='true']) { opacity: 1; }
-@media (hover: none) {
-  .cockpit .ck-spaces-msg.is-grouped { margin-top: -4px; }
-  .cockpit .ck-spaces-msg.is-grouped .ck-spaces-msg-line { position: static; opacity: 1; min-height: 0; }
-}
-
 /* Feed: title, optional bots line, the scrolling messages, the composer pinned under them. */
 .cockpit .ck-spaces-feed { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); }
 .cockpit .ck-spaces-feed-title { font-size: 13px; font-weight: 600; margin: 8px 12px; }
 .cockpit .ck-spaces-feed > .ck-spaces-feed-title { flex: none; margin: 0; padding: 10px 20px; border-bottom: 1px solid var(--sep); }
 .cockpit .ck-spaces-botsline { flex: none; margin: 0; padding: 6px 20px; border-bottom: 1px solid var(--sep); font-size: 11.5px; color: var(--label-3); }
-.cockpit .ck-spaces-msgs { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 20px 8px; display: flex; flex-direction: column; gap: 10px; }
+.cockpit .ck-spaces-msgs { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 20px 8px; display: flex; flex-direction: column; gap: 0; }
 .cockpit .ck-spaces-start { color: var(--label-3); font-size: 11px; text-align: center; padding: 4px 0; }
 .cockpit .ck-spaces-quiet { background: none; border: 0; padding: 2px 6px; border-radius: 6px; color: var(--label-2); cursor: pointer; font: inherit; font-size: 12px; }
 .cockpit .ck-spaces-quiet:hover { background: var(--fill); color: var(--label); }
 .cockpit .ck-spaces-msgs > li:has(> .ck-spaces-quiet) { text-align: center; }
-.cockpit .ck-spaces-msg { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; min-width: 0; }
-.cockpit .ck-spaces-msg.is-mine { align-items: flex-end; }
-.cockpit .ck-spaces-msg-line { display: flex; align-items: center; gap: 6px; min-height: 20px; max-width: 100%; }
-.cockpit .ck-spaces-msg-author { font-weight: 600; font-size: 12.5px; overflow-wrap: anywhere; }
+/* One message, Discord-like but grayscale: everyone left-aligned, an avatar gutter, then name/time and the text. No bubbles. */
+.cockpit .ck-spaces-msg {
+  position: relative; display: grid; grid-template-columns: 34px minmax(0, 1fr); column-gap: 12px; align-items: start;
+  min-width: 0; margin: 14px -8px 0; padding: 2px 8px; border-radius: 8px; transition: background-color 120ms var(--ease);
+}
+.cockpit .ck-spaces-msg.is-grouped { margin-top: 0; }
+.cockpit .ck-spaces-msg:hover, .cockpit .ck-spaces-msg:focus-within { background: var(--fill); }
+.cockpit .ck-spaces-msg.is-mention { background: var(--fill); box-shadow: inset 2px 0 0 var(--label-3); }
+.cockpit .ck-spaces-msg.is-mention:hover, .cockpit .ck-spaces-msg.is-mention:focus-within { background: var(--fill-hover); }
+.cockpit .ck-spaces-msg.is-flash { background: var(--fill-active); }
+.cockpit .ck-spaces-day + .ck-spaces-msg { margin-top: 6px; }
+.cockpit .ck-spaces-day { display: flex; align-items: center; gap: 12px; margin: 18px 0 2px; color: var(--label-3); font-size: 11px; font-weight: 600; }
+.cockpit .ck-spaces-day::before, .cockpit .ck-spaces-day::after { content: ''; flex: 1; height: 1px; background: var(--sep); }
+.cockpit .ck-spaces-msg-gutter { grid-column: 1; display: flex; justify-content: center; padding-top: 2px; min-width: 0; }
+.cockpit .ck-spaces-msg-body { grid-column: 2; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 0; max-width: 76ch; }
+.cockpit .ck-spaces-msg-line { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0 6px; min-height: 20px; max-width: 100%; }
+.cockpit .ck-spaces-msg-author { font-weight: 600; font-size: 13px; color: var(--label); overflow-wrap: anywhere; }
 .cockpit .ck-spaces-msg-owner { color: var(--label-3); font-size: 11px; overflow-wrap: anywhere; }
-.cockpit .ck-spaces-msg.is-grouped .ck-spaces-msg-owner { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .cockpit .ck-spaces-msg-time { color: var(--label-3); font-size: 11px; font-variant-numeric: tabular-nums; }
+/* A run of lines from one sender: the avatar and name are said once (the name stays for screen readers); the short time shows in the gutter on hover or focus. */
+.cockpit .ck-spaces-msg.is-grouped .ck-spaces-msg-line { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.cockpit .ck-spaces-msg.is-grouped .ck-spaces-msg-gutter { align-items: center; padding-top: 0; }
+.cockpit .ck-spaces-msg.is-grouped .ck-spaces-msg-time { font-size: 10px; opacity: 0; transition: opacity 120ms var(--ease); }
+.cockpit .ck-spaces-msg.is-grouped:hover .ck-spaces-msg-time, .cockpit .ck-spaces-msg.is-grouped:focus-within .ck-spaces-msg-time { opacity: 1; }
 /* The word "Bot" next to a bot's name: who spoke is said in words, not by colour. */
-.cockpit .ck-spaces-bot-tag { padding: 0 5px; border: 1px solid var(--label-4); border-radius: 4px; color: var(--label-2); font-size: 10.5px; font-weight: 500; line-height: 15px; }
-.cockpit .ck-spaces-msg-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.5; }
-.cockpit .ck-spaces-msg-text.ck-potato-bubble { max-width: min(560px, 85%); }
-.cockpit .ck-spaces-msg-reply { margin: 0; padding-left: 8px; border-left: 2px solid var(--sep); color: var(--label-2); font-size: 12px; overflow-wrap: anywhere; }
+.cockpit .ck-spaces-bot-tag { padding: 0 5px; border: 1px solid var(--label-4); border-radius: 4px; color: var(--label-2); font-size: 10px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; line-height: 14px; align-self: center; }
+/* Avatars: a gray disc with the initial (a rounded square with a small robot for a bot). The shade comes from a stable hash of the id. */
+.cockpit .ck-spaces-avatar {
+  display: inline-flex; align-items: center; justify-content: center; flex: none; width: 34px; height: 34px; border-radius: 50%;
+  background: color-mix(in srgb, var(--label) 18%, var(--bg)); color: var(--label); font-size: 14px; font-weight: 600; line-height: 1; user-select: none;
+}
+.cockpit .ck-spaces-avatar.is-bot { border-radius: 10px; }
+.cockpit .ck-spaces-avatar.is-small { width: 16px; height: 16px; font-size: 9px; }
+.cockpit .ck-spaces-avatar.is-small.is-bot { border-radius: 5px; }
+.cockpit .ck-spaces-avatar[data-shade='0'] { background: color-mix(in srgb, var(--label) 12%, var(--bg)); }
+.cockpit .ck-spaces-avatar[data-shade='1'] { background: color-mix(in srgb, var(--label) 16%, var(--bg)); }
+.cockpit .ck-spaces-avatar[data-shade='2'] { background: color-mix(in srgb, var(--label) 20%, var(--bg)); }
+.cockpit .ck-spaces-avatar[data-shade='3'] { background: color-mix(in srgb, var(--label) 24%, var(--bg)); }
+.cockpit .ck-spaces-avatar[data-shade='4'] { background: color-mix(in srgb, var(--label) 28%, var(--bg)); }
+.cockpit .ck-spaces-avatar[data-shade='5'] { background: color-mix(in srgb, var(--label) 32%, var(--bg)); }
+.cockpit .ck-spaces-msg-text { margin: 0; max-width: 72ch; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.5; color: var(--label); }
+.cockpit .ck-spaces-mention { padding: 0 3px; border-radius: 4px; background: var(--fill-active); font-weight: 500; }
+.cockpit .ck-spaces-mention.is-me { background: var(--label-4); color: var(--label); }
+/* The line a reply points at: a curve from the avatar gutter, a tiny avatar, the author and one line of the original. */
+.cockpit .ck-spaces-msg-reply {
+  grid-column: 1 / -1; display: flex; align-items: center; gap: 5px; min-width: 0; max-width: 100%; margin: 0 0 2px; padding: 0; border: 0; background: none;
+  color: var(--label-3); font: inherit; font-size: 12px; text-align: left; cursor: pointer;
+}
+.cockpit .ck-spaces-msg-reply:disabled { cursor: default; }
+.cockpit .ck-spaces-msg-reply:not(:disabled):hover { color: var(--label-2); }
+.cockpit .ck-spaces-msg-reply:not(:disabled):hover .ck-spaces-reply-text { color: var(--label); }
+.cockpit .ck-spaces-reply-curve { flex: none; margin: 8px 0 0 17px; }
+.cockpit .ck-spaces-reply-author { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: var(--label-2); }
+.cockpit .ck-spaces-reply-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cockpit .ck-spaces-msg.is-deleted .ck-spaces-msg-text,
 .cockpit .ck-spaces-msg.is-blocked .ck-spaces-msg-text { color: var(--label-3); font-style: italic; }
-.cockpit .ck-spaces-msg.is-blocked { flex-direction: row; align-items: center; gap: 8px; }
+.cockpit .ck-spaces-msg.is-blocked { display: flex; flex-direction: row; align-items: center; gap: 8px; margin-top: 8px; }
 .cockpit .ck-spaces-reactions { display: flex; flex-wrap: wrap; gap: 4px; }
 .cockpit .ck-spaces-reaction {
   padding: 0 7px; height: 22px; border: 1px solid var(--sep); border-radius: 11px; background: none; color: var(--label-2); cursor: pointer; font-size: 12px;
 }
 .cockpit .ck-spaces-reaction:hover { background: var(--fill); }
-.cockpit .ck-spaces-reaction.is-mine { border-color: var(--accent-line); background: var(--accent-soft); color: var(--label); }
-/* The row's actions (Reply, More): shown on hover, on keyboard focus, while the menu is open, and always on touch. */
-.cockpit .ck-spaces-msg-actions { display: inline-flex; opacity: 0; transition: opacity 120ms var(--ease); }
+.cockpit .ck-spaces-reaction.is-mine { border-color: var(--label-3); background: var(--fill-active); color: var(--label); }
+/* The row's actions (Reply, More): a small bordered toolbar floating at the top right of the row, on hover, on keyboard focus, while the menu is open, and always on touch. */
+.cockpit .ck-spaces-msg-actions {
+  position: absolute; top: -13px; right: 10px; z-index: 2; display: inline-flex; align-items: center; gap: 1px; padding: 2px;
+  border: 1px solid var(--sep); border-radius: 8px; background: var(--bg-raised); box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+  opacity: 0; pointer-events: none; transition: opacity 120ms var(--ease);
+}
 .cockpit .ck-spaces-msg:hover .ck-spaces-msg-actions,
 .cockpit .ck-spaces-msg:focus-within .ck-spaces-msg-actions,
-.cockpit .ck-spaces-msg-actions:has([aria-expanded='true']) { opacity: 1; }
-@media (hover: none) { .cockpit .ck-spaces-msg-actions { opacity: 1; } }
+.cockpit .ck-spaces-msg-actions:has([aria-expanded='true']) { opacity: 1; pointer-events: auto; }
+@media (hover: none) { .cockpit .ck-spaces-msg-actions { opacity: 1; pointer-events: auto; } }
+@media (prefers-reduced-motion: reduce) { .cockpit .ck-spaces-msg, .cockpit .ck-spaces-msg-actions, .cockpit .ck-spaces-msg-time { transition: none; } }
 .cockpit .ck-spaces-more {
   height: 20px; padding: 0 6px; border: 0; border-radius: 5px; background: none; color: var(--label-3); cursor: pointer; font: inherit; font-size: 11.5px;
 }

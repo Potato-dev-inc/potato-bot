@@ -29,7 +29,7 @@ afterEach(() => {
   host.remove();
 });
 
-const settle = () => act(async () => new Promise((r) => setTimeout(r, 0)));
+const settle = () => act(async () => new Promise((r) => setImmediate(r)));
 
 function Harness({ transport }: { transport: FakePotatoTransport }) {
   const potato = usePotatoState(transport);

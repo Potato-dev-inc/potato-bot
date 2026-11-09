@@ -445,10 +445,10 @@ mod definitions {
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use serde_json::{json, Value};
+    use serde_json::json;
 
-    use crate::mcp_sessions;
-    use crate::tui::declarative::loader::{reload_global, LoadInputs};
+    
+    use crate::tui::declarative::loader::LoadInputs;
     use crate::tui::declarative::service;
 
     /// A unique temp tree; cleanup removes only recorded entries, one at a time.

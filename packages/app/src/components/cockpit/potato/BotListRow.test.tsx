@@ -25,7 +25,7 @@ afterEach(() => {
 const NOW = new Date(2026, 10, 1, 15, 0).getTime();
 const flush = () =>
   act(async () => {
-    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setImmediate(r));
   });
 
 async function renderRow(view: Parameters<typeof bot>[0], routines = fakeRoutinesTransport([])) {

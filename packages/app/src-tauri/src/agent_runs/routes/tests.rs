@@ -264,7 +264,7 @@ mod list_without_a_project {
     use super::super::list::{list_agents, AgentListFilter};
     use crate::operations::{self, OperationStatus, ResultCapture};
     use parking_lot::Mutex;
-    use serde_json::Value;
+    
     use std::sync::Arc;
 
     fn run(project: &std::path::Path, key: &str, owner: &str) -> operations::OperationSnapshot {

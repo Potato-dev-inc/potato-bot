@@ -29,7 +29,7 @@ afterEach(() => {
   host.remove();
 });
 
-const settle = () => act(async () => new Promise((r) => setTimeout(r, 0)));
+const settle = () => act(async () => new Promise((r) => setImmediate(r)));
 
 const items = (): FakeArtifact[] => [
   { id: 'a-1', name: 'plan.md', bot: 'nimbus', kind: 'markdown', size: 3, created: 1_000, version: 1, file: 'a-1.md', content: 'first draft' },

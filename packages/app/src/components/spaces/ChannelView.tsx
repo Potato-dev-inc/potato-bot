@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   spaceFileGet, spaceFileOffer, spaceFileSave, spacesErrorText, useChannel, type SpaceChannel, type SpaceDetailBot, type SpaceMessage,
 } from '../../lib/spaces';
 import { MessageRow } from './MessageRow';
+import { dayLabel, sameDay } from './messageParts';
 import { Composer } from './Composer';
 import { callProblem, isCalled, refusedNotes } from './botCall';
 
@@ -29,7 +30,7 @@ export function continuesRun(prev: SpaceMessage | undefined, m: SpaceMessage): b
   if (prev.deleted || m.deleted || prev.blocked || m.blocked || prev.file || m.file || m.replyPreview) return false;
   if (prev.member !== m.member || prev.isFish !== m.isFish || (prev.botId ?? null) !== (m.botId ?? null)) return false;
   const gap = m.createdAtMs - prev.createdAtMs;
-  return gap >= 0 && gap < GROUP_WITHIN_MS;
+  return gap >= 0 && gap < GROUP_WITHIN_MS && sameDay(prev.createdAtMs, m.createdAtMs);
 }
 export const READ_ONLY_TEXT = "You can read this channel, but you can't write in it.";
 export const botsLine = (bots: SpaceDetailBot[]) => `Bots here: ${bots.map((b) => b.name).join(' · ')}`;
@@ -43,6 +44,20 @@ export function ChannelView({ space, channel, menu, onReact, readOnly, bots = []
   /** The refusal notes the person has moved past by sending a line that called nobody (see `notes` below). */
   const [movedPast, setMovedPast] = useState('');
   const end = useRef<HTMLDivElement>(null);
+  const list = useRef<HTMLOListElement>(null);
+  const [flash, setFlash] = useState<string | null>(null);
+  useEffect(() => {
+    if (!flash) return;
+    const t = setTimeout(() => setFlash(null), 1600);
+    return () => clearTimeout(t);
+  }, [flash]);
+  /** A reply line was clicked: scroll to the original when it is loaded, and mark it for a moment. */
+  const jump = (id: string) => {
+    const el = Array.from(list.current?.querySelectorAll<HTMLElement>('li[data-id]') ?? []).find((x) => x.dataset.id === id);
+    if (!el) return;
+    el.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+    setFlash(id);
+  };
   const getFile = (m: SpaceMessage) => {
     if (!m.file) return;
     setFileErrors((e) => ({ ...e, [m.id]: null }));
@@ -66,6 +81,8 @@ export function ChannelView({ space, channel, menu, onReact, readOnly, bots = []
   };
   const hidden = new Set(bots.filter((b) => b.muted).map((b) => b.id));
   const shown = ch.messages.filter((m) => !(m.botId && hidden.has(m.botId)));
+  const myName = ch.messages.find((m) => m.isMine && !m.isFish)?.authorName;
+  const names = [...new Set([...ch.messages.map((m) => m.authorName), ...bots.map((b) => b.name)])];
   const visible = bots.filter((b) => !b.muted);
   const lastId = ch.messages[ch.messages.length - 1]?.id;
   useEffect(() => { end.current?.scrollIntoView?.({ block: 'end' }); }, [lastId]);
@@ -88,17 +105,26 @@ export function ChannelView({ space, channel, menu, onReact, readOnly, bots = []
       ) : visible.length > 0 ? (
         <p className="ck-spaces-hint ck-spaces-botsline is-listed">{botsLine(visible)}</p>
       ) : null}
-      <ol className="ck-spaces-msgs">
+      <ol className="ck-spaces-msgs" ref={list}>
         {ch.atStart ? (
           <li className="ck-spaces-start">This is the start of #{channel.name}.</li>
         ) : (
           <li><button type="button" className="ck-spaces-quiet" onClick={() => void ch.loadOlder()}>Show older messages</button></li>
         )}
-        {shown.map((m, i) => (
-          <MessageRow key={m.id} message={m} grouped={continuesRun(shown[i - 1], m)} onReply={setReplyTo} menu={menu} onReact={onReact}
-            fileError={fileErrors[m.id] ?? null} fileSavedAs={savedAs[m.id] ?? null} onGetFile={getFile} onSaveFile={saveFile}
-            revealBlocked={revealed.has(m.id)} onRevealBlocked={() => setRevealed(new Set(revealed).add(m.id))} />
-        ))}
+        {shown.map((m, i) => {
+          const prev = shown[i - 1];
+          return (
+            <Fragment key={m.id}>
+              {(!prev || !sameDay(prev.createdAtMs, m.createdAtMs)) && (
+                <li className="ck-spaces-day" role="separator"><span>{dayLabel(m.createdAtMs)}</span></li>
+              )}
+              <MessageRow message={m} grouped={continuesRun(prev, m)} onReply={setReplyTo} menu={menu} onReact={onReact}
+                names={names} myName={myName} onJump={jump} flash={flash === m.id}
+                fileError={fileErrors[m.id] ?? null} fileSavedAs={savedAs[m.id] ?? null} onGetFile={getFile} onSaveFile={saveFile}
+                revealBlocked={revealed.has(m.id)} onRevealBlocked={() => setRevealed(new Set(revealed).add(m.id))} />
+            </Fragment>
+          );
+        })}
       </ol>
       <div ref={end} />
       {ch.error && <p className="ck-spaces-hint is-error" role="alert">{ch.error}</p>}

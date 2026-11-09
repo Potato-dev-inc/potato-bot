@@ -79,7 +79,7 @@ impl DeliveryIo for Live {
 fn spawn_codex() -> (Live, PtyChild) {
     let cwd = std::env::var("PM_LIVE_CWD").unwrap_or_else(|_| "D:/pm-demo".into());
     let cmd = build_command(AgentType::Codex, &cwd, &[], &crate::tui::LaunchEnv::default());
-    let mut child = open_pty_child(cmd, 30, 120).expect("start codex on a PTY");
+    let child = open_pty_child(cmd, 30, 120).expect("start codex on a PTY");
     let parser = Arc::new(Mutex::new(vt100::Parser::new(30, 120, 1000)));
     let last_output = Arc::new(Mutex::new(Instant::now()));
     let mut reader = child.master.try_clone_reader().expect("reader");
@@ -141,7 +141,7 @@ fn codex_live_fresh_pane_gets_its_task_although_the_menu_draws_after_readiness()
 fn start_codex() -> (Live, PtyChild) {
     let cwd = std::env::var("PM_LIVE_CWD").unwrap_or_else(|_| "D:/pm-demo".into());
     let cmd = build_command(AgentType::Codex, &cwd, &[], &crate::tui::LaunchEnv::default());
-    let mut child = open_pty_child(cmd, 30, 120).expect("start codex on a PTY");
+    let child = open_pty_child(cmd, 30, 120).expect("start codex on a PTY");
     let parser = Arc::new(Mutex::new(vt100::Parser::new(30, 120, 1000)));
     let last_output = Arc::new(Mutex::new(Instant::now()));
     let mut reader = child.master.try_clone_reader().expect("reader");

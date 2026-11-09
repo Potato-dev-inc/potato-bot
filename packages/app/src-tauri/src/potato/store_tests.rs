@@ -26,6 +26,19 @@ fn text(at: i64, from: FromKind, body: &str) -> Message {
     Message::new(at, from, None, MsgKind::Text, body)
 }
 
+/// Writes `count` messages straight into a thread file in one go, as if `count` appends had run. The
+/// rotation and trim tests need a full file; going through `append_message` for each of 5000 lines is
+/// thousands of file opens and made them the slowest tests in the suite.
+fn seed_thread(path: &std::path::Path, count: usize, message: impl Fn(usize) -> Message) {
+    let mut out = String::new();
+    for i in 0..count {
+        out.push_str(&serde_json::to_string(&message(i)).unwrap());
+        out.push('\n');
+    }
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, out).unwrap();
+}
+
 #[test]
 fn a_missing_file_reads_as_empty_and_a_damaged_one_is_an_error_that_is_never_overwritten() {
     let root = temp("damaged");
@@ -205,10 +218,8 @@ fn messages_come_back_oldest_first_with_their_fields() {
 #[test]
 fn a_thread_rotates_at_5000_lines_and_keeps_one_old_file() {
     let root = temp("rotate");
-    for i in 0..MAX_FILE_LINES as i64 {
-        append_message(&root, "app:dm:nimbus", text(i, FromKind::You, "x"), None).unwrap();
-    }
     let path = conversation_path(&root, "app:dm:nimbus").unwrap();
+    seed_thread(&path, MAX_FILE_LINES, |i| text(i as i64, FromKind::You, "x"));
     assert!(!path.with_extension("1.jsonl").exists(), "exactly 5000 lines still fit");
     append_message(&root, "app:dm:nimbus", text(99_999, FromKind::You, "the 5001st"), None).unwrap();
     assert!(path.with_extension("1.jsonl").exists(), "rotated to .1.jsonl");
@@ -219,9 +230,8 @@ fn a_thread_rotates_at_5000_lines_and_keeps_one_old_file() {
     assert_eq!(shown.last().unwrap().text, "the 5001st");
     assert_eq!(shown.len(), 10);
     // a second rotation replaces the old file: only one old file is kept
-    for i in 0..MAX_FILE_LINES as i64 {
-        append_message(&root, "app:dm:nimbus", text(i, FromKind::You, "y"), None).unwrap();
-    }
+    seed_thread(&path, MAX_FILE_LINES, |i| text(i as i64, FromKind::You, "y"));
+    append_message(&root, "app:dm:nimbus", text(100_000, FromKind::You, "the 10001st"), None).unwrap();
     let files: Vec<_> = std::fs::read_dir(path.parent().unwrap()).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
     assert_eq!(files.len(), 2, "{files:?}");
 }
@@ -230,10 +240,13 @@ fn a_thread_rotates_at_5000_lines_and_keeps_one_old_file() {
 fn a_thread_rotates_at_two_megabytes_too() {
     let root = temp("rotate-bytes");
     let big = "z".repeat(MAX_MESSAGE_CHARS);
-    for i in 0..((MAX_FILE_BYTES as usize / MAX_MESSAGE_CHARS) + 3) {
-        append_message(&root, "app:dm:nimbus", text(i as i64, FromKind::You, &big), None).unwrap();
-    }
     let path = conversation_path(&root, "app:dm:nimbus").unwrap();
+    // fill the file to just under the byte cap, then let real appends push it over
+    let one = serde_json::to_string(&text(0, FromKind::You, &big)).unwrap().len() + 1;
+    seed_thread(&path, (MAX_FILE_BYTES as usize / one).min(MAX_FILE_LINES - 1), |i| text(i as i64, FromKind::You, &big));
+    for i in 0..3 {
+        append_message(&root, "app:dm:nimbus", text(10_000 + i, FromKind::You, &big), None).unwrap();
+    }
     assert!(path.with_extension("1.jsonl").exists());
     assert!(std::fs::metadata(&path).unwrap().len() <= MAX_FILE_BYTES);
 }
@@ -241,10 +254,11 @@ fn a_thread_rotates_at_two_megabytes_too() {
 #[test]
 fn a_shared_channel_thread_keeps_only_its_newest_500_lines() {
     let root = temp("channel");
-    for i in 0..(CHANNEL_KEEP as i64 + 25) {
+    let path = conversation_path(&root, "outer:ch:nimbus:777").unwrap();
+    seed_thread(&path, CHANNEL_KEEP, |i| text(i as i64, FromKind::Person, &format!("m{i}")));
+    for i in CHANNEL_KEEP as i64..(CHANNEL_KEEP as i64 + 25) {
         append_message(&root, "outer:ch:nimbus:777", text(i, FromKind::Person, &format!("m{i}")), None).unwrap();
     }
-    let path = conversation_path(&root, "outer:ch:nimbus:777").unwrap();
     assert!(!path.with_extension("1.jsonl").exists(), "it trims, it does not rotate");
     let shown = read_messages(&root, "outer:ch:nimbus:777", 1_000, None).unwrap();
     assert_eq!(shown.len(), CHANNEL_KEEP);

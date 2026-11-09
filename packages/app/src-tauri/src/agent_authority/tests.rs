@@ -2,7 +2,7 @@
 //! id) calls the gate; a "person" answers through the questions store, as the Inbox does.
 
 use super::config::{with_config, Config};
-use super::consent::{self, CHOICE_ALWAYS, CHOICE_DENY, CHOICE_ONCE};
+use super::consent::{CHOICE_ALWAYS, CHOICE_DENY, CHOICE_ONCE};
 use super::gate::{check_answer, check_take_over};
 use crate::mcp_sessions::{self, Relation};
 use crate::questions::{self, now_ms, Question, QuestionState};

@@ -4810,7 +4810,7 @@ dependencies = [
 
 [[package]]
 name = "puppet_master_app"
-version = "1.0.12"
+version = "1.0.13"
 dependencies = [
  "aes-gcm",
  "anyhow",

@@ -55,7 +55,7 @@ function setup(over: Partial<ThreadViewProps> = {}, botOver: Partial<PotatoBotVi
 /** Lets the sandbox state read finish. */
 const settle = () =>
   act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setImmediate(resolve));
   });
 
 const greeting = () => host.querySelector<HTMLElement>('[aria-label^="Start with "]');

@@ -78,8 +78,8 @@ describe('a bot line', () => {
     const person = msg({ id: 'p1', authorName: 'Ren', isMine: true, text: 'hi bot' });
     act(() => root.render(<ol><MessageRow message={person} onReply={() => {}} /><MessageRow message={bot} onReply={() => {}} /></ol>));
     const [mine, theirs] = Array.from(host.querySelectorAll('li.ck-spaces-msg'));
-    expect(mine.classList.contains('is-mine')).toBe(true);
-    expect(theirs.classList.contains('is-mine')).toBe(false);
+    expect(mine.getAttribute('data-mine')).toBe('true');
+    expect(theirs.hasAttribute('data-mine')).toBe(false);
     expect(theirs.classList.contains('is-bot')).toBe(true);
     expect(theirs.querySelector('.ck-spaces-msg-author')?.textContent).toBe('Ren的fish');
     expect(theirs.querySelector('.ck-spaces-bot-tag')?.textContent).toBe('Bot');
@@ -90,7 +90,7 @@ describe('a bot line', () => {
   it("shows the owner's name on someone else's bot", () => {
     const bot = msg({ authorName: 'Sam的cat', isFish: true, botId: 'bot2', ownerName: 'Sam', ownedByMe: false });
     act(() => root.render(<ol><MessageRow message={bot} onReply={() => {}} /></ol>));
-    expect(host.querySelector('.ck-spaces-msg-owner')?.textContent).toBe('Sam');
+    expect(host.querySelector('.ck-spaces-msg-owner')?.textContent).toBe("Sam's");
   });
 
   it('shows the sender on the first row of a run in the feed, not only on hover', () => {
@@ -102,7 +102,7 @@ describe('a bot line', () => {
     act(() => root.render(<ChannelView space="s1" channel={{ id: 'c1', name: 'general', archived: false, unread: 0 }} />));
     const rows = Array.from(host.querySelectorAll('li.ck-spaces-msg'));
     expect(rows.map((r) => r.classList.contains('is-grouped'))).toEqual([false, true, false]);
-    expect(rows.map((r) => r.classList.contains('is-mine'))).toEqual([false, false, false]);
+    expect(rows.map((r) => r.hasAttribute('data-mine'))).toEqual([false, false, false]);
     expect(rows[0].querySelector('.ck-spaces-msg-author')?.textContent).toBe('Sam');
     expect(rows[2].querySelector('.ck-spaces-msg-author')?.textContent).toBe('Ren的fish');
   });

@@ -1,6 +1,6 @@
 {
   "name": "puppet-master",
-  "version": "1.0.12",
+  "version": "1.0.13",
   "private": true,
   "description": "Potato Bot - a chat friend with its own small brain and a Linux computer",
   "license": "MIT",

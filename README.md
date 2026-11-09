@@ -146,6 +146,19 @@ cargo test --lib --manifest-path packages/app/src-tauri/Cargo.toml
 | `packages/potato-sandbox` | The WSL 2 guest files, desktop recipes and the noVNC viewer for the bot's computer |
 | `packages/shared` | Shared TypeScript types |
 
+Fast, filtered Rust runs (the lib test binary is big; build it once, then filter by module path):
+
+```bash
+cd packages/app/src-tauri
+cargo test --lib --no-default-features --no-run   # build only
+cargo test --lib --no-default-features potato::   # one module
+cargo test --lib --no-default-features store_tests -- --test-threads=8
+# slowest tests: RUSTC_BOOTSTRAP=1 cargo test --lib --no-default-features -- -Z unstable-options --report-time
+```
+
+A few tests (`acp::` end-to-end ones) are timing sensitive and can flake under heavy load; rerun them alone.
+
+
 ## Licence
 
 MIT, see `LICENSE`. Parts are ported from other projects under their own licences (Apache-2.0, MIT,

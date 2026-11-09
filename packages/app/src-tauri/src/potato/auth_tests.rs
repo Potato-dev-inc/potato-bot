@@ -497,7 +497,7 @@ fn the_real_gate_gives_the_token_403_on_every_route_the_bridge_has() {
 
 #[test]
 fn the_real_gate_gives_a_404_to_everyone_who_is_not_the_brain() {
-    let (addr, rig, token) = listener("gate-404");
+    let (addr, rig, _token) = listener("gate-404");
     let token = start_session(&rig);
     let path = "/potato/brain/inbox?cursor=0&wait_ms=0";
     let good = format!("X-PM-Potato-Token: {token}");

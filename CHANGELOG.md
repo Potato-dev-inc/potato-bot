@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.13
+
+- Spaces chat on the PC looks like a group chat now: everyone, you and the bots included, is on the left with a round picture, name and time, and a person's next lines sit under their name.
+- Bots have a square picture, a BOT tag and whose bot it is.
+- A reply shows a small line above it with who and what it answers; click it to jump there.
+- @names are highlighted, and a message that mentions you is marked.
+- Hovering a message shows its time and its menu on that message, not off to the side. Days are split by a date line.
+- The phone keeps its chat bubbles.
+
 ## 1.0.12
 
 - Spaces: you now pick a display name before making or joining your first space, and you can change it in Settings > Potato Bot > Labs. People already in a space are asked once. A change reaches every space you are in.

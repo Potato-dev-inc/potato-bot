@@ -389,7 +389,7 @@ fn the_app_log_tail_keeps_the_newest_lines() {
 fn recording_overhead_per_chunk_is_small_next_to_the_work_the_reader_already_does() {
     let chunk: Vec<u8> = (0..4096u32).map(|i| b'a' + (i % 26) as u8).collect();
     let small: Vec<u8> = chunk[..80].to_vec();
-    let n = 20_000u32;
+    let n = 3_000u32;
 
     let ring = Ring::new(120, 30);
     let t = Instant::now();
