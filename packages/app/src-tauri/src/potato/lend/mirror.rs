@@ -32,7 +32,7 @@ use base64::Engine;
 use parking_lot::Mutex;
 use serde_json::{json, Value};
 
-use super::session::Input;
+use super::session::{Input, Picture};
 use super::{Hwnd, LendError};
 
 /// A frame is looked at this often while the picture is changing.
@@ -95,6 +95,12 @@ pub enum Who {
 /// The lent window.
 pub trait Win: Send + Sync {
     fn capture(&self) -> Result<Shot, LendError>;
+    /// Is the window minimized right now? (A minimized window cannot be captured.)
+    fn is_iconic(&self) -> bool {
+        false
+    }
+    /// Tell the session what the latest picture looks like, so it can fix or report a paused one.
+    fn report_picture(&self, _picture: Picture) {}
     fn client_origin(&self) -> Result<(i32, i32), LendError>;
     /// Has the person taken control of the sandbox screen (so viewer input is theirs)?
     fn person_has_screen(&self) -> bool;
@@ -292,6 +298,37 @@ fn hash_of(shot: &Shot) -> u64 {
     h.finish()
 }
 
+/// How many pixels per side `is_blank` looks at.
+const BLANK_GRID: usize = 32;
+/// A channel at or below this counts as black.
+const NEAR_BLACK: u8 = 8;
+
+/// Pure: does the picture look like a window that stopped drawing? True when every sampled pixel is the same colour, or all
+/// are near black. Samples a grid of at most `BLANK_GRID` x `BLANK_GRID` pixels; alpha is ignored, and the channel order
+/// does not matter (same colour and black are the same in RGBA and BGRA). A zero-size or short buffer is not blank.
+pub fn is_blank(shot: &Shot) -> bool {
+    let (w, h) = (shot.w as usize, shot.h as usize);
+    if w == 0 || h == 0 || shot.rgba.len() < w * h * 4 {
+        return false;
+    }
+    let first = &shot.rgba[0..3];
+    let (mut same, mut dark) = (true, true);
+    for gy in 0..BLANK_GRID.min(h) {
+        let y = gy * h / BLANK_GRID.min(h);
+        for gx in 0..BLANK_GRID.min(w) {
+            let x = gx * w / BLANK_GRID.min(w);
+            let i = (y * w + x) * 4;
+            let px = &shot.rgba[i..i + 3];
+            same &= px == first;
+            dark &= px.iter().all(|c| *c <= NEAR_BLACK);
+            if !same && !dark {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 fn unix_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
@@ -433,8 +470,15 @@ impl Worker {
         let shot = match s.win.capture() {
             Ok(shot) => shot,
             Err(LendError::Gone) => return Flow::Gone,
-            Err(_) => return Flow::Go, // minimized or busy: keep the last frame
+            Err(_) => {
+                // Minimized or busy: keep the last frame, and tell the session when the window is minimized.
+                if s.win.is_iconic() {
+                    s.win.report_picture(Picture::Minimized);
+                }
+                return Flow::Go;
+            }
         };
+        s.win.report_picture(if is_blank(&shot) { Picture::Blank } else { Picture::Live });
         if (shot.w, shot.h) != self.size {
             if s.link.post("/v1/lend/open", &self.open_body(shot.w, shot.h)).is_err() {
                 s.opened.store(false, Ordering::SeqCst);
@@ -643,6 +687,12 @@ impl Win for RealWin {
     fn capture(&self) -> Result<Shot, LendError> {
         let (rgba, w, h) = super::capture::bgra(self.hwnd)?;
         Ok(Shot { rgba, w, h, bgra: true })
+    }
+    fn is_iconic(&self) -> bool {
+        super::hide::is_iconic(self.hwnd)
+    }
+    fn report_picture(&self, picture: Picture) {
+        let _ = super::session::hub().picture_report(&self.id, picture);
     }
     fn client_origin(&self) -> Result<(i32, i32), LendError> {
         super::win::client_origin_in_window(self.hwnd)

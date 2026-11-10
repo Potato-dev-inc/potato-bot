@@ -67,6 +67,10 @@ pub enum Ev {
     /// The tab button was clicked; carries the state shown at click time.
     TabClicked(Shown),
     UserFocused,
+    /// The lent window itself became the foreground window (taskbar click, alt-tab).
+    Foregrounded,
+    /// The lent window was minimized.
+    Minimized,
     TargetGone,
 }
 
@@ -75,6 +79,8 @@ pub enum Action {
     TakeOver,
     HandBack,
     Remove,
+    /// Minimized: make it see-through, bring it back from the taskbar without activating it, keep it working.
+    HideMinimized,
     Nothing,
 }
 
@@ -85,11 +91,22 @@ pub fn action_for(ev: Ev, phase: Phase) -> Action {
         Ev::TabClicked(Shown::Bot) | Ev::TabClicked(Shown::NeedsYou) => Action::TakeOver,
         Ev::TabClicked(Shown::You) => Action::HandBack,
         Ev::TabClicked(Shown::Hidden) => Action::Nothing,
+        Ev::Minimized => Action::HideMinimized,
+        // Only a hidden app treats this as "the person took control" (see `action_for_mode`).
+        Ev::Foregrounded => Action::Nothing,
         // The person used the app: that is a take over, but only when the bot had it or asked for it.
         Ev::UserFocused => match phase {
             Phase::Bot | Phase::NeedsYou => Action::TakeOver,
             Phase::Free | Phase::You => Action::Nothing,
         },
+    }
+}
+
+/// Pure: `action_for`, knowing the mode. A hidden app coming to the foreground means the person took control of it.
+pub fn action_for_mode(ev: Ev, mode: Mode, phase: Phase) -> Action {
+    match (ev, mode) {
+        (Ev::Foregrounded, Mode::Hidden) => Action::TakeOver,
+        _ => action_for(ev, phase),
     }
 }
 
@@ -111,6 +128,7 @@ pub struct Saved {
     pub ex_style: isize,
     pub was_layered: bool,
     pub alpha: Option<u8>,
+    pub was_topmost: bool,
 }
 
 pub trait BorderCtl: Send {
@@ -152,6 +170,10 @@ pub trait Os: Send + Sync + 'static {
     fn own_pid(&self) -> u32;
     fn see_through(&self, h: Hwnd) -> Result<Saved>;
     fn restore(&self, h: Hwnd, saved: Saved) -> Result<()>;
+    /// Bring a minimized window back WITHOUT activating it. Does nothing when it is not minimized.
+    fn restore_minimized(&self, _h: Hwnd) -> Result<()> {
+        Ok(())
+    }
     fn start_border(&self, h: Hwnd, label: String) -> Result<Box<dyn BorderCtl>>;
     fn snapshot(&self, h: Hwnd) -> Result<Self::Snap>;
     fn find(&self, snap: &Self::Snap, r#ref: &str) -> Option<Self::Elem>;
@@ -180,7 +202,22 @@ pub struct LentView {
     pub phase: Phase,
     /// Why the bot needs the person (phase `needs_you` only).
     pub reason: Option<String>,
+    /// False when the app's picture looks frozen (minimized or blank) even after it was made see-through.
+    pub picture_live: bool,
 }
+
+/// What the mirror saw in one look at the app's picture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Picture {
+    Live,
+    /// A frame of one colour or near black (maybe just a dark loading screen: never hides the app).
+    Blank,
+    /// The window is minimized, so it cannot draw.
+    Minimized,
+}
+
+/// How many paused pictures in a row before the picture is reported as paused.
+const PAUSED_IN_A_ROW: u8 = 3;
 
 struct Entry<O: Os> {
     id: String,
@@ -194,6 +231,11 @@ struct Entry<O: Os> {
     saved: Option<Saved>,
     border: Box<dyn BorderCtl>,
     snap: Option<Arc<O::Snap>>,
+    picture_live: bool,
+    /// Paused pictures seen since the picture last drew (or since the hide fix).
+    paused_seen: u8,
+    /// The hide fix for a paused picture was already tried.
+    fix_tried: bool,
 }
 
 impl<O: Os> Entry<O> {
@@ -207,6 +249,7 @@ impl<O: Os> Entry<O> {
             mode: self.mode,
             phase: self.phase,
             reason: self.reason.clone(),
+            picture_live: self.picture_live,
         }
     }
 }
@@ -283,6 +326,9 @@ impl<O: Os> Core<O> {
             saved,
             border,
             snap: None,
+            picture_live: true,
+            paused_seen: 0,
+            fix_tried: false,
         };
         let view = entry.view();
         self.entries.push(entry);
@@ -322,6 +368,60 @@ impl<O: Os> Core<O> {
         }
         self.show(i);
         Ok(self.entries[i].view())
+    }
+
+    /// The person minimized the app: it would stop drawing, so make it see-through (any mode), bring it back from the
+    /// taskbar without activating it, and keep it working. If the person has it, they are done with it: it is handed back.
+    /// True when the view changed.
+    fn hide_minimized(&mut self, i: usize) -> bool {
+        let before = self.entries[i].view();
+        if self.entries[i].mode == Mode::Visible {
+            match self.os.see_through(self.entries[i].hwnd) {
+                Ok(saved) => {
+                    self.entries[i].saved = Some(saved);
+                    self.entries[i].mode = Mode::Hidden;
+                }
+                Err(_) => return false,
+            }
+        }
+        if matches!(self.entries[i].phase, Phase::You | Phase::NeedsYou) {
+            self.entries[i].phase = Phase::Free;
+            self.entries[i].reason = None;
+        }
+        let _ = self.os.restore_minimized(self.entries[i].hwnd);
+        self.show(i);
+        self.entries[i].view() != before
+    }
+
+    /// The mirror looked at the app's picture. A minimized visible app is fixed by hiding it (see-through and uncoverable);
+    /// a blank frame never hides anything. `PAUSED_IN_A_ROW` paused pictures in a row (blank or minimized) turn
+    /// `picture_live` false; a live one turns it back. Returns true when the view changed.
+    pub fn picture_report(&mut self, id: &str, picture: Picture) -> Result<bool> {
+        let i = self.at(id)?;
+        if picture == Picture::Live {
+            let e = &mut self.entries[i];
+            let changed = !e.picture_live;
+            e.picture_live = true;
+            e.paused_seen = 0;
+            e.fix_tried = false;
+            return Ok(changed);
+        }
+        let person = matches!(self.entries[i].phase, Phase::You | Phase::NeedsYou);
+        if picture == Picture::Minimized && !self.entries[i].fix_tried && self.entries[i].mode == Mode::Visible && !person {
+            self.entries[i].fix_tried = true;
+            self.entries[i].paused_seen = 0;
+            return Ok(self.hide_minimized(i));
+        }
+        if picture == Picture::Minimized && self.entries[i].mode == Mode::Hidden {
+            let _ = self.os.restore_minimized(self.entries[i].hwnd);
+        }
+        let e = &mut self.entries[i];
+        e.paused_seen = e.paused_seen.saturating_add(1);
+        if e.paused_seen >= PAUSED_IN_A_ROW && e.picture_live {
+            e.picture_live = false;
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     pub fn take_over(&mut self, id: &str) -> Result<LentView> {
@@ -424,9 +524,14 @@ impl<O: Os> Core<O> {
             let mut remove = !self.os.is_alive(self.entries[i].hwnd);
             let mut acts = Vec::new();
             while let Some(ev) = self.entries[i].border.poll() {
-                acts.push(action_for(ev, self.entries[i].phase));
+                acts.push(action_for_mode(ev, self.entries[i].mode, self.entries[i].phase));
                 match acts.last() {
                     Some(Action::Remove) => break,
+                    Some(Action::HideMinimized) => {
+                        if self.hide_minimized(i) {
+                            changed = true;
+                        }
+                    }
                     Some(Action::TakeOver) => self.apply_border_action(i, Action::TakeOver, &mut changed),
                     Some(Action::HandBack) => self.apply_border_action(i, Action::HandBack, &mut changed),
                     _ => {}
@@ -511,6 +616,8 @@ mod real {
             self.0.events().try_recv().ok().map(|ev| match ev {
                 BorderEvent::TabClicked(s) => Ev::TabClicked(from_state(s)),
                 BorderEvent::UserFocused => Ev::UserFocused,
+                BorderEvent::Foregrounded => Ev::Foregrounded,
+                BorderEvent::Minimized => Ev::Minimized,
                 BorderEvent::TargetGone => Ev::TargetGone,
             })
         }
@@ -530,10 +637,16 @@ mod real {
         }
         fn see_through(&self, h: Hwnd) -> Result<Saved> {
             let s = hide::make_see_through(h)?;
-            Ok(Saved { ex_style: s.ex_style, was_layered: s.was_layered, alpha: s.alpha })
+            Ok(Saved { ex_style: s.ex_style, was_layered: s.was_layered, alpha: s.alpha, was_topmost: s.was_topmost })
         }
         fn restore(&self, h: Hwnd, saved: Saved) -> Result<()> {
-            hide::restore(h, hide::SavedStyle { ex_style: saved.ex_style, was_layered: saved.was_layered, alpha: saved.alpha })
+            hide::restore(h, hide::SavedStyle { ex_style: saved.ex_style, was_layered: saved.was_layered, alpha: saved.alpha, was_topmost: saved.was_topmost })
+        }
+        fn restore_minimized(&self, h: Hwnd) -> Result<()> {
+            if hide::is_iconic(h) {
+                hide::show_no_activate(h)?;
+            }
+            Ok(())
         }
         fn start_border(&self, h: Hwnd, label: String) -> Result<Box<dyn BorderCtl>> {
             Ok(Box::new(WinBorder(Border::start(h, label)?)))
@@ -669,6 +782,15 @@ impl Hub {
         out
     }
 
+    /// Like `change`, for calls that answer whether anything changed: emits only when it did.
+    fn change_if(&self, f: impl FnOnce(&mut Core<RealOs>) -> Result<bool>) -> Result<bool> {
+        let out = f(&mut self.core.lock());
+        if matches!(out, Ok(true)) {
+            self.emit();
+        }
+        out
+    }
+
     pub fn set_listener(&self, listener: Option<Listener>) {
         *self.listener.lock() = listener;
     }
@@ -715,6 +837,10 @@ impl Hub {
     /// An element of the latest snapshot by ref ("e1"...); its rect is in client coordinates.
     pub fn element(&self, id: &str, r#ref: &str) -> Result<Option<Elem>> {
         self.core.lock().element(id, r#ref)
+    }
+    /// The mirror's report on the app's picture. Emits only when something changed.
+    pub fn picture_report(&self, id: &str, picture: Picture) -> Result<()> {
+        self.change_if(|c| c.picture_report(id, picture)).map(|_| ())
     }
     /// JPEG of the app's window, long side at most 1280 px (reading is allowed while the person has the app).
     pub fn capture(&self, id: &str) -> Result<Vec<u8>> {
@@ -771,7 +897,7 @@ impl Hub {
         self.act(id, |os, h| input.send(os, h))
     }
 
-    fn tick(&self) {
+    pub(super) fn tick(&self) {
         let changed = self.core.lock().tick();
         if changed {
             self.emit();

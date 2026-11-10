@@ -19,6 +19,7 @@ struct World {
     shown: HashMap<Hwnd, Shown>,
     borders: HashSet<Hwnd>,
     see_through: HashSet<Hwnd>,
+    iconic: HashSet<Hwnd>,
     log: Vec<String>,
     border_fails: bool,
 }
@@ -70,12 +71,19 @@ impl Os for FakeOs {
     }
     fn see_through(&self, h: Hwnd) -> Result<Saved> {
         self.w().see_through.insert(h);
-        Ok(Saved { ex_style: 0x100, was_layered: false, alpha: None })
+        Ok(Saved { ex_style: 0x100, was_layered: false, alpha: None, was_topmost: false })
     }
     fn restore(&self, h: Hwnd, saved: Saved) -> Result<()> {
         assert_eq!(saved.ex_style, 0x100);
         self.w().see_through.remove(&h);
         self.w().log.push(format!("restore {h}"));
+        Ok(())
+    }
+    fn restore_minimized(&self, h: Hwnd) -> Result<()> {
+        let mut w = self.w();
+        if w.iconic.remove(&h) {
+            w.log.push(format!("show_no_activate {h}"));
+        }
         Ok(())
     }
     fn start_border(&self, h: Hwnd, _label: String) -> Result<Box<dyn BorderCtl>> {
@@ -387,4 +395,142 @@ fn nearest_downscale_never_enlarges_and_keeps_aspect() {
     }
     #[cfg(not(windows))]
     let _ = px;
+}
+
+fn log_of(fake: &Fake) -> Vec<String> {
+    fake.0.lock().log.clone()
+}
+
+#[test]
+fn minimized_event_and_foreground_event_mapping() {
+    assert_eq!(action_for(Ev::Minimized, Phase::Free), Action::HideMinimized);
+    assert_eq!(action_for(Ev::Minimized, Phase::You), Action::HideMinimized);
+    // the exact window coming forward is "the person took control" only while it is hidden
+    assert_eq!(action_for_mode(Ev::Foregrounded, Mode::Hidden, Phase::Free), Action::TakeOver);
+    assert_eq!(action_for_mode(Ev::Foregrounded, Mode::Hidden, Phase::Bot), Action::TakeOver);
+    assert_eq!(action_for_mode(Ev::Foregrounded, Mode::Visible, Phase::Free), Action::Nothing);
+    assert_eq!(action_for_mode(Ev::UserFocused, Mode::Visible, Phase::Bot), Action::TakeOver);
+    assert_eq!(action_for_mode(Ev::Minimized, Mode::Hidden, Phase::Free), Action::HideMinimized);
+}
+
+#[test]
+fn minimizing_a_visible_app_hides_it_and_brings_it_back_without_activating() {
+    let (fake, mut core) = setup();
+    let id = core.lend(10, Mode::Visible).unwrap().id;
+    fake.0.lock().iconic.insert(10);
+    push(&fake, 10, Ev::Minimized);
+    assert!(core.tick());
+    let v = core.view(&id).unwrap();
+    assert_eq!((v.mode, v.phase), (Mode::Hidden, Phase::Free));
+    assert!(fake.0.lock().see_through.contains(&10), "made see-through first");
+    assert_eq!(log_of(&fake), vec!["show_no_activate 10".to_string()], "then shown again, nothing else");
+    assert!(!fake.0.lock().iconic.contains(&10));
+    assert_eq!(shown(&fake, 10), Some(Shown::Hidden));
+    // nothing more to do until it is minimized again
+    assert!(!core.tick());
+}
+
+#[test]
+fn minimizing_a_hidden_app_only_shows_it_again_and_the_person_having_it_hands_it_back() {
+    let (fake, mut core) = setup();
+    let id = core.lend(10, Mode::Hidden).unwrap().id;
+    fake.0.lock().iconic.insert(10);
+    push(&fake, 10, Ev::Minimized);
+    core.tick();
+    assert_eq!(core.view(&id).unwrap().mode, Mode::Hidden);
+    assert!(!fake.0.lock().iconic.contains(&10));
+
+    // the person has it (visible, phase you) and minimizes it: they are done, it becomes hidden and free
+    let id2 = core.lend(11, Mode::Visible).unwrap().id;
+    core.take_over(&id2).unwrap();
+    fake.0.lock().iconic.insert(11);
+    push(&fake, 11, Ev::Minimized);
+    assert!(core.tick());
+    let v = core.view(&id2).unwrap();
+    assert_eq!((v.mode, v.phase), (Mode::Hidden, Phase::Free));
+    assert!(fake.0.lock().see_through.contains(&11));
+}
+
+#[test]
+fn a_hidden_app_coming_to_the_foreground_is_the_person_taking_control() {
+    let (fake, mut core) = setup();
+    let id = core.lend(10, Mode::Visible).unwrap().id;
+    fake.0.lock().iconic.insert(10);
+    push(&fake, 10, Ev::Minimized);
+    core.tick();
+    assert_eq!(core.view(&id).unwrap().mode, Mode::Hidden);
+    push(&fake, 10, Ev::Foregrounded);
+    assert!(core.tick());
+    let v = core.view(&id).unwrap();
+    assert_eq!((v.mode, v.phase), (Mode::Visible, Phase::You));
+    assert!(!fake.0.lock().see_through.contains(&10), "normal style is back");
+    assert_eq!(shown(&fake, 10), Some(Shown::You));
+    // a visible, free app coming forward is not a take over
+    let id2 = core.lend(11, Mode::Visible).unwrap().id;
+    push(&fake, 11, Ev::Foregrounded);
+    assert!(!core.tick());
+    assert_eq!(core.view(&id2).unwrap().phase, Phase::Free);
+}
+
+#[test]
+fn a_minimized_picture_hides_the_app_once_then_is_reported_after_three_in_a_row() {
+    let (fake, mut core) = setup();
+    let id = core.lend(10, Mode::Visible).unwrap().id;
+    assert!(core.view(&id).unwrap().picture_live);
+    // first minimized picture: the fix (hide); still shown as live
+    assert!(core.picture_report(&id, Picture::Minimized).unwrap());
+    let v = core.view(&id).unwrap();
+    assert_eq!((v.mode, v.picture_live), (Mode::Hidden, true));
+    assert!(fake.0.lock().see_through.contains(&10));
+    // still paused on the next three pictures: now it is reported
+    assert!(!core.picture_report(&id, Picture::Minimized).unwrap());
+    assert!(!core.picture_report(&id, Picture::Blank).unwrap());
+    assert!(core.picture_report(&id, Picture::Blank).unwrap());
+    assert!(!core.view(&id).unwrap().picture_live);
+    assert!(!core.picture_report(&id, Picture::Blank).unwrap(), "no change, no event");
+    // it draws again
+    assert!(core.picture_report(&id, Picture::Live).unwrap());
+    assert!(core.view(&id).unwrap().picture_live);
+    assert!(!core.picture_report(&id, Picture::Live).unwrap());
+}
+
+#[test]
+fn blank_frames_never_hide_a_visible_app_and_count_three_in_a_row() {
+    let (fake, mut core) = setup();
+    let id = core.lend(10, Mode::Visible).unwrap().id;
+    assert!(!core.picture_report(&id, Picture::Blank).unwrap());
+    assert!(!core.picture_report(&id, Picture::Blank).unwrap());
+    assert_eq!(core.view(&id).unwrap().mode, Mode::Visible);
+    assert!(core.picture_report(&id, Picture::Blank).unwrap());
+    let v = core.view(&id).unwrap();
+    assert_eq!((v.mode, v.picture_live), (Mode::Visible, false));
+    assert!(!fake.0.lock().see_through.contains(&10), "never made see-through");
+    assert!(fake.0.lock().log.is_empty());
+    // a live frame in between restarts the count
+    core.picture_report(&id, Picture::Live).unwrap();
+    core.picture_report(&id, Picture::Blank).unwrap();
+    core.picture_report(&id, Picture::Blank).unwrap();
+    core.picture_report(&id, Picture::Live).unwrap();
+    core.picture_report(&id, Picture::Blank).unwrap();
+    assert!(core.view(&id).unwrap().picture_live);
+}
+
+#[test]
+fn a_minimized_picture_does_not_hide_an_app_the_person_has() {
+    let (fake, mut core) = setup();
+    let id = core.lend(10, Mode::Visible).unwrap().id;
+    core.take_over(&id).unwrap();
+    core.picture_report(&id, Picture::Minimized).unwrap();
+    assert_eq!(core.view(&id).unwrap().mode, Mode::Visible);
+    assert!(!fake.0.lock().see_through.contains(&10));
+    assert!(matches!(core.picture_report("nope", Picture::Blank), Err(LendError::NoSuchApp)));
+}
+
+#[test]
+fn a_hidden_app_that_is_minimized_is_shown_again_when_its_picture_is_minimized() {
+    let (fake, mut core) = setup();
+    let id = core.lend(10, Mode::Hidden).unwrap().id;
+    fake.0.lock().iconic.insert(10);
+    core.picture_report(&id, Picture::Minimized).unwrap();
+    assert!(!fake.0.lock().iconic.contains(&10));
 }

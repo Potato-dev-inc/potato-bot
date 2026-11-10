@@ -203,6 +203,9 @@ pub fn list_json(apps: &[LentView]) -> Value {
     json!({ "apps": rows })
 }
 
+/// Told to the bot when the app's picture looks frozen.
+pub const PICTURE_PAUSED_NOTE: &str = "The picture of this app is paused (it looks minimized or blank), so the image may be old. The controls list is still current.";
+
 /// `app_observe` with an app: the controls (without the image, which the caller adds).
 pub fn observe_json(view: &LentView, elems: &[ObsElem], truncated: bool, image_size: Option<(u32, u32)>) -> Value {
     let mut out = Map::new();
@@ -210,6 +213,9 @@ pub fn observe_json(view: &LentView, elems: &[ObsElem], truncated: bool, image_s
     out.insert("phase".into(), phase_word(view));
     if matches!(view.phase, Phase::You | Phase::NeedsYou) {
         out.insert("note".into(), json!("The person has control of this app right now (phase you). You can read it but not act; wait for them to hand it back."));
+    }
+    if !view.picture_live {
+        out.insert("picture_note".into(), json!(PICTURE_PAUSED_NOTE));
     }
     let rows: Vec<Value> = elems
         .iter()

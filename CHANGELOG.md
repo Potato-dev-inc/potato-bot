@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.15
+
+- Lend an App: minimizing a lent app no longer freezes it for the bot. The app goes see-through instead and the bot keeps working; click its taskbar button to take control again.
+- Lend an App: in Hidden mode the app stays above your other windows (invisible and click-through), so apps that stop drawing when covered keep drawing.
+- Lend an App: if a lent app's picture stops updating, the Computer tab shows "Picture paused" and the bot is told its picture may be old.
+
 ## 1.0.14
 
 - New Lab: Lend an App (Windows only, off by default). Turn it on in Settings > Labs, then lend an open app from your PC, for example LINE, to your bot from the Computer tab ("Apps from your PC").

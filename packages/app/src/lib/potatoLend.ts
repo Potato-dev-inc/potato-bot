@@ -44,6 +44,8 @@ export interface LentView {
   phase: LendPhase;
   /** The bot's reason on a "needs you" card (plain text). */
   reason?: string | null;
+  /** False when the app's picture looks frozen (minimized or blank) even after it was made see-through. Missing means live. */
+  pictureLive?: boolean;
 }
 
 export interface LendTransport {

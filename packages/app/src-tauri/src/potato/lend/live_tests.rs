@@ -230,3 +230,59 @@ fn live_latency() {
         format!("{} elements, answer {} KB + picture {} KB", elems.len(), json.to_string().len() / 1024, b64.len() / 1024)
     });
 }
+
+#[test]
+#[ignore = "live: needs a real window; set LEND_LIVE_HWND and LEND_LIVE_OUT and run with --ignored --nocapture"]
+fn live_minimize_hides() {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindowLongPtrW, IsIconic, ShowWindow, GWL_EXSTYLE, SW_SHOWMINNOACTIVE, WS_EX_TOPMOST,
+    };
+    use crate::potato::lend::mirror::{is_blank, Shot};
+
+    let Some(target) = std::env::var("LEND_LIVE_HWND").ok().and_then(|s| s.trim().parse::<Hwnd>().ok()) else {
+        println!("[live] skipped: set LEND_LIVE_HWND to the decimal handle of an open window");
+        return;
+    };
+    let Some(out) = std::env::var("LEND_LIVE_OUT").ok().map(PathBuf::from) else {
+        println!("[live] skipped: set LEND_LIVE_OUT to a folder for the PNGs");
+        return;
+    };
+    let h = HWND(target as *mut std::ffi::c_void);
+    let iconic = || unsafe { IsIconic(h) }.as_bool();
+    let topmost = || (unsafe { GetWindowLongPtrW(h, GWL_EXSTYLE) } as u32) & WS_EX_TOPMOST.0 != 0;
+    let ex = || unsafe { GetWindowLongPtrW(h, GWL_EXSTYLE) };
+    let fg_before = unsafe { GetForegroundWindow() }.0 as isize;
+    let was_topmost = topmost();
+    let ex_before = ex();
+
+    let v = hub().lend(target, Mode::Visible).expect("lend");
+    let _guard = BringBack(&v.id);
+    sleep(Duration::from_millis(500));
+
+    step("minimizing without activating");
+    let _ = unsafe { ShowWindow(h, SW_SHOWMINNOACTIVE) };
+    let mut waited = 0;
+    let hidden = || hub().view(&v.id).map(|x| x.mode == Mode::Hidden).unwrap_or(false);
+    while (iconic() || !hidden()) && waited < 2000 {
+        hub().tick(); // what the app's keeper thread does every 100 ms: border events become session changes
+        sleep(Duration::from_millis(50));
+        waited += 50;
+    }
+    assert!(!iconic(), "still minimized after {waited} ms");
+    assert_eq!(hub().view(&v.id).unwrap().mode, Mode::Hidden, "not hidden after minimize");
+    assert!(topmost(), "a hidden app must be always on top");
+    let (bgra, w, ht) = capture::bgra(target).expect("capture");
+    assert!(!is_blank(&Shot { rgba: bgra, w, h: ht, bgra: true }), "the picture is blank");
+    let (png, ..) = capture::png(target).expect("png");
+    std::fs::create_dir_all(&out).expect("out dir");
+    std::fs::write(out.join("minimize-hidden.png"), png).expect("write png");
+
+    step("bringing back");
+    hub().bring_back(&v.id).expect("bring back");
+    sleep(Duration::from_millis(200));
+    assert_eq!(ex(), ex_before, "style not restored");
+    assert_eq!(topmost(), was_topmost, "topmost not restored");
+    assert_eq!(unsafe { GetForegroundWindow() }.0 as isize, fg_before, "the foreground window changed");
+    step("done");
+}

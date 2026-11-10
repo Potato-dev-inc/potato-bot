@@ -133,7 +133,10 @@ function LentRow({
       </span>
       <div className="ck-potato-lend-main">
         <p className="ck-potato-lend-name">{app.appName}</p>
-        <p className="ck-sub ck-potato-lend-state">{stateText(app, botName)}</p>
+        <p className="ck-sub ck-potato-lend-state">
+          {stateText(app, botName)}
+          {app.pictureLive === false && ` · ${LEND_COPY.picturePaused}`}
+        </p>
       </div>
       <div className="ck-potato-lend-actions">
         <div className="ck-potato-lend-seg" role="group" aria-label={LEND_COPY.modeLabel}>

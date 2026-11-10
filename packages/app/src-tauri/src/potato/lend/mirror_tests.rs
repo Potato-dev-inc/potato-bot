@@ -7,6 +7,7 @@ use parking_lot::Mutex;
 use serde_json::{json, Value};
 
 use super::mirror::*;
+use super::session::Picture;
 use super::LendError;
 
 #[derive(Default)]
@@ -63,6 +64,11 @@ struct FakeWin {
     person_screen: Mutex<bool>,
     gone: Mutex<bool>,
     acts: Mutex<Vec<String>>,
+    /// Cannot be captured and says it is minimized.
+    iconic: Mutex<bool>,
+    /// Cannot be captured for another reason (busy).
+    fail: Mutex<bool>,
+    reports: Mutex<Vec<Picture>>,
 }
 
 impl FakeWin {
@@ -75,6 +81,9 @@ impl FakeWin {
             person_screen: Mutex::new(false),
             gone: Mutex::new(false),
             acts: Mutex::new(Vec::new()),
+            iconic: Mutex::new(false),
+            fail: Mutex::new(false),
+            reports: Mutex::new(Vec::new()),
         })
     }
     fn act(&self, who: Who, what: String) -> Result<(), LendError> {
@@ -96,8 +105,17 @@ impl Win for FakeWin {
         if *self.gone.lock() {
             return Err(LendError::Gone);
         }
+        if *self.iconic.lock() || *self.fail.lock() {
+            return Err(LendError::Os("cannot capture".into()));
+        }
         let (w, h) = *self.size.lock();
         Ok(Shot { rgba: vec![*self.pixel.lock(); w as usize * h as usize * 4], w, h, bgra: false })
+    }
+    fn is_iconic(&self) -> bool {
+        *self.iconic.lock()
+    }
+    fn report_picture(&self, picture: Picture) {
+        self.reports.lock().push(picture);
     }
     fn client_origin(&self) -> Result<(i32, i32), LendError> {
         Ok(self.origin)
@@ -436,4 +454,46 @@ fn the_long_poll_asks_the_guest_to_wait_and_a_failed_poll_closes_the_viewer() {
     *link.up.lock() = false;
     assert_eq!(pump.poll(true), Err(()));
     assert!(!w.is_open());
+}
+
+fn shot(w: u32, h: u32, f: impl Fn(u32, u32) -> [u8; 4]) -> Shot {
+    let mut rgba = Vec::new();
+    for y in 0..h {
+        for x in 0..w {
+            rgba.extend_from_slice(&f(x, y));
+        }
+    }
+    Shot { rgba, w, h, bgra: false }
+}
+
+#[test]
+fn blank_pictures_are_one_colour_or_near_black() {
+    assert!(is_blank(&shot(64, 48, |_, _| [255, 255, 255, 255])), "all white");
+    assert!(is_blank(&shot(64, 48, |_, _| [0, 0, 0, 0])), "all black");
+    assert!(is_blank(&shot(64, 48, |x, y| [(x + y) as u8 % 5, 2, 0, 255])), "near black, not identical");
+    assert!(is_blank(&shot(1, 1, |_, _| [9, 9, 9, 255])), "one pixel");
+    assert!(!is_blank(&shot(64, 48, |x, _| if x < 32 { [255, 255, 255, 255] } else { [0, 0, 0, 255] })), "two colours");
+    assert!(!is_blank(&shot(64, 48, |_, y| if y == 0 { [40, 40, 40, 255] } else { [20, 20, 20, 255] })), "not black and not one colour");
+    assert!(!is_blank(&shot(0, 0, |_, _| [0; 4])), "no size is not blank");
+    assert!(!is_blank(&Shot { rgba: vec![0; 8], w: 10, h: 10, bgra: false }), "a short buffer is not blank");
+}
+
+#[test]
+fn the_worker_tells_the_session_whether_each_picture_is_paused() {
+    let (link, win) = (FakeLink::running(), FakeWin::new());
+    let mut w = worker(&link, &win);
+    run(&mut w, 0, 100);
+    assert!(!win.reports.lock().is_empty());
+    assert!(win.reports.lock().iter().all(|p| *p == Picture::Blank), "the fake paints one colour: blank");
+    // minimized: nothing can be captured, and that is reported as paused
+    win.reports.lock().clear();
+    *win.iconic.lock() = true;
+    run(&mut w, 150, 700);
+    assert!(!win.reports.lock().is_empty() && win.reports.lock().iter().all(|p| *p == Picture::Minimized));
+    // a failed capture of a window that is not minimized says nothing
+    win.reports.lock().clear();
+    *win.iconic.lock() = false;
+    *win.fail.lock() = true;
+    run(&mut w, 750, 1300);
+    assert!(win.reports.lock().is_empty());
 }

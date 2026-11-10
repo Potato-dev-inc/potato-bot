@@ -75,6 +75,7 @@ export const LEND_COPY = {
   empty: (name: string) => `${name} can use Windows apps you already have open, like LINE.`,
   lendButton: 'Lend an open app',
   stateFree: 'Waiting',
+  picturePaused: 'Picture paused',
   stateBot: (name: string) => `Used by ${name}`,
   stateYou: 'You have control',
   stateNeedsYou: (name: string, reason: string | null) => (reason ? `${name} needs you: ${reason}` : `${name} needs you`),

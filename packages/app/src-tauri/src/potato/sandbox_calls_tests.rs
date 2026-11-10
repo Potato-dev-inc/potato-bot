@@ -1550,7 +1550,7 @@ fn app_act_type_key_and_scroll_are_read_into_their_actions() {
 fn the_lent_app_helpers_resolve_apps_convert_pixels_and_spot_password_boxes() {
     use super::lend::session::{LentView, Mode, Phase};
     use super::lend_tools::*;
-    let view = |id: &str, name: &str, phase: Phase| LentView { id: id.into(), hwnd: 1, pid: 1, app_name: name.into(), title: format!("{name} window"), mode: Mode::Visible, phase, reason: None };
+    let view = |id: &str, name: &str, phase: Phase| LentView { id: id.into(), hwnd: 1, pid: 1, app_name: name.into(), title: format!("{name} window"), mode: Mode::Visible, phase, reason: None, picture_live: true };
     let apps = vec![view("l1", "LINE", Phase::Free), view("l2", "Notepad", Phase::You), view("l3", "Notepad++", Phase::Free)];
     assert_eq!(resolve(&apps, "L2").unwrap().id, "l2");
     assert_eq!(resolve(&apps, "line").unwrap().id, "l1");
@@ -1579,6 +1579,9 @@ fn the_lent_app_helpers_resolve_apps_convert_pixels_and_spot_password_boxes() {
     assert_eq!(out["truncated"], true);
     assert_eq!(out["image_size"], json!({ "w": 640, "h": 480 }));
     assert!(out["note"].as_str().unwrap().contains("person has control"));
+    assert!(out.get("picture_note").is_none(), "a live picture needs no note");
+    let paused = LentView { picture_live: false, ..apps[0].clone() };
+    assert!(observe_json(&paused, &[], false, None)["picture_note"].as_str().unwrap().contains("paused"));
     assert!(super::sandbox::control::picture_size(b"nope").is_none());
     let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
     png.extend_from_slice(&[0, 0, 2, 128, 0, 0, 1, 224]);

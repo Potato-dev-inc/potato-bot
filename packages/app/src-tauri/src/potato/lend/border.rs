@@ -10,7 +10,8 @@
 //! Events: `Border::events()` returns the receiver. A click on the tab button
 //! sends `TabClicked(state)` with the state shown at click time; the border
 //! never changes its own state, the session decides. `UserFocused` fires when
-//! the target's process becomes foreground. `TargetGone` fires when the target
+//! the target's process becomes foreground, `Foregrounded` when the target window itself does, `Minimized` when
+//! it is minimized (the watch runs in every state, Hidden included). `TargetGone` fires when the target
 //! is destroyed; the thread then exits.
 //!
 //! Commands (`set_state`, `set_label`, `stop`) go over an mpsc channel and wake
@@ -77,6 +78,10 @@ pub enum BorderEvent {
     TabClicked(State),
     /// The target's process became the foreground window.
     UserFocused,
+    /// The target itself (this exact window) became the foreground window.
+    Foregrounded,
+    /// The target was minimized.
+    Minimized,
     /// The target window was destroyed. The border has stopped.
     TargetGone,
 }
@@ -688,6 +693,9 @@ fn sync_target(c: &Ctx) -> bool {
     let iconic = unsafe { IsIconic(t) }.as_bool();
     if iconic != c.minimized.get() {
         c.minimized.set(iconic);
+        if iconic {
+            let _ = c.events.send(BorderEvent::Minimized);
+        }
         reposition(c);
         return true;
     }
@@ -801,6 +809,7 @@ unsafe extern "system" fn tracking_hook(
             }
             EVENT_SYSTEM_MINIMIZESTART => {
                 c.minimized.set(true);
+                let _ = c.events.send(BorderEvent::Minimized);
                 update_visibility(&c);
             }
             EVENT_SYSTEM_MINIMIZEEND => {
@@ -837,6 +846,9 @@ unsafe extern "system" fn foreground_hook(
         GetWindowThreadProcessId(hwnd_, Some(&mut pid));
         if pid != 0 && pid == c.target_pid {
             let _ = c.events.send(BorderEvent::UserFocused);
+        }
+        if raw(hwnd_) == c.target {
+            let _ = c.events.send(BorderEvent::Foregrounded);
         }
         refresh_fullscreen(&c);
     }

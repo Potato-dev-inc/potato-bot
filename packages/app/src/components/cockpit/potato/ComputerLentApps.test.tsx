@@ -100,6 +100,14 @@ describe('the rows', () => {
     expect(text).toContain('Waiting');
   });
 
+  it('says Picture paused only for a row whose picture is not live', async () => {
+    answer([app({ id: 'a', appName: 'LINE', pictureLive: false }), app({ id: 'b', appName: 'Notepad', pictureLive: true })]);
+    await mount();
+    const rows = host.querySelectorAll('.ck-potato-lend-row');
+    expect(rows[0].textContent).toContain('Picture paused');
+    expect(rows[1].textContent).not.toContain('Picture paused');
+  });
+
   it('shows Hand back when the person has control and Take control otherwise', async () => {
     answer([app({ id: 'b', appName: 'Notepad', phase: 'you' }), app({ id: 'a', appName: 'LINE', phase: 'bot' })]);
     await mount();
