@@ -1,5 +1,6 @@
 import type { ChatRequest, ChatResult, Msg, Provider, ToolCall, Usage } from "../types.ts";
 import { estimateTokens } from "./budget.ts";
+import { modelSeesImages } from "./models.ts";
 import { CodedError, codeForStatus } from "./errors.ts";
 
 export interface OpenAIOptions {
@@ -30,8 +31,15 @@ function promptTokensOf(messages: Msg[]): number {
   return messages.reduce((n, m) => n + estimateTokens(m.content), 0);
 }
 
-function toWire(msg: Msg): Record<string, unknown> {
+function toWire(msg: Msg, userImages: boolean): Record<string, unknown> {
   const wire: Record<string, unknown> = { role: msg.role, content: msg.content };
+  // The pictures a person attached ride on their own message, for a model that can see.
+  if (userImages && msg.role === "user" && msg.images && msg.images.length > 0) {
+    wire["content"] = [
+      { type: "text", text: msg.content },
+      ...msg.images.map((p) => ({ type: "image_url", image_url: { url: `data:${p.mimeType};base64,${p.data}` } })),
+    ];
+  }
   if (msg.toolCalls && msg.toolCalls.length > 0) {
     wire["tool_calls"] = msg.toolCalls.map((call) => ({
       id: call.id,
@@ -50,7 +58,7 @@ function toWire(msg: Msg): Record<string, unknown> {
  * The messages as the endpoint takes them. A tool message cannot hold a picture, so the pictures of a run of
  * tool messages follow it as one user message (the usual way to show a model a screenshot a tool took).
  */
-export function toWireAll(messages: Msg[]): Array<Record<string, unknown>> {
+export function toWireAll(messages: Msg[], userImages: boolean = true): Array<Record<string, unknown>> {
   const out: Array<Record<string, unknown>> = [];
   let pictures: Array<{ mimeType: string; data: string }> = [];
   const flush = (): void => {
@@ -66,7 +74,7 @@ export function toWireAll(messages: Msg[]): Array<Record<string, unknown>> {
   };
   for (const msg of messages) {
     if (msg.role !== "tool") flush();
-    out.push(toWire(msg));
+    out.push(toWire(msg, userImages));
     if (msg.role === "tool" && msg.images) pictures.push(...msg.images);
   }
   flush();
@@ -104,25 +112,33 @@ function xmlText(value: string): string {
 }
 
 /**
- * Some models (DeepSeek's newer chat templates) print a tool call into `content` instead of the OpenAI
- * `tool_calls` field, in a `<||DSML|| calls>` block. This reads that block so such a call still runs, and
- * returns the text without it. A text with no block comes back unchanged with no calls.
+ * DSML markers: one or two pipes on each side of DSML, ASCII `|` or fullwidth `\uFF5C` (the fullwidth ones are
+ * turned into `|` before matching), with optional spaces around and inside the bars. Written with
+ * String.raw so the backslashes stay literal in the regex source.
  */
-export function parseTextToolCalls(raw: string): { text: string; calls: ToolCall[] } {
-  const text = raw.replaceAll("\uFF5C", "|");
-  const open = text.indexOf("<||DSML|| calls>");
-  const close = text.indexOf("</||DSML|| calls>");
-  if (open < 0 || close < 0 || close < open) return { text: raw, calls: [] };
-  const end = close + "</||DSML|| calls>".length;
-  const block = text.slice(open, end);
-  const calls: ToolCall[] = [];
-  const invoke = /<\|{2}DSML\|{2}\s+invoke name="([^"]+)">([\s\S]*?)<\/\|{2}DSML\|{2}\s+invoke>/g;
-  const parameter = /<\|{2}DSML\|{2}\s+parameter name="([^"]+)"(?:\s+string="(true|false)")?>([\s\S]*?)<\/\|{2}DSML\|{2}\s+parameter>/g;
-  for (const call of block.matchAll(invoke)) {
+const DSML_BAR = String.raw`\|{1,2}\s*DSML\s*\|{1,2}`;
+const DSML_BLOCK_NAME = String.raw`(?:function_calls|calls)`;
+/** Group 1: the body of a calls block. Group 2: its closing tag, or "" when the reply ends before it. */
+const DSML_BLOCK = new RegExp(
+  String.raw`<\s*${DSML_BAR}\s*${DSML_BLOCK_NAME}\s*>([\s\S]*?)(<\/\s*${DSML_BAR}\s*${DSML_BLOCK_NAME}\s*>|$)`,
+  "g",
+);
+const DSML_INVOKE = new RegExp(
+  String.raw`<\s*${DSML_BAR}\s*invoke\s+name\s*=\s*"([^"]+)"\s*>([\s\S]*?)<\/\s*${DSML_BAR}\s*invoke\s*>`,
+  "g",
+);
+const DSML_PARAMETER = new RegExp(
+  String.raw`<\s*${DSML_BAR}\s*parameter\s+name\s*=\s*"([^"]+)"(?:\s+string\s*=\s*"(true|false)")?\s*>([\s\S]*?)<\/\s*${DSML_BAR}\s*parameter\s*>`,
+  "g",
+);
+
+/** Reads the invoke elements of one closed calls block into `calls`, in order. */
+function readDsmlCalls(body: string, calls: ToolCall[]): void {
+  for (const call of body.matchAll(DSML_INVOKE)) {
     const name = xmlText(call[1] ?? "").trim();
     if (name === "") continue;
     const args: Record<string, unknown> = {};
-    for (const p of (call[2] ?? "").matchAll(parameter)) {
+    for (const p of (call[2] ?? "").matchAll(DSML_PARAMETER)) {
       const key = xmlText(p[1] ?? "").trim();
       if (key === "") continue;
       const value = xmlText(p[3] ?? "");
@@ -138,8 +154,33 @@ export function parseTextToolCalls(raw: string): { text: string; calls: ToolCall
     }
     calls.push({ id: `dsml-${calls.length}`, name, arguments: JSON.stringify(args) });
   }
-  if (calls.length === 0) return { text: raw, calls: [] };
-  return { text: (raw.slice(0, open) + raw.slice(end)).trim(), calls };
+}
+
+/**
+ * Some models (DeepSeek's newer chat templates) print a tool call into `content` instead of the OpenAI
+ * `tool_calls` field, in a DSML `calls` (or `function_calls`) block. This reads every closed block so such
+ * calls still run, and returns the text with the blocks taken out. A block the reply cut off is taken out
+ * too, but none of its calls run. Text with no block, or only closed blocks with no calls, comes back unchanged.
+ */
+export function parseTextToolCalls(raw: string): { text: string; calls: ToolCall[] } {
+  const text = raw.replaceAll("\uFF5C", "|");
+  const calls: ToolCall[] = [];
+  let visible = "";
+  let last = 0;
+  let cutOff = false;
+  for (const block of text.matchAll(DSML_BLOCK)) {
+    const at = block.index ?? 0;
+    visible += raw.slice(last, at);
+    last = at + block[0].length;
+    if ((block[2] ?? "") === "") {
+      cutOff = true;
+      continue;
+    }
+    readDsmlCalls(block[1] ?? "", calls);
+  }
+  if (calls.length === 0 && !cutOff) return { text: raw, calls: [] };
+  visible += raw.slice(last);
+  return { text: visible.trim(), calls };
 }
 
 type Attempt = { ok: true; result: ChatResult } | { ok: false; reason: string; usage: Usage };
@@ -198,6 +239,9 @@ function pause(ms: number, signal?: AbortSignal): Promise<void> {
  */
 export class OpenAICompatProvider implements Provider {
   readonly name: string;
+  get modelName(): string {
+    return this.defaultModel;
+  }
   private apiKey: string;
   private baseUrl: string;
   private defaultModel: string;
@@ -253,7 +297,7 @@ export class OpenAICompatProvider implements Provider {
         },
         body: JSON.stringify({
           model,
-          messages: toWireAll(req.messages),
+          messages: toWireAll(req.messages, modelSeesImages(model)),
           ...(req.tools && req.tools.length > 0
             ? {
                 tools: req.tools.map((tool) => ({
@@ -306,11 +350,10 @@ export class OpenAICompatProvider implements Provider {
     let toolCalls = parseToolCalls(choice?.message?.tool_calls);
     // Some DeepSeek builds print the call in the text; read it so the turn still works.
     if (text.includes("DSML")) {
+      // Also takes out a block the reply cut off (no calls from it), so its markup is never shown.
       const printed = parseTextToolCalls(text);
-      if (printed.calls.length > 0) {
-        if (toolCalls.length === 0) toolCalls = printed.calls;
-        text = printed.text;
-      }
+      if (toolCalls.length === 0) toolCalls = printed.calls;
+      text = printed.text;
     }
     const reasoning = choice?.message?.reasoning_content ?? "";
 

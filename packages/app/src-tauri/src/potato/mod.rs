@@ -46,6 +46,7 @@
 pub const POTATO_PANE_LANE: &str = "potato";
 
 pub mod attachments;
+pub mod attachment_images;
 pub mod artifacts;
 pub mod checks;
 pub mod waits;
@@ -106,6 +107,8 @@ pub mod work;
 mod work_tests;
 #[cfg(test)]
 mod attachments_tests;
+#[cfg(test)]
+mod attachment_images_tests;
 #[cfg(test)]
 mod artifacts_tests;
 #[cfg(test)]

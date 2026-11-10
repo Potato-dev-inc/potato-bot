@@ -1,5 +1,6 @@
 //! The Potato Bot send with attached files (its own file, so the main command file stays as it is). Desktop only,
-//! like the other Potato commands: the files are saved in the bot's own folder and the brain gets one text message.
+//! like the other Potato commands: the files are saved in the bot's own folder (and copied into its computer when that is
+//! running), and the brain gets one text message, with the pictures beside it.
 //! Errors are one string, `CODE: plain sentence`.
 
 use crate::potato::attachments::{self, Incoming};
@@ -23,10 +24,12 @@ pub async fn potato_send_files(bot_id: String, text: String, files: Vec<Incoming
             return Err("POTATO_BOT_NOT_FOUND: No bot has that name.".to_string());
         }
         let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
-        let saved = attachments::save_all(&root, &bot_id, &files, stamp).map_err(failed)?;
-        let sent = attachments::compose(&text, &saved).and_then(|message| service.send(&bot_id, &message));
+        // A running computer gets a copy of each file; a stopped one is left stopped, and a failed copy never stops the send.
+        let computer = attachments::running_computer(&service, &bot_id);
+        let prepared = attachments::prepare(&root, &bot_id, &text, &files, stamp, computer.as_deref()).map_err(failed)?;
+        let sent = service.send_with_images(&bot_id, &prepared.message, &prepared.images);
         if sent.is_err() {
-            attachments::forget(&root, &bot_id, &saved);
+            attachments::forget(&root, &bot_id, &prepared.saved);
         }
         sent.map_err(failed)
     })

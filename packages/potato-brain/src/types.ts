@@ -26,8 +26,8 @@ export interface Msg {
   /** tool result only */
   toolCallId?: string;
   /**
-   * tool result only: pictures the tool returned (a screenshot). They are only ever
-   * attached for a model that can see; a provider that cannot carry them ignores them.
+   * tool result: pictures the tool returned (a screenshot). user message: pictures the person attached.
+   * They are only ever attached for a model that can see; a provider that cannot carry them ignores them.
    */
   images?: Array<{ mimeType: string; data: string }>;
 }
@@ -101,5 +101,7 @@ export interface ChatResult {
 
 export interface Provider {
   readonly name: string;
+  /** the model a request uses when it names none (so the agent can tell whether it can see pictures) */
+  readonly modelName?: string;
   chat(req: ChatRequest): Promise<ChatResult>;
 }

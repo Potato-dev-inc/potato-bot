@@ -957,6 +957,17 @@ impl Service {
     /// A message for a bot's brain, from the person (`Origin::Person`) or from a due routine (`Origin::Routine`).
     /// Both are trusted as the owner at this computer; the routine's late note travels as the item's `context`.
     pub(super) fn send_as(&self, bot: &str, text: &str, origin: Origin<'_>) -> Result<SendOutcome> {
+        self.send_as_with(bot, text, origin, &[])
+    }
+
+    /// One message from the person with pictures they attached. The pictures travel to the brain beside the text (for a model
+    /// that can look at them); the thread, the history and the log keep the text only.
+    pub fn send_with_images(&self, bot: &str, text: &str, images: &[super::attachment_images::ImagePart]) -> Result<SendOutcome> {
+        self.send_as_with(bot, text, Origin::Person, images)
+    }
+
+    /// `images` are used only on the owner's own message (`Origin::Person`); any other turn gets none.
+    fn send_as_with(&self, bot: &str, text: &str, origin: Origin<'_>, images: &[super::attachment_images::ImagePart]) -> Result<SendOutcome> {
         self.require_bot(bot)?;
         let now = self.host.now_ms();
         let settings = self.settings_for(bot, &store::load_settings(&self.root)?);
@@ -1121,6 +1132,7 @@ impl Service {
             tools,
         });
         // The computer is offered only to a turn whose trust allows it (never `others`).
+        let item = if matches!(origin, Origin::Person) && trust != Trust::Others { protocol::with_images(item, images) } else { item };
         let item = protocol::with_capabilities(item, self.sandbox_offered() && rules::tool_access(trust).sandbox);
         // The owner's lent apps need no sandbox: only Potato Bot on, the Lend an App flag, and the owner's turn.
         let item = protocol::with_lend(item, self.brains.enabled() && super::live::lend_labs_on() && rules::tool_access(trust).sandbox);

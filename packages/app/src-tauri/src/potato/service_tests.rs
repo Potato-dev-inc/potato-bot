@@ -1182,3 +1182,22 @@ fn with_no_limit_a_provider_out_of_credit_error_is_still_a_plain_message() {
     assert!(last.contains("out of balance"), "{last}");
     assert!(!last.contains("today's limit"), "{last}");
 }
+
+#[test]
+fn pictures_go_to_the_brain_in_the_send_item_but_not_into_the_thread() {
+    use super::attachment_images::ImagePart;
+    let rig = Rig::new("send-images");
+    let pic = ImagePart { mime_type: "image/png".into(), data: "iVBORw0KGgo=".into() };
+    let out = rig.svc.send_with_images("nimbus", "look at this", std::slice::from_ref(&pic)).unwrap();
+    let (items, _) = rig.inbox(0);
+    assert_eq!(items[0]["images"], json!([{"mimeType": "image/png", "data": "iVBORw0KGgo="}]));
+    assert_eq!(items[0]["text"], "look at this");
+    // The thread keeps the words only.
+    let thread = rig.thread();
+    assert_eq!(thread[0].id, out.id);
+    assert_eq!(thread[0].text, "look at this");
+    // A plain send has no images field at all.
+    rig.svc.send("nimbus", "and now words").unwrap();
+    let (items, _) = rig.inbox(0);
+    assert!(items[1].get("images").is_none());
+}

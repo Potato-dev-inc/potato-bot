@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.17
+
+- Pictures you attach in a chat now reach your bot. A model that can see images gets the picture itself; one that can't is told so, with where the file is.
+- Attached files are copied onto the bot's computer at /home/pm/attachments when its computer is on, so the bot can open them. Attachments older than 7 days are cleaned up.
+- DeepSeek models sometimes wrote a tool call as text, which showed up in the chat as DSML markup. The bot now reads those calls and runs them, and the markup is never shown.
+
 ## 1.0.16
 
 - Lend an App: the bot's view of a lent app is quicker. Pictures go to the bot's screen as plain image data instead of text.

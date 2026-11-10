@@ -413,6 +413,8 @@ pub fn start(app: Option<AppHandle>, registry: Option<Arc<Mutex<crate::pty::Pane
     let _ = std::thread::Builder::new().name("potato-routines".into()).spawn(move || loop {
         super::routines::run_due(&routines, chrono::Utc::now().timestamp_millis());
         super::trash::maybe_purge(routines.root(), chrono::Utc::now().timestamp_millis());
+        // Attached files older than 7 days leave the PC (at most once a day).
+        super::attachments::maybe_sweep(routines.root(), chrono::Utc::now().timestamp_millis());
         std::thread::sleep(Duration::from_secs(30));
     });
     // The waits tick: every 30 s, the due checks run (no model) and a wait that ended wakes its bot once.

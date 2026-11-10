@@ -280,3 +280,17 @@ fn pass_event_parses() {
     let body = serde_json::to_vec(&json!({"v":1,"events":[{"v":1,"type":"pass","conversationId":"c"},{"v":1,"type":"pass","conversationId":"app:room:r0123456789ab","inReplyTo":"l1","reason":"no_reply"}]})).unwrap();
     assert_eq!(parse_post(&body).unwrap().len(), 1);
 }
+
+#[test]
+fn pictures_ride_on_a_send_item_as_mime_type_and_base64_and_no_pictures_changes_nothing() {
+    use super::attachment_images::ImagePart;
+    let plain = send_item(&facts());
+    assert_eq!(with_images(plain.clone(), &[]), plain, "no pictures: the item is the same as before");
+    let pic = |n: u8| ImagePart { mime_type: "image/png".into(), data: format!("AAA{n}") };
+    let many: Vec<ImagePart> = (0..6).map(pic).collect();
+    let item = with_images(plain, &many);
+    let images = item["images"].as_array().unwrap();
+    assert_eq!(images.len(), 4, "at most 4");
+    assert_eq!(images[0], json!({"mimeType": "image/png", "data": "AAA0"}));
+    assert_eq!(item["type"], "send");
+}

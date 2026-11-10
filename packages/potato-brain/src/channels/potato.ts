@@ -74,6 +74,8 @@ interface SteerWaiting {
   /** a routine's own run (its sender is the routine, not a person) */
   routine?: boolean;
   text: string;
+  /** pictures the person attached (checked: at most 4, known types, base64) */
+  images?: Array<{ mimeType: string; data: string }>;
   speaker?: { id: string; name: string };
   context?: string;
   reason?: string;
@@ -86,6 +88,9 @@ const DROPPABLE = new Set<string>(["typing", "progress"]);
 /** Size limits of the wire format. */
 export const LIMITS = {
   sendText: 4000,
+  /** pictures on one send, and the base64 characters of each (the app sends a picture at 1.5 MB or so) */
+  images: 4,
+  imageChars: 3_000_000,
   context: 6000,
   helperSummary: 1500,
   eventsPerPost: 32,
@@ -154,6 +159,25 @@ function isRecord(x: unknown): x is Json {
 
 function str(x: unknown, max: number): string | null {
   return typeof x === "string" ? x.slice(0, max) : null;
+}
+
+const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+
+/** The pictures of a send: at most 4, a known type, plain base64 of a sane size. Anything else is left out. */
+export function parseImages(raw: unknown): Array<{ mimeType: string; data: string }> {
+  if (!Array.isArray(raw)) return [];
+  const out: Array<{ mimeType: string; data: string }> = [];
+  for (const item of raw) {
+    if (out.length >= LIMITS.images) break;
+    if (!isRecord(item)) continue;
+    const mimeType = item["mimeType"];
+    const data = item["data"];
+    if (typeof mimeType !== "string" || !IMAGE_TYPES.has(mimeType)) continue;
+    if (typeof data !== "string" || data.length === 0 || data.length > LIMITS.imageChars) continue;
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(data)) continue;
+    out.push({ mimeType, data });
+  }
+  return out;
 }
 
 function trustOf(x: unknown): Trust {
@@ -757,6 +781,8 @@ export class PotatoChannel {
     this.computer.set(conversationId, sandbox);
     const lend = isRecord(caps) && caps["lend"] === true;
     this.lendCaps.set(conversationId, lend);
+    // Pictures only ever come from the owner's own message; a stranger's turn gets none.
+    const images = trust === "others" ? [] : parseImages(m["images"]);
 
     const turn: SteerWaiting = {
       conversationId,
@@ -767,6 +793,7 @@ export class PotatoChannel {
       tools,
       routine: fromId === "routine",
       text,
+      ...(images.length > 0 ? { images } : {}),
       speaker: { id: safeId(fromId), name },
       context,
     };
@@ -816,7 +843,7 @@ export class PotatoChannel {
     if (!box || box.length === 0) return [];
     this.steerBox.delete(chat);
     this.emit({ type: "picked", conversationId: chat, ids: box.map((b) => b.replyTo) });
-    return box.map((b) => ({ id: b.replyTo, text: b.text }));
+    return box.map((b) => ({ id: b.replyTo, text: b.text, ...(b.images ? { images: b.images } : {}) }));
   }
 
   /**
@@ -953,6 +980,7 @@ export class PotatoChannel {
       const result = await agent.turn(t.text, {
         where: t.conversationId,
         tools: t.tools,
+        ...(t.images ? { images: t.images } : {}),
         ...(t.sandbox ? { sandbox: true } : {}),
         ...(t.lend ? { lend: true } : {}),
         owner: t.trust !== "others",

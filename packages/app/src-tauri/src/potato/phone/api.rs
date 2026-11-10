@@ -306,12 +306,13 @@ fn send(ctx: &Ctx, req: &Request, id: &str) -> Response {
             return err(404, "potato_bot_not_found", "No bot has that name.");
         }
         let stamp = ctx.env.now_ms() as i64;
-        match crate::potato::attachments::save_all(&root, id, &files, stamp) {
+        let computer = crate::potato::attachments::running_computer(&s, id);
+        match crate::potato::attachments::prepare(&root, id, text, &files, stamp, computer.as_deref()) {
             Err(e) => return store_err(e),
-            Ok(saved) => {
-                let sent = crate::potato::attachments::compose(text, &saved).and_then(|m| s.send(id, &m));
+            Ok(prepared) => {
+                let sent = s.send_with_images(id, &prepared.message, &prepared.images);
                 if sent.is_err() {
-                    crate::potato::attachments::forget(&root, id, &saved);
+                    crate::potato::attachments::forget(&root, id, &prepared.saved);
                 }
                 sent
             }

@@ -1,6 +1,6 @@
 [package]
 name = "puppet_master_app"
-version = "1.0.16"
+version = "1.0.17"
 description = "Potato Bot desktop app"
 authors = ["Potato-dev-inc"]
 license = "MIT"
@@ -95,10 +95,11 @@ iroh = { version = "=1.4.1", default-features = false, features = ["tls-ring"] }
 mdns-sd = "=0.13.11"
 async-trait = "0.1"
 bytes = "1"
+# JPEG encoder (pure Rust): Lend an App v2 (`potato/lend/mirror.rs`) frames of a lent window for the sandbox screen, and
+# the smaller copy of a big attached picture for the model (`potato/attachment_images.rs`). MIT OR Apache-2.0.
+jpeg-encoder = "0.6"
 
 [target.'cfg(windows)'.dependencies]
-# Lend an App v2 (`potato/lend/mirror.rs`): JPEG frames of a lent window for the sandbox screen. MIT OR Apache-2.0.
-jpeg-encoder = "0.6"
 keyring = { version = "3.6", features = ["windows-native"] }
 # Point and Fix screenshots: WebView2 CapturePreview. Same versions wry uses, so the
 # `controller()` types match (`cargo tree -d` shows one webview2-com).

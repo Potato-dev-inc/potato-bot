@@ -385,6 +385,18 @@ pub fn send_item(s: &SendFacts) -> Value {
     item("send", fields)
 }
 
+/// Adds the pictures the owner attached to a `send` item (`images`: `[{mimeType, data}]`, base64). Nothing is added for
+/// none, so a send without pictures is the same as before; an older brain ignores the field.
+pub fn with_images(mut item: Value, images: &[super::attachment_images::ImagePart]) -> Value {
+    if images.is_empty() {
+        return item;
+    }
+    if let Value::Object(map) = &mut item {
+        map.insert("images".into(), Value::Array(images.iter().take(super::attachment_images::MAX_IMAGES).map(|i| i.to_json()).collect()));
+    }
+    item
+}
+
 /// A new line in a group, for one bot's brain. `fields` is built by `rooms::fanout::inbox_item`.
 pub fn room_item(fields: Value) -> Value {
     item("room", fields)

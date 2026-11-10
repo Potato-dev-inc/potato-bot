@@ -113,7 +113,7 @@ fn forget_removes_only_what_was_saved_there() {
     // A name outside the folder is ignored.
     let outside = root.join("brain").join("nimbus").join("keep.txt");
     std::fs::write(&outside, "x").unwrap();
-    let sneaky = Saved { name: "keep.txt".into(), rel: "../keep.txt".into(), kind: Kind::Text, bytes: 1, text: None };
+    let sneaky = Saved { name: "keep.txt".into(), rel: "../keep.txt".into(), kind: Kind::Text, bytes: 1, text: None, guest: Guest::Off };
     forget(&root, "nimbus", &[sneaky]);
     assert!(outside.exists());
 }
@@ -123,8 +123,8 @@ fn the_message_has_the_words_a_line_per_file_and_the_text_of_a_small_text_file()
     let root = temp("compose");
     let saved = save_all(&root, "nimbus", &[text_file("todo.md", "- milk\n- eggs"), png_file("pic.png")], 9).unwrap();
     let message = compose("  look at these  ", &saved).unwrap();
-    assert!(message.starts_with("look at these\n\n[Attached file: todo.md (13 B), saved as attachments/9-1-todo.md]"));
-    assert!(message.contains("[Attached image: pic.png (12 B), saved as attachments/9-2-pic.png]"));
+    assert!(message.starts_with("look at these\n\n[Attached file: todo.md (13 B), saved at attachments/9-1-todo.md on the PC (your computer is off)]"));
+    assert!(message.contains("[Attached image: pic.png (12 B), saved at attachments/9-2-pic.png on the PC (your computer is off)]"));
     assert!(message.contains("todo.md:\n```\n- milk\n- eggs\n```"));
     // The picture's bytes are never in the message.
     assert!(!message.contains("PNG"));
@@ -156,7 +156,7 @@ fn a_file_that_leaves_no_room_is_named_but_not_quoted_and_too_many_words_are_ref
     let almost_full = "w".repeat(MAX_MESSAGE_CHARS - 120);
     let message = compose(&almost_full, &saved).unwrap();
     assert!(message.chars().count() <= MAX_MESSAGE_CHARS);
-    assert!(message.contains("saved as attachments/3-1-a.txt]"));
+    assert!(message.contains("saved at attachments/3-1-a.txt on the PC (your computer is off)]"));
     assert!(!message.contains("```"));
     let err = compose(&"w".repeat(MAX_MESSAGE_CHARS), &saved).unwrap_err();
     assert_eq!(err.code, "POTATO_ATTACHMENT");
@@ -177,4 +177,144 @@ fn size_words_are_short() {
     assert_eq!(size_word(300), "300 B");
     assert_eq!(size_word(2048), "2 KB");
     assert_eq!(size_word(1_572_864), "1.5 MB");
+}
+
+// ---- where the bot finds the file -----------------------------------------------------------------------------------
+
+use super::sandbox::{FakeSandbox, Sandbox, SandboxError};
+
+fn saved_one(root: &std::path::Path) -> Vec<Saved> {
+    save_all(root, "nimbus", &[png_file("image.png")], 1794280014692).unwrap()
+}
+
+#[test]
+fn the_line_names_the_path_inside_the_computer_when_it_was_copied() {
+    let root = temp("line-on");
+    let mut saved = saved_one(&root);
+    saved[0].guest = Guest::At("/home/pm/attachments/1794280014692-1-image.png".into());
+    let message = compose("see", &saved).unwrap();
+    assert!(
+        message.contains("[Attached image: image.png (12 B), saved on your computer at /home/pm/attachments/1794280014692-1-image.png]"),
+        "{message}"
+    );
+    assert!(!message.contains("on the PC"));
+}
+
+#[test]
+fn the_line_says_the_computer_is_off_or_that_the_copy_failed() {
+    let root = temp("line-off");
+    let mut saved = saved_one(&root);
+    let off = compose("", &saved).unwrap();
+    assert!(off.contains("saved at attachments/1794280014692-1-image.png on the PC (your computer is off)"), "{off}");
+    saved[0].guest = Guest::Failed;
+    let failed = compose("", &saved).unwrap();
+    assert!(failed.contains("saved at attachments/1794280014692-1-image.png on the PC (it could not be copied to your computer)"), "{failed}");
+}
+
+#[test]
+fn files_are_copied_into_a_running_computer_under_the_same_name() {
+    let root = temp("copy");
+    let computer = FakeSandbox::new();
+    computer.use_file_system();
+    computer.start().unwrap();
+    assert!(is_running(&computer));
+    let prepared = prepare(&root, "nimbus", "look", &[png_file("image.png"), text_file("n.txt", "hi there, a note")], 77, Some(&computer)).unwrap();
+    assert_eq!(computer.file("/home/pm/attachments/77-1-image.png").as_deref(), Some(&PNG[..]));
+    assert_eq!(computer.file("/home/pm/attachments/77-2-n.txt").as_deref(), Some(&b"hi there, a note"[..]));
+    assert!(prepared.message.contains("saved on your computer at /home/pm/attachments/77-1-image.png]"));
+    assert!(prepared.message.contains("saved on your computer at /home/pm/attachments/77-2-n.txt]"));
+    // The file is still on the PC too.
+    assert!(root.join("brain/nimbus/attachments/77-1-image.png").exists());
+}
+
+#[test]
+fn a_computer_that_is_off_is_not_started_and_the_message_still_goes() {
+    let root = temp("off");
+    let computer = FakeSandbox::new();
+    assert!(!is_running(&computer), "a stopped computer is not running");
+    // No computer is handed over when it is not running; nothing is written to it.
+    let prepared = prepare(&root, "nimbus", "look", &[png_file("image.png")], 5, None).unwrap();
+    assert!(prepared.message.contains("saved at attachments/5-1-image.png on the PC (your computer is off)"));
+    assert!(computer.calls().is_empty());
+    assert!(!is_running(&computer));
+}
+
+#[test]
+fn a_failed_copy_does_not_stop_the_message_and_the_pictures_still_go() {
+    let root = temp("copy-fail");
+    let computer = FakeSandbox::new();
+    computer.use_file_system();
+    computer.start().unwrap();
+    computer.fail_next(SandboxError::new("SANDBOX_FILE_WRITE_FAILED", "nope"));
+    let prepared = prepare(&root, "nimbus", "look", &[png_file("a.png"), png_file("b.png")], 6, Some(&computer)).unwrap();
+    assert_eq!(prepared.message.matches("could not be copied to your computer").count(), 2, "{}", prepared.message);
+    assert!(prepared.saved.iter().all(|f| f.guest == Guest::Failed));
+    assert_eq!(prepared.images.len(), 2);
+    assert!(root.join("brain/nimbus/attachments/6-1-a.png").exists());
+}
+
+#[test]
+fn only_pictures_become_image_parts_at_most_four() {
+    let root = temp("parts");
+    let files: Vec<Incoming> = (0..4).map(|i| png_file(&format!("p{i}.png"))).collect();
+    let saved = save_all(&root, "nimbus", &files, 8).unwrap();
+    assert_eq!(images_of(&root, "nimbus", &saved).len(), 4);
+    let mixed = save_all(&root, "nimbus", &[text_file("a.txt", "words"), png_file("b.png")], 9).unwrap();
+    let parts = images_of(&root, "nimbus", &mixed);
+    assert_eq!(parts.len(), 1);
+    assert_eq!(parts[0].mime_type, "image/png");
+    assert_eq!(base64::engine::general_purpose::STANDARD.decode(&parts[0].data).unwrap(), PNG.to_vec());
+}
+
+#[test]
+fn a_message_that_is_too_long_leaves_nothing_saved() {
+    let root = temp("toolong");
+    let err = prepare(&root, "nimbus", &"w".repeat(MAX_MESSAGE_CHARS), &[png_file("a.png")], 3, None).unwrap_err();
+    assert_eq!(err.code, "POTATO_ATTACHMENT");
+    let dir = root.join("brain/nimbus/attachments");
+    assert_eq!(std::fs::read_dir(dir).map(|d| d.count()).unwrap_or(0), 0);
+}
+
+// ---- cleanup ---------------------------------------------------------------------------------------------------------
+
+const DAY: i64 = 24 * 60 * 60 * 1000;
+
+#[test]
+fn a_file_is_expired_at_exactly_the_keep_time_and_a_future_one_never() {
+    assert!(!is_expired(1000, 1000 + 7 * DAY - 1, KEEP_MS));
+    assert!(is_expired(1000, 1000 + 7 * DAY, KEEP_MS));
+    assert!(is_expired(0, 30 * DAY, KEEP_MS));
+    assert!(!is_expired(5 * DAY, DAY, KEEP_MS), "a time in the future is not old");
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64
+}
+
+fn age(path: &std::path::Path, days: u64) {
+    let when = std::time::SystemTime::now() - std::time::Duration::from_secs(days * 24 * 3600);
+    std::fs::File::options().write(true).open(path).unwrap().set_modified(when).unwrap();
+}
+
+#[test]
+fn the_sweep_removes_old_files_directly_in_the_folder_and_nothing_else() {
+    let root = temp("sweep");
+    let dir = root.join("brain/nimbus/attachments");
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    for name in ["old.png", "fresh.png", "sub/deep-old.png"] {
+        std::fs::write(dir.join(name), b"x").unwrap();
+    }
+    age(&dir.join("old.png"), 8);
+    age(&dir.join("sub/deep-old.png"), 30);
+    // A file next to the folder, in the bot's own folder, is not an attachment.
+    let beside = root.join("brain/nimbus/notes.txt");
+    std::fs::write(&beside, b"keep").unwrap();
+    age(&beside, 30);
+    assert_eq!(sweep_all(&root, now_ms()), 1);
+    assert!(!dir.join("old.png").exists());
+    assert!(dir.join("fresh.png").exists());
+    assert!(dir.join("sub/deep-old.png").exists(), "nothing deeper than the folder itself is touched");
+    assert!(beside.exists());
+    // A folder that is not there is fine.
+    assert_eq!(sweep_dir(&root.join("nope"), now_ms(), KEEP_MS), 0);
 }

@@ -9,7 +9,15 @@ export interface SteerItem {
   /** the host's id for the message (the host is told it was picked up) */
   id: string;
   text: string;
+  /** pictures the person attached to it (shown to a model that can see) */
+  images?: Array<{ mimeType: string; data: string }>;
 }
+
+/** Pictures one message may carry (the host sends at most this many). */
+export const MAX_PICTURES = 4;
+
+/** Said in the user's line when pictures came but the model cannot look at them. The files are where the lines above say. */
+export const NO_PICTURES_NOTE = "(This model can't view images, so the attached picture could not be shown to you; the file is at the path given in its line above.)";
 
 export const STEER_TURN_NOTE =
   "The person may write to you while you work. Such a message reaches you between tool rounds, marked as written while you were working. " +

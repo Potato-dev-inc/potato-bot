@@ -42,7 +42,8 @@ import { SCRATCHPAD_TURN_NOTE } from "./scratchpad-tools.ts";
 import { JOB_TURN_NOTE } from "./job-tools.ts";
 import { stepFacts } from "./step-label.ts";
 import type { StepOutcome } from "./step-label.ts";
-import { STEER_TURN_NOTE, steerMessage } from "./steer.ts";
+import { MAX_PICTURES, NO_PICTURES_NOTE, STEER_TURN_NOTE, steerMessage } from "./steer.ts";
+import { modelSeesImages } from "./models.ts";
 import { Talk, TALK_NUDGE, TALK_ROOM_NOTE, TALK_TURN_NOTE, type TalkMode } from "./talk.ts";
 import { MESSAGE_USER_NAME } from "./message-user-tools.ts";
 import type { SteerItem } from "./steer.ts";
@@ -496,6 +497,8 @@ export interface TurnOptions {
    * and forgets it (the host is told they were picked up). Owner turns of a private chat only.
    */
   steer?: () => SteerItem[];
+  /** Pictures the person attached to this message. Shown to the model when it can see; otherwise the line says it cannot. */
+  images?: Array<{ mimeType: string; data: string }>;
 }
 
 export interface StepEvent {
@@ -1155,7 +1158,16 @@ export class Agent {
     if (items.length === 0) return msgs;
     this.steered.push(...items);
     this.talk?.personWrote();
-    return [...msgs, { role: "user", content: steerMessage(items) }];
+    // Pictures that came with those messages: shown to a model that can see, named as unseen otherwise.
+    const pictures = items.flatMap((item) => item.images ?? []).slice(0, MAX_PICTURES);
+    const sees = pictures.length > 0 && this.seesPictures();
+    const content = pictures.length > 0 && !sees ? steerMessage(items) + "\n" + NO_PICTURES_NOTE : steerMessage(items);
+    return [...msgs, { role: "user", content, ...(sees ? { images: pictures } : {}) }];
+  }
+
+  /** Whether the model this brain talks to can look at a picture. */
+  private seesPictures(): boolean {
+    return modelSeesImages(this.provider.modelName ?? "");
   }
 
   /** A progress report must never cost a reply: a throwing listener is ignored. */
@@ -1536,7 +1548,12 @@ ${escapePromptData(body)}
     const lines = (space ? [] : opts.prior ?? []).map((p) => `[${p.name}] ${p.text}`);
     if (opts.group && speaker) lines.push(`[${speaker.name}] ${userText}`);
     const body = lines.length > 0 ? lines.join("\n") : userText;
-    const userContent = opts.context ? `${opts.context}\n\n${body}` : body;
+    const askedContent = opts.context ? `${opts.context}\n\n${body}` : body;
+
+    // Pictures the person attached (never on a space turn). A model that cannot see them is told so in plain words.
+    const pictures = space ? [] : (opts.images ?? []).slice(0, MAX_PICTURES);
+    const showPictures = pictures.length > 0 && this.seesPictures();
+    const userContent = pictures.length > 0 && !showPictures ? askedContent + "\n\n" + NO_PICTURES_NOTE : askedContent;
 
     // 3 TIP — the only volatile bytes, and they live at the very end.
     // Memory pointers come first, mood last: the newest frame wins.
@@ -1639,6 +1656,13 @@ ${ownerTurnNote}` : SANDBOX_TURN_NOTE, talkText].filter(Boolean).join("\n"),
       },
       this.budget ? { budget: this.budget } : {},
     );
+
+    // The pictures ride on the person's line of this one prompt; the history keeps the text only.
+    if (showPictures) {
+      const at = prompt.messages.length - 1;
+      const last = prompt.messages[at];
+      if (last && last.role === "user") prompt.messages[at] = { ...last, images: pictures };
+    }
 
     if (this.strictPrefix && this.lastPrefix !== "" && prompt.prefixHash !== this.lastPrefix) {
       throw new Error(

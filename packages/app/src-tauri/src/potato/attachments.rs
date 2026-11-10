@@ -1,17 +1,22 @@
 //! Files a person attaches to a message in a bot's thread (pictures and text files).
 //!
-//! The brain's protocol carries text only, so an attachment travels as text: the file is saved in the bot's own
-//! folder (`<app data>/potato/brain/<bot>/attachments/`) and the message says so ("[Attached: notes.txt (2 KB), saved
-//! as attachments/..]"). A text file that fits is also quoted in the message, so the bot can read it at once. File
-//! contents go nowhere but that folder and that message (which only the bot's own brain receives). Nothing here
-//! opens a network connection or a path the caller names: the folder is fixed, the file name is cleaned, and what
-//! kind of file it is comes from its first bytes, never from the name the page claims.
+//! The file is saved in the bot's own folder (`<app data>/potato/brain/<bot>/attachments/`) and the message says where
+//! it is: on the bot's computer when that is running (the file is copied to `/home/pm/attachments/` there), else on the
+//! PC only. A text file that fits is also quoted in the message, so the bot can read it at once. A picture also goes
+//! to the brain as a picture (`attachment_images`), for a model that can look at it. File contents go nowhere but that
+//! folder, that computer and that message (which only the bot's own brain receives). Nothing here opens a network
+//! connection or a path the caller names: the folder is fixed, the file name is cleaned, and what kind of file it is
+//! comes from its first bytes, never from the name the page claims. Files older than 7 days are swept away.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::Arc;
 
 use base64::Engine as _;
 use serde::Deserialize;
 
+pub use super::attachment_images::ImagePart;
+use super::sandbox::{Sandbox, State};
 use super::store::{self, StoreError, MAX_MESSAGE_CHARS};
 
 /// Files in one message.
@@ -22,6 +27,12 @@ pub const MAX_FILE_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_TOTAL_BYTES: usize = 4 * 1024 * 1024;
 /// The folder inside the bot's brain folder.
 pub const FOLDER: &str = "attachments";
+/// Where the files are copied to inside the bot's computer (its home is `/home/pm`).
+pub const GUEST_DIR: &str = "/home/pm/attachments";
+/// How long a saved file is kept on the PC.
+pub const KEEP_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+const DAY_MS: i64 = 24 * 60 * 60 * 1000;
+static LAST_SWEEP_MS: AtomicI64 = AtomicI64::new(i64::MIN);
 /// Below this many characters of room left, a text file is not quoted (the saved file is still named).
 const MIN_QUOTE: usize = 60;
 
@@ -41,6 +52,18 @@ pub enum Kind {
     Text,
 }
 
+/// Where a saved file is, as far as the bot's computer goes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Guest {
+    /// The computer is off (or the bot has none): the file is on the PC only.
+    #[default]
+    Off,
+    /// Copied to this absolute path inside the computer.
+    At(String),
+    /// The computer is on but the copy failed.
+    Failed,
+}
+
 /// A file after it is checked and saved.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Saved {
@@ -52,6 +75,7 @@ pub struct Saved {
     pub bytes: usize,
     /// The text of a text file.
     pub text: Option<String>,
+    pub guest: Guest,
 }
 
 fn bad(message: impl Into<String>) -> StoreError {
@@ -165,7 +189,7 @@ pub fn save_all(root: &Path, bot: &str, files: &[Incoming], stamp: i64) -> Resul
             forget(root, bot, &saved);
             return Err(bad(format!("Could not save {name}: {e}.")));
         }
-        saved.push(Saved { name, rel: format!("{FOLDER}/{file_name}"), kind, bytes: bytes.len(), text });
+        saved.push(Saved { name, rel: format!("{FOLDER}/{file_name}"), kind, bytes: bytes.len(), text, guest: Guest::Off });
     }
     Ok(saved)
 }
@@ -194,6 +218,15 @@ fn longest_ticks(text: &str) -> usize {
     best
 }
 
+/// Where the bot can find a file, in the words of the message line.
+pub fn where_words(file: &Saved) -> String {
+    match &file.guest {
+        Guest::At(path) => format!("saved on your computer at {path}"),
+        Guest::Failed => format!("saved at {} on the PC (it could not be copied to your computer)", file.rel),
+        Guest::Off => format!("saved at {} on the PC (your computer is off)", file.rel),
+    }
+}
+
 /// The message the brain gets: the person's words, one line per file, then the text of each text file that still
 /// fits (cut with a note when it does not). Never longer than the 4000 characters a message may have.
 pub fn compose(text: &str, saved: &[Saved]) -> Result<String, StoreError> {
@@ -202,7 +235,7 @@ pub fn compose(text: &str, saved: &[Saved]) -> Result<String, StoreError> {
         .iter()
         .map(|f| {
             let what = if f.kind == Kind::Image { "image" } else { "file" };
-            format!("[Attached {what}: {} ({}), saved as {}]", f.name, size_word(f.bytes), f.rel)
+            format!("[Attached {what}: {} ({}), {}]", f.name, size_word(f.bytes), where_words(f))
         })
         .collect();
     let mut out = String::new();
@@ -242,4 +275,132 @@ pub fn compose(text: &str, saved: &[Saved]) -> Result<String, StoreError> {
         out.push_str(&block);
     }
     Ok(out)
+}
+
+// ---- the bot's computer ---------------------------------------------------------------------------------------------
+
+fn file_name_of(rel: &str) -> &str {
+    rel.rsplit('/').next().unwrap_or(rel)
+}
+
+/// Whether the computer is running right now. Asking never starts it.
+pub fn is_running(computer: &dyn Sandbox) -> bool {
+    matches!(computer.status(), Ok(status) if status.state == State::Running)
+}
+
+/// The bot's computer, only when it can be used now: the sandbox is on for Potato Bot, this bot has the computer tool,
+/// and the computer is running. A stopped computer is left stopped.
+pub fn running_computer(service: &super::service::Service, bot: &str) -> Option<Arc<dyn Sandbox>> {
+    if !service.sandbox_offered() {
+        return None;
+    }
+    if !super::bot_settings::load(service.root(), bot).map(|b| b.tools.computer).unwrap_or(false) {
+        return None;
+    }
+    let sandbox = super::sandbox_host::manager().ok()?.sandbox().clone();
+    is_running(sandbox.as_ref()).then_some(sandbox)
+}
+
+/// Copies every saved file into the computer at `/home/pm/attachments/<same file name>`, as the sandbox user. A copy that
+/// fails marks that file (and the ones after it, which would fail the same way) and never stops the message.
+pub fn place_on_computer(computer: &dyn Sandbox, root: &Path, bot: &str, saved: &mut [Saved]) {
+    let Ok(base) = store::brain_dir(root, bot) else { return };
+    let mut failed = false;
+    for file in saved.iter_mut() {
+        let guest = format!("{GUEST_DIR}/{}", file_name_of(&file.rel));
+        let copied = !failed && std::fs::read(base.join(&file.rel)).is_ok_and(|bytes| computer.write_file(&guest, &bytes, false).is_ok());
+        failed = !copied;
+        file.guest = if copied { Guest::At(guest) } else { Guest::Failed };
+    }
+}
+
+// ---- one send --------------------------------------------------------------------------------------------------------
+
+/// What a send with files is made of.
+#[derive(Debug)]
+pub struct Prepared {
+    pub saved: Vec<Saved>,
+    pub message: String,
+    pub images: Vec<ImagePart>,
+}
+
+/// Up to 4 of the saved pictures, ready for the brain.
+pub fn images_of(root: &Path, bot: &str, saved: &[Saved]) -> Vec<ImagePart> {
+    let Ok(base) = store::brain_dir(root, bot) else { return Vec::new() };
+    saved
+        .iter()
+        .filter(|f| f.kind == Kind::Image)
+        .filter_map(|f| std::fs::read(base.join(&f.rel)).ok())
+        .filter_map(|bytes| super::attachment_images::prepare(&bytes))
+        .take(super::attachment_images::MAX_IMAGES)
+        .collect()
+}
+
+/// Saves the files, copies them into `computer` when there is one running, and makes the message and the pictures. When
+/// the message cannot be made (too long) nothing stays saved.
+pub fn prepare(root: &Path, bot: &str, text: &str, files: &[Incoming], stamp: i64, computer: Option<&dyn Sandbox>) -> Result<Prepared, StoreError> {
+    let mut saved = save_all(root, bot, files, stamp)?;
+    if let Some(computer) = computer {
+        place_on_computer(computer, root, bot, &mut saved);
+    }
+    match compose(text, &saved) {
+        Ok(message) => {
+            let images = images_of(root, bot, &saved);
+            Ok(Prepared { saved, message, images })
+        }
+        Err(e) => {
+            forget(root, bot, &saved);
+            Err(e)
+        }
+    }
+}
+
+// ---- cleanup -----------------------------------------------------------------------------------------------------------
+
+/// Pure: a file last changed at `modified_ms` is expired when it is `keep_ms` or more old. A time in the future is not.
+pub fn is_expired(modified_ms: i64, now_ms: i64, keep_ms: i64) -> bool {
+    now_ms.saturating_sub(modified_ms) >= keep_ms
+}
+
+/// Deletes the plain files directly inside `dir` that are expired. Folders and links are left alone, nothing deeper is
+/// looked at. Returns how many files went.
+pub fn sweep_dir(dir: &Path, now_ms: i64, keep_ms: i64) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        // `DirEntry::file_type` does not follow a link, so a link is not a file here.
+        if !entry.file_type().is_ok_and(|t| t.is_file()) {
+            continue;
+        }
+        let modified = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as i64);
+        if modified.is_some_and(|m| is_expired(m, now_ms, keep_ms)) && std::fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
+/// Sweeps the attachments folder of every bot (`<root>/brain/<bot>/attachments`).
+pub fn sweep_all(root: &Path, now_ms: i64) -> usize {
+    let Ok(bots) = std::fs::read_dir(root.join("brain")) else { return 0 };
+    bots.flatten()
+        .filter(|b| b.file_type().is_ok_and(|t| t.is_dir()))
+        .filter_map(|b| b.file_name().to_str().and_then(|name| dir_of(root, name).ok()))
+        .map(|dir| sweep_dir(&dir, now_ms, KEEP_MS))
+        .sum()
+}
+
+/// `sweep_all` at most once a day (the routines tick calls it every 30 s, so it also runs at app start).
+pub fn maybe_sweep(root: &Path, now_ms: i64) {
+    let last = LAST_SWEEP_MS.load(Ordering::SeqCst);
+    if last != i64::MIN && now_ms - last < DAY_MS {
+        return;
+    }
+    LAST_SWEEP_MS.store(now_ms, Ordering::SeqCst);
+    sweep_all(root, now_ms);
 }
