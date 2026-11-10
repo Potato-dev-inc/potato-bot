@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.16
+
+- Lend an App: the bot's view of a lent app is quicker. Pictures go to the bot's screen as plain image data instead of text.
+- Lend an App: the bot also spots password boxes that have no label, and never types into them or reads them.
+- Lend an App: Chrome and Electron apps are asked to show their buttons and labels. If an app still shows none, the bot is told to use the picture.
+- Lend an App: clearer words on the card and the picker. The picker refreshes itself while open, lists chat apps first, and folds away apps that were opened as administrator.
+- Nothing here takes focus from what you are doing; a new test fails the build if the lend code ever could.
+
 ## 1.0.15
 
 - Lend an App: minimizing a lent app no longer freezes it for the bot. The app goes see-through instead and the bot keeps working; click its taskbar button to take control again.

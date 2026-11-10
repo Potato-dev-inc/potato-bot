@@ -125,6 +125,43 @@ class HubTests(unittest.TestCase):
         thread.join(3)
         self.assertEqual(result, [(1, 2, 2, JPEG)])
 
+    def test_long_poll_answers_within_200ms_of_the_stored_frame(self):
+        hub, _ = self.make()
+        hub.open("a", "A")
+        result = []
+        waiting = threading.Event()
+
+        def wait():
+            waiting.set()
+            result.append((hub.wait_frame("a", 3, 10), time.monotonic()))
+
+        thread = threading.Thread(target=wait)
+        thread.start()
+        waiting.wait(2)
+        time.sleep(0.1)  # the waiter is parked on the condition
+        hub.put_frame("a", 3, 2, 2, JPEG)  # not newer than after=3: must not wake it with a frame
+        hub.put_frame("a", 4, 2, 2, JPEG)
+        stored = time.monotonic()
+        thread.join(3)
+        frame, answered = result[0]
+        self.assertEqual(frame, (4, 2, 2, JPEG))
+        self.assertLess(answered - stored, 0.2)
+
+    def test_raw_frame_stores_like_the_json_one_with_the_sent_stamp(self):
+        hub, _ = self.make()
+        hub.open("a", "A")
+        headers = {"X-Lend-Id": "a", "X-Seq": "5", "X-W": "30", "X-H": "20", "X-Sent-Ms": "999"}
+        self.assertEqual(control.lend_frame_raw(hub, headers, JPEG), {"ok": True})
+        self.assertEqual(hub.wait_frame("a", 0, 0.01), (5, 30, 20, JPEG))
+        self.assertEqual(hub.sent_ms("a"), 999)
+        for bad in ({**headers, "X-Lend-Id": "../x"}, {**headers, "X-Seq": "x"}, {k: v for k, v in headers.items() if k != "X-W"}):
+            with self.assertRaises(control.RequestError):
+                control.lend_frame_raw(hub, bad, JPEG)
+        with self.assertRaises(control.RequestError):
+            control.lend_frame_raw(hub, headers, b"notjpeg")
+        with self.assertRaises(control.RequestError):
+            control.lend_frame_raw(hub, headers, JPEG + b"y" * control.LEND_MAX_FRAME_BYTES)
+
     def test_events_are_capped_and_drained(self):
         hub, _ = self.make()
         hub.open("a", "A")
@@ -287,6 +324,65 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(self.api_post("/v1/lend/close", {"id": "rt1"})[0], 200)
         self.assertEqual(self.call(self.viewer_port, "/lend/rt1", method="GET", auth=None)[0], 404)
         self.assertEqual(self.api_post("/v1/lend/events", {"id": "rt1"}), (200, {"events": []}))
+
+    def raw_post(self, payload, headers=None, auth="Bearer " + TOKEN):
+        head = {"Content-Type": "application/octet-stream", "X-Lend-Id": "raw1", "X-Seq": "3", "X-W": "640", "X-H": "480", "X-Sent-Ms": "1700000000123"}
+        head.update(headers or {})
+        if auth is not None:
+            head["Authorization"] = auth
+        request = urllib.request.Request(f"http://127.0.0.1:{self.api_port}/v1/lend/frame-raw", data=payload, headers=head, method="POST")
+        try:
+            with urllib.request.urlopen(request, timeout=15) as response:
+                return response.status, response.read()
+        except urllib.error.HTTPError as error:
+            with error:
+                return error.code, error.read()
+
+    def test_frame_raw_needs_the_token(self):
+        self.assertEqual(self.raw_post(JPEG, auth=None)[0], 401)
+        self.assertEqual(self.raw_post(JPEG, auth="Bearer wrong")[0], 401)
+
+    def test_frame_raw_stores_and_the_viewer_gets_the_stamp(self):
+        self.api_post("/v1/lend/open", {"id": "raw1", "title": "t", "w": 10, "h": 10})
+        self.assertEqual(self.raw_post(JPEG), (200, b'{"ok":true}'))
+        status, body, headers = self.call(self.viewer_port, "/lend/raw1/frame?after=0", method="GET", auth=None)
+        self.assertEqual((status, body, headers["X-Seq"], headers["X-W"], headers["X-H"]), (200, JPEG, "3", "640", "480"))
+        self.assertEqual(headers["X-Sent-Ms"], "1700000000123")
+
+    def test_frame_raw_rejects_bad_input_and_caps_the_body_at_4mb(self):
+        self.api_post("/v1/lend/open", {"id": "raw2", "title": "t", "w": 10, "h": 10})
+        self.assertEqual(self.raw_post(b"notjpeg", {"X-Lend-Id": "raw2"})[0], 400)
+        self.assertEqual(self.raw_post(JPEG, {"X-Lend-Id": "Bad Id"})[0], 400)
+        self.assertEqual(self.raw_post(JPEG, {"X-Lend-Id": "raw2", "X-Seq": "nope"})[0], 400)
+        self.assertEqual(self.raw_post(JPEG, {"X-Lend-Id": "never-opened"})[0], 400)
+        self.assertEqual(self.raw_post(JPEG + b"y" * 1_500_000, {"X-Lend-Id": "raw2"})[0], 200)  # past the 256 KB json cap
+        try:
+            status = self.raw_post(JPEG + b"y" * (4 * 1024 * 1024 + 10), {"X-Lend-Id": "raw2"})[0]
+        except OSError:
+            status = 400  # the server refused on the length alone and hung up before the client finished sending
+        self.assertEqual(status, 400)
+
+    def test_old_json_frame_still_works_and_has_no_sent_stamp(self):
+        self.api_post("/v1/lend/open", {"id": "old1", "title": "t", "w": 10, "h": 10})
+        self.assertEqual(self.api_post("/v1/lend/frame", self.frame_payload("old1", seq=2))[0], 200)
+        _, _, headers = self.call(self.viewer_port, "/lend/old1/frame?after=0", method="GET", auth=None)
+        self.assertEqual(headers["X-Sent-Ms"], "0")
+
+    def test_viewer_wakes_at_once_when_a_frame_is_stored(self):
+        self.api_post("/v1/lend/open", {"id": "wake1", "title": "t", "w": 10, "h": 10})
+        out = []
+        thread = threading.Thread(target=lambda: out.append((self.call(self.viewer_port, "/lend/wake1/frame?after=0", method="GET", auth=None)[0], time.monotonic())))
+        thread.start()
+        time.sleep(0.3)
+        stored = time.monotonic()
+        self.assertEqual(self.api_post("/v1/lend/frame", self.frame_payload("wake1", seq=1))[0], 200)
+        thread.join(5)
+        self.assertEqual(out[0][0], 200)
+        self.assertLess(out[0][1] - stored, 0.2)
+
+    def test_page_logs_input_to_frame_latency(self):
+        page = control.lend_page("T", "a").decode()
+        self.assertIn("__lendLatency", page)
 
     def test_viewer_does_not_serve_control_routes(self):
         self.assertEqual(self.call(self.viewer_port, "/v1/desktop", {"steps": []}, auth=None)[0], 404)

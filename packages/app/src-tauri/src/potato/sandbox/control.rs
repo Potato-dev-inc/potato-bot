@@ -84,6 +84,8 @@ pub enum ControlError {
     Rejected(String),
     /// 500: the action itself failed.
     Failed(String),
+    /// 404: the service has no such route (an older guest).
+    NotFound,
     /// The reply was not what the protocol says.
     BadReply(String),
     /// The request was not sent: an action is outside what the guest allows.
@@ -97,6 +99,7 @@ impl ControlError {
             ControlError::Unauthorized => "SANDBOX_UNAUTHORIZED",
             ControlError::Rejected(_) => "SANDBOX_REJECTED",
             ControlError::Failed(_) => "SANDBOX_ACTION_FAILED",
+            ControlError::NotFound => "SANDBOX_ROUTE_MISSING",
             ControlError::BadReply(_) => "SANDBOX_BAD_REPLY",
             ControlError::Invalid(_) => "SANDBOX_INVALID_ACTION",
         }
@@ -108,6 +111,7 @@ impl ControlError {
             ControlError::Unauthorized => "The sandbox did not accept the app's key. Stop it and start it again.".to_string(),
             ControlError::Rejected(why) => format!("The sandbox refused that action: {why}."),
             ControlError::Failed(why) => format!("That action did not work: {why}. Look at the screen again (computer_observe) before you try another step."),
+            ControlError::NotFound => "The sandbox does not know that request (it is an older version).".to_string(),
             ControlError::BadReply(_) => "The sandbox sent an answer the app could not read. Call computer_observe once more; if it still fails, tell the person.".to_string(),
             ControlError::Invalid(why) => format!("That action cannot be sent: {why}."),
         }
@@ -237,6 +241,13 @@ pub struct ActResult {
     pub observation: Option<Observation>,
 }
 
+/// What a request carries.
+enum Payload<'a> {
+    None,
+    Json(&'a Value),
+    Raw(&'a [(&'a str, String)], &'a [u8]),
+}
+
 #[derive(Clone)]
 pub struct ControlClient {
     base: String,
@@ -267,6 +278,19 @@ impl ControlClient {
         self.call_method("POST", path, Some(body))
     }
 
+    /// A POST whose body is raw bytes with extra headers. Same retry rule.
+    fn call_raw(&self, path: &str, headers: &[(&str, String)], bytes: &[u8]) -> Result<Value, ControlError> {
+        let deadline = std::time::Instant::now() + CONNECT_WAIT;
+        loop {
+            match self.send_payload("POST", path, Payload::Raw(headers, bytes)) {
+                Err(ControlError::Unreachable(kind)) if kind == REFUSED && std::time::Instant::now() < deadline => {
+                    std::thread::sleep(CONNECT_STEP);
+                }
+                other => return other,
+            }
+        }
+    }
+
     /// The same retry rule for any method (the MCP routes use GET and PUT as well as POST).
     fn call_method(&self, method: &str, path: &str, body: Option<Value>) -> Result<Value, ControlError> {
         let deadline = std::time::Instant::now() + CONNECT_WAIT;
@@ -281,12 +305,24 @@ impl ControlClient {
     }
 
     fn send(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Value, ControlError> {
+        self.send_payload(method, path, body.map_or(Payload::None, Payload::Json))
+    }
+
+    fn send_payload(&self, method: &str, path: &str, payload: Payload) -> Result<Value, ControlError> {
         let url = format!("{}{path}", self.base);
         let auth = format!("Bearer {}", self.token.expose());
         let request = self.agent.request(method, &url).set("Authorization", &auth);
-        let sent = match body {
-            Some(body) => request.send_json(body.clone()),
-            None => request.call(),
+        let raw = matches!(payload, Payload::Raw(..));
+        let sent = match payload {
+            Payload::Json(body) => request.send_json(body.clone()),
+            Payload::Raw(headers, bytes) => {
+                let mut request = request.set("Content-Type", "application/octet-stream");
+                for (name, value) in headers {
+                    request = request.set(name, value);
+                }
+                request.send_bytes(bytes)
+            }
+            Payload::None => request.call(),
         };
         match sent {
             Ok(resp) => {
@@ -308,6 +344,8 @@ impl ControlClient {
                 Err(match code {
                     401 => ControlError::Unauthorized,
                     400 => ControlError::Rejected(why),
+                    // Only the raw route reports a missing route apart: the mirror falls back to JSON on it.
+                    404 if raw => ControlError::NotFound,
                     _ => ControlError::Failed(why),
                 })
             }
@@ -339,6 +377,12 @@ impl ControlClient {
     /// One POST to any `/v1` route (Lend an App's `/v1/lend/*` calls). Same retry rule as the others.
     pub fn post(&self, path: &str, body: Value) -> Result<Value, ControlError> {
         self.call(path, body)
+    }
+
+    /// One POST with a raw byte body (`Content-Type: application/octet-stream`) and extra headers (Lend an App's raw frames).
+    /// Same auth, timeouts and retry rule as `post`.
+    pub fn post_raw(&self, path: &str, headers: &[(&str, String)], bytes: &[u8]) -> Result<Value, ControlError> {
+        self.call_raw(path, headers, bytes)
     }
 
     /// The MCP tools the guest offers (GET /v1/mcp/tools).

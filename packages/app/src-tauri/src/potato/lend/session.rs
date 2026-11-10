@@ -161,6 +161,11 @@ impl Input {
     }
 }
 
+/// Pure: did the foreground window change between two looks?
+pub fn foreground_changed(before: Hwnd, after: Hwnd) -> bool {
+    before != after
+}
+
 /// Every call to Windows the lend layer makes.
 pub trait Os: Send + Sync + 'static {
     type Snap: Send + Sync;
@@ -168,6 +173,13 @@ pub trait Os: Send + Sync + 'static {
     fn info(&self, h: Hwnd) -> Result<WinInfo>;
     fn is_alive(&self, h: Hwnd) -> bool;
     fn own_pid(&self) -> u32;
+    /// The window that has the foreground right now (0 for none). Read-only; used only to check that lending
+    /// and un-lending never change it.
+    fn foreground(&self) -> Hwnd {
+        0
+    }
+    /// Once, when a window is lent (the hub calls it before taking its lock): anything the window needs so its controls can be read (never activates it).
+    fn prepare(&self, _h: Hwnd) {}
     fn see_through(&self, h: Hwnd) -> Result<Saved>;
     fn restore(&self, h: Hwnd, saved: Saved) -> Result<()>;
     /// Bring a minimized window back WITHOUT activating it. Does nothing when it is not minimized.
@@ -269,12 +281,24 @@ impl<O: Os> Core<O> {
         self.entries.iter().position(|e| e.id == id).ok_or(LendError::NoSuchApp)
     }
 
+    /// Log (debug) the foreground window before and after `what`, and warn if it changed.
+    fn watch_foreground(&self, what: &str, hwnd: Hwnd, before: Hwnd) {
+        let after = self.os.foreground();
+        tracing::debug!(target: "potato::lend", hwnd, before, after, "foreground around {what}");
+        if foreground_changed(before, after) {
+            tracing::warn!(target: "potato::lend", hwnd, before, after, "the foreground window changed while a lend {what}");
+        }
+    }
+
     /// Stop the border and put the window back as it was. The window may already be gone.
     fn release(&self, mut entry: Entry<O>) {
+        let before = self.os.foreground();
         if let Some(saved) = entry.saved.take() {
             let _ = self.os.restore(entry.hwnd, saved);
         }
+        let hwnd = entry.hwnd;
         drop(entry.border);
+        self.watch_foreground("ended", hwnd, before);
     }
 
     fn show(&self, i: usize) {
@@ -304,6 +328,7 @@ impl<O: Os> Core<O> {
         if info.pid == self.os.own_pid() {
             return Err(LendError::Os("This is one of our own windows, so it can't be lent.".into()));
         }
+        let fg_before = self.os.foreground();
         let border = self.os.start_border(hwnd, info.app_name.clone())?;
         let saved = if mode == Mode::Hidden {
             // The border is dropped (stopped) if this fails.
@@ -312,6 +337,7 @@ impl<O: Os> Core<O> {
             None
         };
         border.set_state(shown_for(mode, Phase::Free));
+        self.watch_foreground("started", hwnd, fg_before);
         let id = format!("l{}", self.next);
         self.next += 1;
         let entry = Entry {
@@ -635,6 +661,12 @@ mod real {
         fn own_pid(&self) -> u32 {
             std::process::id()
         }
+        fn foreground(&self) -> Hwnd {
+            win::foreground()
+        }
+        fn prepare(&self, h: Hwnd) {
+            a11y::nudge_chromium(h);
+        }
         fn see_through(&self, h: Hwnd) -> Result<Saved> {
             let s = hide::make_see_through(h)?;
             Ok(Saved { ex_style: s.ex_style, was_layered: s.was_layered, alpha: s.alpha, was_topmost: s.was_topmost })
@@ -652,7 +684,7 @@ mod real {
             Ok(Box::new(WinBorder(Border::start(h, label)?)))
         }
         fn snapshot(&self, h: Hwnd) -> Result<a11y::Snapshot> {
-            a11y::snapshot(h, SNAPSHOT_MAX_NODES, SNAPSHOT_TIMEOUT_MS)
+            a11y::snapshot_nudged(h, SNAPSHOT_MAX_NODES, SNAPSHOT_TIMEOUT_MS)
         }
         fn find(&self, snap: &a11y::Snapshot, r: &str) -> Option<a11y::Element> {
             a11y::find(snap, r).cloned()
@@ -796,6 +828,8 @@ impl Hub {
     }
 
     pub fn lend(&self, hwnd: Hwnd, mode: Mode) -> Result<LentView> {
+        // Ask a Chromium window for its controls BEFORE taking the registry lock (it can take up to ~1 s; once per window).
+        RealOs.prepare(hwnd);
         self.change(|c| c.lend(hwnd, mode))
     }
     pub fn bring_back(&self, id: &str) -> Result<()> {

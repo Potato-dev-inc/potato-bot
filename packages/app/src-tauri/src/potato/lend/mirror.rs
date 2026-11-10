@@ -2,7 +2,8 @@
 //!
 //! Every lent app gets two threads. While the sandbox runs they keep a viewer window open on the bot's desktop
 //! (`POST /v1/lend/open`).
-//! - The FRAME thread (`Worker`) sends a JPEG of the lent window (`/v1/lend/frame`, long side at most 1280 px, quality 60):
+//! - The FRAME thread (`Worker`) sends a JPEG of the lent window (raw bytes to `/v1/lend/frame-raw`, or base64 JSON to
+//!   `/v1/lend/frame` when the guest is old and answers 404; long side at most 1280 px, quality 60):
 //!   every 100 ms while the picture is changing, every 500 ms when it is still, skipped while the pixels are unchanged
 //!   (keep-alive every 5 s). Right after input is applied it sends a frame at once, and again 120 ms later.
 //! - The INPUT thread (`Pump`) long-polls `/v1/lend/events` (the guest holds the request until an event arrives, at
@@ -64,6 +65,8 @@ const MAX_EVENTS: usize = 200;
 pub enum LinkError {
     /// The sandbox is not up (or cannot be reached): try again later.
     NotRunning,
+    /// The guest has no such route (404): an older guest.
+    NotFound,
     Failed(String),
 }
 
@@ -73,6 +76,8 @@ pub trait Link: Send + Sync {
     fn ready(&self) -> bool;
     /// POST a JSON body to a `/v1/lend/*` route.
     fn post(&self, path: &str, body: &Value) -> Result<Value, LinkError>;
+    /// POST raw bytes (`application/octet-stream`) with extra headers to a `/v1/lend/*` route.
+    fn post_raw(&self, path: &str, headers: &[(&str, String)], body: &[u8]) -> Result<Value, LinkError>;
 }
 
 /// One picture of the lent window. `bgra`: the bytes are B,G,R,A (as Windows gives them) instead of R,G,B,A.
@@ -279,12 +284,14 @@ pub struct Worker {
     burst_at: Option<i64>,
     /// The next frame is sent even if the fingerprint did not change (right after input).
     force_next: bool,
+    /// Frames go out as raw bytes; false once the guest answered 404 (an old guest) until the viewer is opened again.
+    raw_ok: bool,
 }
 
 /// A cheap fingerprint of a picture: its size and every 7th pixel of every 4th row (not every byte; 8 MB of hashing in a debug
 /// build costs real time). A change smaller than that can slip through, so a frame is always forced right after input and the
 /// keep-alive resends the picture every 5 s.
-fn hash_of(shot: &Shot) -> u64 {
+pub fn hash_of(shot: &Shot) -> u64 {
     let mut h = DefaultHasher::new();
     (shot.w, shot.h).hash(&mut h);
     let row_bytes = shot.w as usize * 4;
@@ -327,6 +334,12 @@ pub fn is_blank(shot: &Shot) -> bool {
         }
     }
     true
+}
+
+/// Pure: the headers of a raw frame post. `w` and `h` are the WINDOW's size; `sent_ms` is unix ms at send time (the viewer
+/// logs how long input took to come back as a picture).
+pub fn raw_frame_headers(id: &str, seq: u64, w: u32, h: u32, sent_ms: u64) -> Vec<(&'static str, String)> {
+    vec![("X-Lend-Id", id.to_string()), ("X-Seq", seq.to_string()), ("X-W", w.to_string()), ("X-H", h.to_string()), ("X-Sent-Ms", sent_ms.to_string())]
 }
 
 fn unix_ms() -> u64 {
@@ -372,6 +385,7 @@ impl Worker {
             seen_applied: 0,
             burst_at: None,
             force_next: false,
+            raw_ok: true,
         }
     }
 
@@ -415,6 +429,8 @@ impl Worker {
             self.last_hash = None; // the first frame goes out at once
             self.last_capture = None;
             self.last_events = None;
+            self.raw_ok = true; // the guest may have been updated since
+
         }
         Flow::Go
     }
@@ -498,16 +514,11 @@ impl Worker {
             return Flow::Go;
         };
         self.seq += 1;
-        // w and h are the WINDOW's size (what event pixels mean); the JPEG itself may be smaller.
-        let body = json!({
-            "id": s.id, "seq": self.seq, "w": shot.w, "h": shot.h, "ts": captured_ms,
-            "jpeg_b64": base64::engine::general_purpose::STANDARD.encode(&jpeg),
-        });
-        let mut sent = s.link.post("/v1/lend/frame", &body);
+        let mut sent = self.send_frame(&jpeg, &shot, captured_ms);
         if matches!(sent, Err(LinkError::Failed(_))) {
             // The guest forgot the app (service restart, or closed): "app is not open". Open again, send once more.
             if s.link.post("/v1/lend/open", &self.open_body(shot.w, shot.h)).is_ok() {
-                sent = s.link.post("/v1/lend/frame", &body);
+                sent = self.send_frame(&jpeg, &shot, captured_ms);
             }
         }
         match sent {
@@ -521,6 +532,24 @@ impl Worker {
             Err(_) => s.opened.store(false, Ordering::SeqCst),
         }
         Flow::Go
+    }
+
+    /// One frame post: raw bytes, or (old guest, or after a 404 on the raw route) base64 JSON. w and h are the WINDOW's size
+    /// (what event pixels mean); the JPEG itself may be smaller.
+    fn send_frame(&mut self, jpeg: &[u8], shot: &Shot, captured_ms: u64) -> Result<Value, LinkError> {
+        let s = self.shared.clone();
+        if self.raw_ok {
+            let headers = raw_frame_headers(&s.id, self.seq, shot.w, shot.h, unix_ms());
+            match s.link.post_raw("/v1/lend/frame-raw", &headers, jpeg) {
+                Err(LinkError::NotFound) => self.raw_ok = false,
+                other => return other,
+            }
+        }
+        let body = json!({
+            "id": s.id, "seq": self.seq, "w": shot.w, "h": shot.h, "ts": captured_ms,
+            "jpeg_b64": base64::engine::general_purpose::STANDARD.encode(jpeg),
+        });
+        s.link.post("/v1/lend/frame", &body)
     }
 
     /// Close the viewer (if it was opened).
@@ -656,15 +685,25 @@ impl Link for RealLink {
 
     fn post(&self, path: &str, body: &Value) -> Result<Value, LinkError> {
         let sandbox = crate::potato::sandbox_host::existing_sandbox().ok_or(LinkError::NotRunning)?;
-        match sandbox.lend_post(path, body) {
-            Ok(v) => Ok(v),
-            Err(e) => match e.code {
-                "SANDBOX_NOT_RUNNING" | "SANDBOX_UNREACHABLE" => Err(LinkError::NotRunning),
-                // The guest took it but did not answer in JSON: that is fine for open, frame and close.
-                "SANDBOX_BAD_REPLY" => Ok(Value::Null),
-                code => Err(LinkError::Failed(code.to_string())),
-            },
-        }
+        link_result(sandbox.lend_post(path, body))
+    }
+
+    fn post_raw(&self, path: &str, headers: &[(&str, String)], body: &[u8]) -> Result<Value, LinkError> {
+        let sandbox = crate::potato::sandbox_host::existing_sandbox().ok_or(LinkError::NotRunning)?;
+        link_result(sandbox.lend_post_raw(path, headers, body))
+    }
+}
+
+fn link_result(result: crate::potato::sandbox::SbxResult<Value>) -> Result<Value, LinkError> {
+    match result {
+        Ok(v) => Ok(v),
+        Err(e) => match e.code {
+            "SANDBOX_NOT_RUNNING" | "SANDBOX_UNREACHABLE" => Err(LinkError::NotRunning),
+            "SANDBOX_ROUTE_MISSING" => Err(LinkError::NotFound),
+            // The guest took it but did not answer in JSON: that is fine for open, frame and close.
+            "SANDBOX_BAD_REPLY" => Ok(Value::Null),
+            code => Err(LinkError::Failed(code.to_string())),
+        },
     }
 }
 

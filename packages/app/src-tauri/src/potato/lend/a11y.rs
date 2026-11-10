@@ -10,8 +10,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use windows::core::Interface;
-use windows::Win32::Foundation::{HWND, POINT};
+use windows::core::{Interface, BOOL};
+use windows::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::ScreenToClient;
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
@@ -20,11 +20,16 @@ use windows::Win32::UI::Accessibility::{
     CUIAutomation, IUIAutomation, IUIAutomationCacheRequest, IUIAutomationElement,
     IUIAutomationTextPattern, IUIAutomationValuePattern, TreeScope_Subtree,
     UIA_BoundingRectanglePropertyId, UIA_ControlTypePropertyId, UIA_IsEnabledPropertyId,
-    UIA_IsKeyboardFocusablePropertyId, UIA_IsOffscreenPropertyId, UIA_NamePropertyId,
-    UIA_TextPatternId, UIA_ValuePatternId,
+    UIA_IsKeyboardFocusablePropertyId, UIA_IsOffscreenPropertyId, UIA_IsPasswordPropertyId,
+    UIA_NamePropertyId, UIA_NativeWindowHandlePropertyId, UIA_TextPatternId, UIA_ValuePatternId,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    EnumChildWindows, GetWindowLongPtrW, SendMessageTimeoutW, GWL_STYLE, OBJID_CLIENT,
+    SMTO_ABORTIFHUNG, WM_GETOBJECT,
 };
 
-use super::{Hwnd, LendError, Rect, Result};
+use super::{is_chromium_class, win, Hwnd, LendError, Rect, Result, FEW_ELEMENTS};
+use crate::potato::lend_tools::is_password_field;
 
 /// Most characters read from a document through the TextPattern.
 const MAX_TEXT_CHARS: i32 = 4000;
@@ -40,6 +45,9 @@ pub struct Element {
     pub rect: Rect,
     pub enabled: bool,
     pub focusable: bool,
+    /// A password box (by name, UIA `IsPassword`, or the Win32 `ES_PASSWORD` style). Its value is never read.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub password: bool,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -59,6 +67,7 @@ pub(crate) struct RawNode {
     pub enabled: bool,
     pub focusable: bool,
     pub offscreen: bool,
+    pub password: bool,
 }
 
 /// Short role name for a `UIA_*ControlTypeId` value; unknown ids map to "other".
@@ -151,10 +160,12 @@ pub(crate) fn build_elements(raw: &[RawNode], offset: (i32, i32)) -> Vec<Element
             r#ref: format!("e{}", out.len() + 1),
             role: role.to_string(),
             name: node.name.clone(),
-            value: node.value.clone().filter(|v| !v.is_empty()),
+            // A password box never shows its value, whatever the walk read.
+            value: node.value.clone().filter(|v| !v.is_empty() && !node.password),
             rect: Rect { x: r.x + offset.0, y: r.y + offset.1, w: r.w, h: r.h },
             enabled: node.enabled,
             focusable: node.focusable,
+            password: node.password,
         });
     }
     out
@@ -264,6 +275,8 @@ fn walk_with_uia(
         cache.AddProperty(UIA_IsEnabledPropertyId)?;
         cache.AddProperty(UIA_IsKeyboardFocusablePropertyId)?;
         cache.AddProperty(UIA_IsOffscreenPropertyId)?;
+        cache.AddProperty(UIA_IsPasswordPropertyId)?;
+        cache.AddProperty(UIA_NativeWindowHandlePropertyId)?;
         cache.AddPattern(UIA_ValuePatternId)?;
         cache.AddPattern(UIA_TextPatternId)?;
     }
@@ -307,11 +320,21 @@ fn read_raw(el: &IUIAutomationElement) -> Option<RawNode> {
     let focusable =
         unsafe { el.CachedIsKeyboardFocusable() }.map(|b| b.as_bool()).unwrap_or(false);
     let offscreen = unsafe { el.CachedIsOffscreen() }.map(|b| b.as_bool()).unwrap_or(true);
-    let value = cached_value(el);
-    let value = if needs_text_fallback(role, value.as_deref()) {
-        text_value(el).or(value)
+    let is_password_prop = unsafe { el.CachedIsPassword() }.map(|b| b.as_bool()).unwrap_or(false);
+    let native = unsafe { el.CachedNativeWindowHandle() }.map(|h| h.0 as isize).unwrap_or(0);
+    // The name rule only applies to edit controls ("Show password" on a button is not a password box).
+    let name_for_rule = if role == "edit" { name.as_str() } else { "" };
+    let password = is_password_field(name_for_rule, is_password_prop, native_has_es_password(native));
+    // A password box's value is never even read.
+    let value = if password {
+        None
     } else {
-        value
+        let value = cached_value(el);
+        if needs_text_fallback(role, value.as_deref()) {
+            text_value(el).or(value)
+        } else {
+            value
+        }
     };
     Some(RawNode {
         control_type,
@@ -326,7 +349,94 @@ fn read_raw(el: &IUIAutomationElement) -> Option<RawNode> {
         enabled,
         focusable,
         offscreen,
+        password,
     })
+}
+
+/// Win32 `ES_PASSWORD` edit style.
+const ES_PASSWORD: isize = 0x20;
+
+/// Pure: is this window a standard "Edit" control with the `ES_PASSWORD` bit? (The bit means other things on other classes.)
+pub(crate) fn style_has_es_password(class: &str, style: isize) -> bool {
+    class.eq_ignore_ascii_case("Edit") && style & ES_PASSWORD != 0
+}
+
+/// The element's own window handle (0 when it has none) is an Edit control with `ES_PASSWORD`. Read-only.
+fn native_has_es_password(native: isize) -> bool {
+    if native == 0 || !win::is_alive(native) {
+        return false;
+    }
+    let style = unsafe { GetWindowLongPtrW(win::hwnd(native), GWL_STYLE) };
+    style_has_es_password(&win::class_name(native), style)
+}
+
+// ---- Chromium / Electron: ask the window for its accessibility tree ----------------------------------
+
+const NUDGE_TIMEOUT_MS: u32 = 500;
+const NUDGE_RETRY_WAIT: Duration = Duration::from_millis(300);
+const RENDER_CLASS: &str = "Chrome_RenderWidgetHostHWND";
+
+fn nudged() -> &'static Mutex<std::collections::HashSet<Hwnd>> {
+    static SET: std::sync::OnceLock<Mutex<std::collections::HashSet<Hwnd>>> = std::sync::OnceLock::new();
+    SET.get_or_init(Default::default)
+}
+
+/// Send `WM_GETOBJECT(OBJID_CLIENT)` to one window, as a screen reader does. Never activates or focuses anything.
+fn send_get_object(h: HWND) {
+    let mut result = 0usize;
+    unsafe {
+        let _ = SendMessageTimeoutW(
+            h,
+            WM_GETOBJECT,
+            WPARAM(0),
+            LPARAM(OBJID_CLIENT.0 as isize),
+            SMTO_ABORTIFHUNG,
+            NUDGE_TIMEOUT_MS,
+            Some(&mut result),
+        );
+    }
+}
+
+unsafe extern "system" fn find_render_child(child: HWND, lparam: LPARAM) -> BOOL {
+    let found = unsafe { &mut *(lparam.0 as *mut Option<Hwnd>) };
+    if win::class_name(child.0 as isize) == RENDER_CLASS {
+        *found = Some(child.0 as isize);
+        return BOOL(0);
+    }
+    BOOL(1)
+}
+
+/// For a Chromium or Electron window, once per window: send `WM_GETOBJECT` to it and to its
+/// `Chrome_RenderWidgetHostHWND` child so it builds its accessibility tree. Other windows and repeats do nothing.
+/// Returns true when the message was sent.
+pub fn nudge_chromium(h: Hwnd) -> bool {
+    if !win::is_alive(h) || !is_chromium_class(&win::class_name(h)) || !nudged().lock().unwrap_or_else(|e| e.into_inner()).insert(h) {
+        return false;
+    }
+    send_get_object(win::hwnd(h));
+    let mut found: Option<Hwnd> = None;
+    unsafe {
+        let _ = EnumChildWindows(Some(win::hwnd(h)), Some(find_render_child), LPARAM(&mut found as *mut Option<Hwnd> as isize));
+    }
+    if let Some(child) = found {
+        send_get_object(win::hwnd(child));
+    }
+    true
+}
+
+/// `snapshot`, with the Chromium nudge first. When a Chromium window still shows fewer than `FEW_ELEMENTS`
+/// elements, wait a moment and look once more (it builds its tree after the first ask).
+pub fn snapshot_nudged(h: Hwnd, max_nodes: usize, timeout_ms: u64) -> Result<Snapshot> {
+    nudge_chromium(h);
+    let first = snapshot(h, max_nodes, timeout_ms)?;
+    if first.elements.len() >= FEW_ELEMENTS || !is_chromium_class(&win::class_name(h)) {
+        return Ok(first);
+    }
+    std::thread::sleep(NUDGE_RETRY_WAIT);
+    match snapshot(h, max_nodes, timeout_ms) {
+        Ok(second) if second.elements.len() >= first.elements.len() => Ok(second),
+        _ => Ok(first),
+    }
 }
 
 /// Documents and edit fields whose ValuePattern gave nothing may still expose their text
@@ -369,6 +479,7 @@ mod tests {
             enabled: true,
             focusable: false,
             offscreen,
+            password: false,
         }
     }
 
@@ -435,6 +546,28 @@ mod tests {
         assert!(!needs_text_fallback("document", Some("typed")));
         assert!(!needs_text_fallback("button", None));
         assert!(!needs_text_fallback("text", Some("")));
+    }
+
+    #[test]
+    fn password_node_never_shows_its_value() {
+        let mut n = node(50004, "PIN", Some("1234"), 10, 10, false);
+        n.password = true;
+        let els = build_elements(&[n], (0, 0));
+        assert!(els[0].password);
+        assert_eq!(els[0].value, None);
+        let json = serde_json::to_value(&els[0]).unwrap();
+        assert_eq!(json["password"], true);
+        let plain = build_elements(&[node(50004, "Name", Some("x"), 10, 10, false)], (0, 0));
+        assert!(!plain[0].password);
+        assert!(serde_json::to_value(&plain[0]).unwrap().get("password").is_none());
+    }
+
+    #[test]
+    fn es_password_needs_the_edit_class() {
+        assert!(style_has_es_password("Edit", 0x5001_0020));
+        assert!(style_has_es_password("edit", 0x20));
+        assert!(!style_has_es_password("Edit", 0x5001_0000));
+        assert!(!style_has_es_password("Button", 0x20));
     }
 
     #[test]

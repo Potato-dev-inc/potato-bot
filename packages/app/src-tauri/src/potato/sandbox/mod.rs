@@ -248,6 +248,10 @@ pub trait Sandbox: Send + Sync {
     fn lend_post(&self, _path: &str, _body: &serde_json::Value) -> SbxResult<serde_json::Value> {
         Err(SandboxError::new("SANDBOX_NOT_RUNNING", "The computer is not running."))
     }
+    /// Like `lend_post`, but the body is raw bytes with extra headers (a raw JPEG frame).
+    fn lend_post_raw(&self, _path: &str, _headers: &[(&str, String)], _body: &[u8]) -> SbxResult<serde_json::Value> {
+        Err(SandboxError::new("SANDBOX_NOT_RUNNING", "The computer is not running."))
+    }
     /// Reads a file inside the sandbox (at most `max` bytes).
     fn read_file(&self, _path: &str, _max: usize) -> SbxResult<Vec<u8>> {
         Err(SandboxError::new("SANDBOX_FILES_UNSUPPORTED", "This sandbox cannot read files."))
@@ -754,6 +758,11 @@ impl Sandbox for WslSandbox {
         let client = self.lifecycle.running_client().ok_or_else(|| SandboxError::new("SANDBOX_NOT_RUNNING", "The computer is not running."))?;
         // Not `touch`: the mirror must not keep the computer from its idle stop.
         Ok(client.post(path, body.clone())?)
+    }
+
+    fn lend_post_raw(&self, path: &str, headers: &[(&str, String)], body: &[u8]) -> SbxResult<serde_json::Value> {
+        let client = self.lifecycle.running_client().ok_or_else(|| SandboxError::new("SANDBOX_NOT_RUNNING", "The computer is not running."))?;
+        Ok(client.post_raw(path, headers, body)?)
     }
 
     fn secret_config(&self, servers: &serde_json::Value) -> SbxResult<()> {

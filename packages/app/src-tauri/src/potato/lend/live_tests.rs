@@ -12,7 +12,7 @@ use serde_json::json;
 use crate::potato::lend::{a11y, capture};
 use crate::potato::lend::session::{hub, Mode};
 use crate::potato::lend::Hwnd;
-use crate::potato::lend_tools::{centre, is_password_field, observe_json, ObsElem};
+use crate::potato::lend_tools::{centre, observe_json, ObsElem};
 use crate::potato::live;
 
 fn step(msg: &str) {
@@ -26,12 +26,13 @@ fn obs(e: &a11y::Element) -> ObsElem {
         name: e.name.clone(),
         value: e.value.clone(),
         rect: (e.rect.x, e.rect.y, e.rect.w, e.rect.h),
+        password: e.password,
     }
 }
 
 /// The text area: the first edit or document control that is not a password box.
 fn editor_of(snap: &a11y::Snapshot) -> Option<a11y::Element> {
-    snap.elements.iter().find(|e| (e.role == "edit" || e.role == "document") && !is_password_field(&obs(e))).cloned()
+    snap.elements.iter().find(|e| (e.role == "edit" || e.role == "document") && !obs(e).is_password()).cloned()
 }
 
 fn editor_value(snap: &a11y::Snapshot) -> String {
@@ -284,5 +285,30 @@ fn live_minimize_hides() {
     assert_eq!(ex(), ex_before, "style not restored");
     assert_eq!(topmost(), was_topmost, "topmost not restored");
     assert_eq!(unsafe { GetForegroundWindow() }.0 as isize, fg_before, "the foreground window changed");
+    step("done");
+}
+
+#[test]
+#[ignore = "live: needs a real Chrome or Electron window; set LEND_LIVE_HWND and run with --ignored --nocapture"]
+fn live_chromium_labels() {
+    use crate::potato::lend::win;
+
+    let Some(hwnd) = std::env::var("LEND_LIVE_HWND").ok().and_then(|s| s.trim().parse::<Hwnd>().ok()) else {
+        println!("[live] skipped: set LEND_LIVE_HWND to the decimal handle of an open Chrome or Electron window");
+        return;
+    };
+    let class = win::class_name(hwnd);
+    println!("[live] window class: {class}");
+    let fg_before = win::foreground();
+
+    let before = a11y::snapshot(hwnd, 400, 3000).map(|s| s.elements.len()).unwrap_or(0);
+    println!("[live] elements before the nudge: {before}");
+    let sent = a11y::nudge_chromium(hwnd);
+    println!("[live] nudge sent: {sent}");
+    sleep(Duration::from_millis(300));
+    let after = a11y::snapshot(hwnd, 400, 3000).map(|s| s.elements.len()).unwrap_or(0);
+    println!("[live] elements after the nudge: {after}");
+
+    assert_eq!(win::foreground(), fg_before, "the foreground window changed");
     step("done");
 }

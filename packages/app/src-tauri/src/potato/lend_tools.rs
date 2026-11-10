@@ -10,8 +10,8 @@
 //! so the window's client origin is subtracted.
 //! A `ref` already is in client pixels (the centre of the element's rectangle in the latest snapshot).
 //!
-//! The bot never types into a password box: a click on an edit control whose name says password marks the app, and `type` is
-//! refused until a different click or key.
+//! The bot never types into a password box: a click on a password box (name says password, UIA `IsPassword`, or a Win32
+//! `ES_PASSWORD` edit) marks the app, and `type` is refused until a different click or key. Its value is never listed.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -60,6 +60,15 @@ pub struct ObsElem {
     pub value: Option<String>,
     /// Client pixels: x, y, w, h.
     pub rect: (i32, i32, i32, i32),
+    /// The snapshot found a password box (UIA `IsPassword` or `ES_PASSWORD`; the name rule is applied by `is_password`).
+    pub password: bool,
+}
+
+impl ObsElem {
+    /// A password box by any of the three signs.
+    pub fn is_password(&self) -> bool {
+        self.password || (self.role == "edit" && is_password_field(&self.name, false, false))
+    }
 }
 
 // ---- arguments -------------------------------------------------------------------------------------
@@ -225,7 +234,7 @@ pub fn observe_json(view: &LentView, elems: &[ObsElem], truncated: bool, image_s
             row.insert("ref".into(), json!(e.r#ref));
             row.insert("role".into(), json!(e.role));
             row.insert("name".into(), json!(clip(&e.name)));
-            if let Some(v) = e.value.as_deref().filter(|v| !v.is_empty()) {
+            if let Some(v) = e.value.as_deref().filter(|v| !v.is_empty() && !e.is_password()) {
                 row.insert("value".into(), json!(clip(v)));
             }
             Value::Object(row)
@@ -249,13 +258,22 @@ pub fn centre(e: &ObsElem) -> (i32, i32) {
     (e.rect.0 + e.rect.2 / 2, e.rect.1 + e.rect.3 / 2)
 }
 
-/// Does this element look like a password box? An edit control whose name says so, in English, Chinese, Japanese or Korean.
-pub fn is_password_field(e: &ObsElem) -> bool {
-    if e.role != "edit" {
-        return false;
+/// Is this field a password box? Its name says so (English, Chinese, Japanese or Korean), or UIA `IsPassword` is true,
+/// or it is a Win32 edit with `ES_PASSWORD`. The caller applies the name rule to edit controls only.
+pub fn is_password_field(name: &str, is_password_prop: bool, has_es_password: bool) -> bool {
+    if is_password_prop || has_es_password {
+        return true;
     }
-    let name = e.name.to_lowercase();
+    let name = name.to_lowercase();
     ["password", "passcode", "密碼", "密码", "パスワード", "비밀번호"].iter().any(|w| name.contains(w))
+}
+
+/// Told to the bot when a Chromium or Electron app gave (almost) no controls.
+pub const NO_LABELS_NOTE: &str = "No labels for this app; use x/y on the picture.";
+
+/// Pure: the "no labels" note, for a snapshot of `count` elements of a window of this class.
+pub fn no_labels_note(count: usize, class: &str) -> Option<&'static str> {
+    (count < crate::potato::lend::FEW_ELEMENTS && crate::potato::lend::is_chromium_class(class)).then_some(NO_LABELS_NOTE)
 }
 
 /// Is the smallest edit control holding the client point a password box?
@@ -264,7 +282,7 @@ pub fn password_at(elems: &[ObsElem], x: i32, y: i32) -> bool {
         .iter()
         .filter(|e| e.role == "edit" && x >= e.rect.0 && x < e.rect.0 + e.rect.2 && y >= e.rect.1 && y < e.rect.1 + e.rect.3)
         .min_by_key(|e| e.rect.2 as i64 * e.rect.3 as i64)
-        .is_some_and(is_password_field)
+        .is_some_and(ObsElem::is_password)
 }
 
 /// Windows wheel units for notches (positive = up).
@@ -297,7 +315,10 @@ mod os {
         (snap.elements.iter().map(obs_of).collect(), snap.truncated)
     }
     pub fn obs_of(e: &Elem) -> ObsElem {
-        ObsElem { r#ref: e.r#ref.clone(), role: e.role.clone(), name: e.name.clone(), value: e.value.clone(), rect: (e.rect.x, e.rect.y, e.rect.w, e.rect.h) }
+        ObsElem { r#ref: e.r#ref.clone(), role: e.role.clone(), name: e.name.clone(), value: e.value.clone(), rect: (e.rect.x, e.rect.y, e.rect.w, e.rect.h), password: e.password }
+    }
+    pub fn class_name(hwnd: isize) -> String {
+        crate::potato::lend::win::class_name(hwnd)
     }
     pub fn client_origin(hwnd: isize) -> Result<(i32, i32), LendError> {
         crate::potato::lend::win::client_origin_in_window(hwnd)
@@ -317,7 +338,10 @@ mod os {
         (Vec::new(), false)
     }
     pub fn obs_of(_: &Elem) -> ObsElem {
-        ObsElem { r#ref: String::new(), role: String::new(), name: String::new(), value: None, rect: (0, 0, 0, 0) }
+        ObsElem { r#ref: String::new(), role: String::new(), name: String::new(), value: None, rect: (0, 0, 0, 0), password: false }
+    }
+    pub fn class_name(_: isize) -> String {
+        String::new()
     }
     pub fn client_origin(_: isize) -> Result<(i32, i32), LendError> {
         Err(LendError::Unsupported)
@@ -376,6 +400,9 @@ fn observe(app: Option<&str>, image: bool, want_image: bool) -> Result<Value, Ca
     }
     let mut out = observe_json(&view, &elems, truncated, size);
     if let Some(map) = out.as_object_mut() {
+        if let Some(note) = no_labels_note(elems.len(), &os::class_name(view.hwnd)) {
+            map.insert("labels_note".into(), json!(note));
+        }
         match png {
             Some(png) if png.len() <= MAX_IMAGE_BYTES => {
                 use base64::Engine;
@@ -417,7 +444,7 @@ fn point_of(id: &str, hwnd: isize, target: &Target) -> Result<(i32, i32), CallEr
 fn marks_password(id: &str, target: &Target, point: (i32, i32)) -> bool {
     let hub = hub();
     match target {
-        Target::Ref(r) => hub.element(id, r).ok().flatten().is_some_and(|e| is_password_field(&os::obs_of(&e))),
+        Target::Ref(r) => hub.element(id, r).ok().flatten().is_some_and(|e| os::obs_of(&e).is_password()),
         Target::Point(..) => hub.snapshot_cached(id).is_some_and(|snap| password_at(&os::elems_of(&snap).0, point.0, point.1)),
     }
 }
@@ -509,3 +536,7 @@ impl Calls {
         Ok(answer)
     }
 }
+
+#[cfg(test)]
+#[path = "lend_tools_tests.rs"]
+mod tests;

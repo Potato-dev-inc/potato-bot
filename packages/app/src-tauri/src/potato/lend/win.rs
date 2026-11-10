@@ -128,6 +128,11 @@ pub(super) fn class_of(h: HWND) -> String {
     String::from_utf16_lossy(&buf[..n.max(0) as usize])
 }
 
+/// Window class name of a lend handle (empty when the window is gone). Read-only.
+pub fn class_name(h: Hwnd) -> String {
+    class_of(hwnd(h))
+}
+
 fn read_title(h: HWND) -> String {
     let len = unsafe { GetWindowTextLengthW(h) };
     if len <= 0 {

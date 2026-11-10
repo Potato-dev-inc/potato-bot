@@ -39,6 +39,16 @@ pub enum LendError {
     NoSuchApp,
 }
 
+/// Chromium and Electron windows (browsers and Electron apps): their top window class starts with this.
+/// They often expose almost no accessibility elements until something asks (see `a11y::nudge_chromium`).
+pub fn is_chromium_class(class: &str) -> bool {
+    const PREFIX: &str = "Chrome_WidgetWin_";
+    class.len() > PREFIX.len() && class.is_char_boundary(PREFIX.len()) && class[..PREFIX.len()].eq_ignore_ascii_case(PREFIX)
+}
+
+/// Fewer elements than this in a snapshot counts as "no labels" (see `a11y::snapshot_nudged`).
+pub const FEW_ELEMENTS: usize = 3;
+
 pub type Result<T> = std::result::Result<T, LendError>;
 
 // S1

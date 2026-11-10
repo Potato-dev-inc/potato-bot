@@ -534,3 +534,118 @@ fn a_hidden_app_that_is_minimized_is_shown_again_when_its_picture_is_minimized()
     core.picture_report(&id, Picture::Minimized).unwrap();
     assert!(!fake.0.lock().iconic.contains(&10));
 }
+
+// ---- guards: focus, foreground, Chromium class ---------------------------------------------------
+
+/// The source with comments removed (line and block comments; naive about "//" inside strings, which only hides text).
+fn without_comments(src: &str) -> String {
+    let mut out = String::new();
+    let mut in_block = false;
+    for line in src.lines() {
+        let mut rest = line;
+        let mut kept = String::new();
+        loop {
+            if in_block {
+                match rest.find("*/") {
+                    Some(i) => {
+                        rest = &rest[i + 2..];
+                        in_block = false;
+                    }
+                    None => break,
+                }
+            } else {
+                let line_c = rest.find("//");
+                let block_c = rest.find("/*");
+                match (line_c, block_c) {
+                    (Some(l), Some(b)) if b < l => {
+                        kept.push_str(&rest[..b]);
+                        rest = &rest[b + 2..];
+                        in_block = true;
+                    }
+                    (Some(l), _) => {
+                        kept.push_str(&rest[..l]);
+                        break;
+                    }
+                    (None, Some(b)) => {
+                        kept.push_str(&rest[..b]);
+                        rest = &rest[b + 2..];
+                        in_block = true;
+                    }
+                    (None, None) => {
+                        kept.push_str(rest);
+                        break;
+                    }
+                }
+            }
+        }
+        out.push_str(&kept);
+        out.push('\n');
+    }
+    out
+}
+
+#[test]
+fn comment_stripper_keeps_code_and_drops_comments() {
+    let src = "a(); // SetFocus\n/* SendInput\nSetPointerPos */ b();\n/// SW_RESTORE\nc();";
+    let out = without_comments(src);
+    assert!(out.contains("a();") && out.contains("b();") && out.contains("c();"));
+    assert!(!out.contains("SetFocus") && !out.contains("SendInput") && !out.contains("SetPointerPos") && !out.contains("SW_RESTORE"));
+}
+
+/// Lending must never take or change the focus: none of these calls may appear in the lend code (comments may name them).
+/// The `*_tests.rs` files are skipped because they list the names.
+#[test]
+fn lend_code_never_takes_the_focus() {
+    const BANNED: &[&str] = &[
+        "SetForegroundWindow",
+        "SetFocus",
+        "SendInput",
+        concat!("SetCurs", "orPos"),
+        "AttachThreadInput",
+        "SW_RESTORE",
+        "SW_SHOWNORMAL",
+        "BringWindowToTop",
+    ];
+    let potato = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("potato");
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(potato.join("lend"))
+        .expect("read potato/lend")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            name.ends_with(".rs") && !name.ends_with("_tests.rs")
+        })
+        .collect();
+    files.push(potato.join("lend_tools.rs"));
+    assert!(files.len() >= 8, "expected the lend sources, found {files:?}");
+    let mut hits = Vec::new();
+    for path in &files {
+        let src = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let code = without_comments(&src);
+        for word in BANNED {
+            if code.contains(word) {
+                hits.push(format!("{} uses {word}", path.display()));
+            }
+        }
+    }
+    assert!(hits.is_empty(), "lend code must not take the focus: {hits:?}");
+}
+
+#[test]
+fn chromium_classes_are_told_apart() {
+    use super::is_chromium_class;
+    assert!(is_chromium_class("Chrome_WidgetWin_1"));
+    assert!(is_chromium_class("Chrome_WidgetWin_0"));
+    assert!(is_chromium_class("chrome_widgetwin_1"));
+    assert!(!is_chromium_class("Chrome_RenderWidgetHostHWND"));
+    assert!(!is_chromium_class("Chrome_WidgetWin_"));
+    assert!(!is_chromium_class("Notepad"));
+    assert!(!is_chromium_class(""));
+    assert!(!is_chromium_class("日本語日本語日本語日本語"));
+}
+
+#[test]
+fn foreground_change_is_detected() {
+    assert!(!foreground_changed(5, 5));
+    assert!(foreground_changed(5, 6));
+    assert!(foreground_changed(0, 6));
+}

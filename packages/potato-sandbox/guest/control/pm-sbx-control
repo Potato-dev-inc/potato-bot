@@ -13,7 +13,7 @@ Endpoints (POST, JSON, Authorization: Bearer <token>):
   /v1/screenshot  {"display"}
   GET  /v1/mcp/tools     -> {"servers": [{"name", "status", "error", "tools": [...]}]}
   POST /v1/mcp/call      {"server", "tool", "arguments"} -> {"content": [...], "isError"}
-  POST /v1/lend/open|close|frame|events (mirror a Windows app; viewer page on 127.0.0.1:47812)
+  POST /v1/lend/open|close|frame|frame-raw|events (mirror a Windows app; viewer page on 127.0.0.1:47812)
   PUT  /v1/mcp/config    {"servers": [{"name", "command", "args", "env"}]} replaces the user MCP servers
 
 Only argv lists are executed, never through a shell. Argv shapes are
@@ -681,7 +681,7 @@ class LendHub:
             app = self._apps.get(lend_id)
             return app["title"] if app else None
 
-    def put_frame(self, lend_id, seq, w, h, jpeg, captured_ms=0):
+    def put_frame(self, lend_id, seq, w, h, jpeg, captured_ms=0, sent_ms=0):
         with self._cond:
             app = self._apps.get(lend_id)
             if app is None:
@@ -689,12 +689,18 @@ class LendHub:
             if app["frame"] is None or seq >= app["frame"][0]:
                 app["frame"] = (seq, w, h, jpeg)
                 app["captured_ms"] = captured_ms  # when the host captured it (unix ms), so the viewer can log the age
+                app["sent_ms"] = sent_ms  # when the host sent it (unix ms; raw frames only, else 0)
                 self._cond.notify_all()
 
     def captured_ms(self, lend_id):
         with self._cond:
             app = self._apps.get(lend_id)
             return app.get("captured_ms", 0) if app else 0
+
+    def sent_ms(self, lend_id):
+        with self._cond:
+            app = self._apps.get(lend_id)
+            return app.get("sent_ms", 0) if app else 0
 
     def wait_frame(self, lend_id, after, timeout):
         """The latest frame with seq > after, or None on timeout / unknown id."""
@@ -777,6 +783,34 @@ def lend_frame(lend, body):
     return {"ok": True}
 
 
+def _header_int(headers, name, default, low, high):
+    raw = headers.get(name)
+    if raw is None:
+        return _int_field({}, name, default, low, high)
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        raise RequestError(f"{name} must be an integer") from None
+    return max(low, min(value, high))
+
+
+def lend_frame_raw(lend, headers, jpeg):
+    """The raw twin of lend_frame: the body is the JPEG itself, the rest is in X- headers."""
+    lend_id = headers.get("X-Lend-Id")
+    if not lend_valid_id(lend_id):
+        raise RequestError("invalid id")
+    seq = _header_int(headers, "X-Seq", 0, 0, 2**53)
+    w = _header_int(headers, "X-W", 0, 1, LEND_MAX_DIM)
+    h = _header_int(headers, "X-H", 0, 1, LEND_MAX_DIM)
+    if headers.get("X-W") is None or headers.get("X-H") is None:
+        raise RequestError("invalid frame")
+    sent = _header_int(headers, "X-Sent-Ms", 0, 0, 2**53)
+    if not jpeg.startswith(JPEG_SOI) or len(jpeg) > LEND_MAX_FRAME_BYTES:
+        raise RequestError("invalid frame")
+    lend.put_frame(lend_id, seq, w, h, jpeg, sent, sent)
+    return {"ok": True}
+
+
 def lend_events(lend, body):
     wait_ms = _int_field(body, "wait_ms", 0, 0, LEND_MAX_WAIT_MS)
     return {"events": lend.drain(_lend_id(body), wait_ms / 1000.0)}
@@ -791,8 +825,10 @@ LEND_PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>__TITLE__
 const ID=__ID__,TITLE=__TITLE_JSON__;document.title=TITLE;
 const img=document.getElementById('f'),wait=document.getElementById('w');
 wait.textContent='Waiting for '+TITLE+'\\u2026';
-let fw=0,fh=0,seq=0,url=null;
-function send(ev){fetch('/lend/'+ID+'/input',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(ev),keepalive:true}).catch(()=>{});}
+let fw=0,fh=0,seq=0,url=null,pend=0;
+window.__lendLatency=[];
+img.addEventListener('load',()=>{if(pend){const l=window.__lendLatency;l.push(Math.round(performance.now()-pend));if(l.length>50)l.shift();pend=0;}});
+function send(ev){if(!pend)pend=performance.now();fetch('/lend/'+ID+'/input',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(ev),keepalive:true}).catch(()=>{});}
 function pos(e){if(!fw||!fh)return null;const r=img.getBoundingClientRect(),s=Math.min(r.width/fw,r.height/fh);
 const ox=r.left+(r.width-fw*s)/2,oy=r.top+(r.height-fh*s)/2,x=(e.clientX-ox)/s,y=(e.clientY-oy)/s;
 if(x<0||y<0||x>=fw||y>=fh)return null;return{x:Math.floor(x),y:Math.floor(y)};}
@@ -879,7 +915,7 @@ def make_viewer_handler(lend):
             if frame is None:
                 return self._send(204)
             seq, w, h, jpeg = frame
-            self._send(200, jpeg, "image/jpeg", (("X-Seq", str(seq)), ("X-W", str(w)), ("X-H", str(h)), ("X-Captured", str(lend.captured_ms(lend_id)))))
+            self._send(200, jpeg, "image/jpeg", (("X-Seq", str(seq)), ("X-W", str(w)), ("X-H", str(h)), ("X-Captured", str(lend.captured_ms(lend_id))), ("X-Sent-Ms", str(lend.sent_ms(lend_id)))))
 
         def do_POST(self):
             lend_id, tail, _ = self._match()
@@ -917,6 +953,7 @@ def make_handler(settings, hub=None, lend=None):
         "/v1/lend/events": lambda body: lend_events(lend, body),
     }
     put_routes = {"/v1/mcp/config": lambda body: run_mcp_config(hub, body)}
+    raw_routes = {"/v1/lend/frame-raw": lambda headers, data: lend_frame_raw(lend, headers, data)}
 
     class ControlHandler(BaseHTTPRequestHandler):
         server_version = "pm-sbx-control"
@@ -929,14 +966,26 @@ def make_handler(settings, hub=None, lend=None):
             self._handle(get_routes, read_body=False)
 
         def do_POST(self):
-            self._handle(post_routes, read_body=True)
+            self._handle(post_routes, read_body=True, raw_routes=raw_routes)
 
         def do_PUT(self):
             self._handle(put_routes, read_body=True)
 
-        def _handle(self, routes, read_body):
+        def _handle(self, routes, read_body, raw_routes=None):
             if not authorized(self.headers.get("Authorization", ""), settings.token):
                 self._send_json(401, {"error": "unauthorized"})
+                return
+            raw_route = (raw_routes or {}).get(self.path)
+            if raw_route is not None:
+                try:
+                    response = raw_route(self.headers, self._read_raw(LEND_FRAME_BODY_BYTES))
+                except RequestError as error:
+                    self._send_json(400, {"error": str(error)})
+                    return
+                except Exception:
+                    self._send_json(500, {"error": "internal error"})
+                    return
+                self._send_json(200, response)
                 return
             route = routes.get(self.path)
             if route is None:
@@ -957,6 +1006,15 @@ def make_handler(settings, hub=None, lend=None):
 
         def _body_limit(self):
             return LEND_FRAME_BODY_BYTES if self.path == "/v1/lend/frame" else MAX_BODY_BYTES
+
+        def _read_raw(self, limit):
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                raise RequestError("invalid content length") from None
+            if length < 0 or length > limit:
+                raise RequestError("request body too large")
+            return self.rfile.read(length)
 
         def _read_json(self, limit=MAX_BODY_BYTES):
             try:

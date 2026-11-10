@@ -1564,16 +1564,16 @@ fn the_lent_app_helpers_resolve_apps_convert_pixels_and_spot_password_boxes() {
 
     // the picture includes the frame: client = picture - client origin
     assert_eq!(picture_to_client(110, 140, (8, 31)), (102, 109));
-    let edit = |r: &str, name: &str, rect| ObsElem { r#ref: r.into(), role: "edit".into(), name: name.into(), value: None, rect };
+    let edit = |r: &str, name: &str, rect| ObsElem { r#ref: r.into(), role: "edit".into(), name: name.into(), value: None, rect, password: false };
     assert_eq!(centre(&edit("e1", "x", (10, 20, 100, 30))), (60, 35));
     let elems = vec![edit("e1", "Search", (0, 0, 400, 400)), edit("e2", "Password", (50, 50, 100, 20)), edit("e3", "密碼", (50, 100, 100, 20))];
-    assert!(is_password_field(&elems[1]) && is_password_field(&elems[2]) && !is_password_field(&elems[0]));
+    assert!(elems[1].is_password() && elems[2].is_password() && !elems[0].is_password());
     assert!(password_at(&elems, 60, 60), "the smallest box under the point wins");
     assert!(!password_at(&elems, 300, 300));
     assert_eq!(wheel_delta(-3), -360);
 
     // the answer caps the elements and tells the model when the person has the app
-    let many: Vec<ObsElem> = (0..200).map(|i| ObsElem { r#ref: format!("e{i}"), role: "button".into(), name: "b".into(), value: Some("v".into()), rect: (0, 0, 1, 1) }).collect();
+    let many: Vec<ObsElem> = (0..200).map(|i| ObsElem { r#ref: format!("e{i}"), role: "button".into(), name: "b".into(), value: Some("v".into()), rect: (0, 0, 1, 1), password: false }).collect();
     let out = observe_json(&apps[1], &many, false, Some((640, 480)));
     assert_eq!(out["elements"].as_array().unwrap().len(), MAX_ELEMENTS);
     assert_eq!(out["truncated"], true);

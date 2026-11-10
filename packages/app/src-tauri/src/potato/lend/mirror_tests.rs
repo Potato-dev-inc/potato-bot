@@ -17,6 +17,12 @@ struct FakeLink {
     events: Mutex<VecDeque<Value>>,
     /// The next frame post is refused like the guest's 400 "app is not open".
     forget: Mutex<bool>,
+    /// An old guest: the raw route answers 404.
+    old_guest: Mutex<bool>,
+    /// Every raw post that reached the guest: (path, headers, body).
+    raws: Mutex<Vec<(String, Vec<(String, String)>, Vec<u8>)>>,
+    /// How many raw posts were tried (also the refused ones).
+    raw_tries: Mutex<usize>,
 }
 
 impl FakeLink {
@@ -51,6 +57,29 @@ impl Link for FakeLink {
         if path == "/v1/lend/events" {
             return Ok(self.events.lock().pop_front().unwrap_or_else(|| json!({ "events": [] })));
         }
+        Ok(json!({ "ok": true }))
+    }
+    fn post_raw(&self, path: &str, headers: &[(&str, String)], body: &[u8]) -> Result<Value, LinkError> {
+        use base64::Engine;
+        if !*self.up.lock() {
+            return Err(LinkError::NotRunning);
+        }
+        *self.raw_tries.lock() += 1;
+        if *self.old_guest.lock() {
+            return Err(LinkError::NotFound);
+        }
+        if std::mem::take(&mut *self.forget.lock()) {
+            return Err(LinkError::Failed("SANDBOX_REJECTED".into()));
+        }
+        let head: Vec<(String, String)> = headers.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
+        self.raws.lock().push((path.to_string(), head, body.to_vec()));
+        // Shown to the older tests as the frame it is.
+        let get = |name: &str| headers.iter().find(|(k, _)| *k == name).map(|(_, v)| v.parse::<u64>().unwrap_or(0)).unwrap_or(0);
+        let frame = json!({
+            "id": "l1", "seq": get("X-Seq"), "w": get("X-W"), "h": get("X-H"), "raw": true,
+            "jpeg_b64": base64::engine::general_purpose::STANDARD.encode(body),
+        });
+        self.posts.lock().push(("/v1/lend/frame".to_string(), frame));
         Ok(json!({ "ok": true }))
     }
 }
@@ -496,4 +525,95 @@ fn the_worker_tells_the_session_whether_each_picture_is_paused() {
     *win.fail.lock() = true;
     run(&mut w, 750, 1300);
     assert!(win.reports.lock().is_empty());
+}
+
+// ---- raw frames, the fallback, the change hash --------------------------------------------------------
+
+#[test]
+fn frames_go_out_as_raw_jpeg_bytes_with_headers() {
+    let (link, win) = (FakeLink::running(), FakeWin::new());
+    let mut w = worker(&link, &win);
+    run(&mut w, 0, 300);
+    let raws = link.raws.lock().clone();
+    assert_eq!(raws.len(), 1);
+    let (path, headers, body) = &raws[0];
+    assert_eq!(path, "/v1/lend/frame-raw");
+    assert_eq!(&body[..3], &[0xFF, 0xD8, 0xFF], "the body is the JPEG itself");
+    let get = |n: &str| headers.iter().find(|(k, _)| k == n).map(|(_, v)| v.clone()).unwrap();
+    assert_eq!((get("X-Lend-Id").as_str(), get("X-Seq").as_str(), get("X-W").as_str(), get("X-H").as_str()), ("l1", "1", "16", "8"));
+    let sent: u64 = get("X-Sent-Ms").parse().unwrap();
+    assert!(sent > 1_600_000_000_000, "unix ms, got {sent}");
+}
+
+#[test]
+fn an_old_guest_404_falls_back_to_json_for_the_session() {
+    let (link, win) = (FakeLink::running(), FakeWin::new());
+    *link.old_guest.lock() = true;
+    let mut w = worker(&link, &win);
+    run(&mut w, 0, 300);
+    assert_eq!(*link.raw_tries.lock(), 1, "raw tried once");
+    assert_eq!(link.count("/v1/lend/frame"), 1, "the first frame still arrived, as JSON");
+    let frame = link.posts.lock().iter().find(|(p, _)| p == "/v1/lend/frame").unwrap().1.clone();
+    assert!(frame.get("raw").is_none() && frame["jpeg_b64"].is_string() && frame["ts"].is_u64());
+    *win.pixel.lock() = 200;
+    run(&mut w, 350, 800);
+    assert_eq!(*link.raw_tries.lock(), 1, "no more raw tries for this session");
+    assert_eq!(link.count("/v1/lend/frame"), 2);
+}
+
+#[test]
+fn raw_frames_that_the_guest_forgot_reopen_and_resend_raw() {
+    let (link, win) = (FakeLink::running(), FakeWin::new());
+    let mut w = worker(&link, &win);
+    run(&mut w, 0, 100);
+    *link.forget.lock() = true;
+    *win.pixel.lock() = 99;
+    run(&mut w, 150, 400);
+    assert_eq!(link.count("/v1/lend/open"), 2);
+    assert_eq!(link.raws.lock().len(), 2, "the refused one is not counted, the resend is");
+}
+
+#[test]
+fn raw_headers_are_plain_decimal() {
+    let h = raw_frame_headers("abc", 7, 1920, 1080, 1_700_000_000_123);
+    let names: Vec<&str> = h.iter().map(|(k, _)| *k).collect();
+    assert_eq!(names, ["X-Lend-Id", "X-Seq", "X-W", "X-H", "X-Sent-Ms"]);
+    let values: Vec<&str> = h.iter().map(|(_, v)| v.as_str()).collect();
+    assert_eq!(values, ["abc", "7", "1920", "1080", "1700000000123"]);
+}
+
+fn flat(w: u32, h: u32) -> Shot {
+    shot(w, h, |_, _| [250, 250, 250, 255])
+}
+
+#[test]
+fn the_change_hash_is_stable_and_sees_size_changes() {
+    assert_eq!(hash_of(&flat(640, 480)), hash_of(&flat(640, 480)));
+    assert_ne!(hash_of(&flat(640, 480)), hash_of(&flat(641, 480)));
+    assert_ne!(hash_of(&flat(640, 480)), hash_of(&flat(480, 640)));
+    let empty = Shot { rgba: Vec::new(), w: 0, h: 0, bgra: false };
+    let _ = hash_of(&empty); // no panic
+}
+
+#[test]
+fn the_change_hash_sees_a_typed_character_anywhere_in_a_text_box() {
+    let (pw, ph) = (160u32, 120u32);
+    let base = hash_of(&flat(pw, ph));
+    // A glyph is about 7 px wide and 14 px tall. Slide one over the whole picture: every position must change the hash.
+    let (gw, gh) = (7u32, 14u32);
+    for y in (0..ph - gh).step_by(2) {
+        for x in (0..pw - gw).step_by(2) {
+            let with_glyph = shot(pw, ph, |px, py| if px >= x && px < x + gw && py >= y && py < y + gh { [0, 0, 0, 255] } else { [250, 250, 250, 255] });
+            assert_ne!(hash_of(&with_glyph), base, "glyph at ({x}, {y}) went unseen");
+        }
+    }
+}
+
+#[test]
+fn the_change_hash_reads_far_less_than_every_byte() {
+    // A one-pixel change off the sampled grid may slip through (the forced frame after input and the keep-alive cover it);
+    // that is the price of not hashing 8 MB per look.
+    let a = flat(640, 480);
+    let b = shot(640, 480, |x, y| if x == 1 && y == 1 { [0, 0, 0, 255] } else { [250, 250, 250, 255] });
+    assert_eq!(hash_of(&a), hash_of(&b));
 }
