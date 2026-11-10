@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.18
+
+- Settings > Potato Bot has a new "Computer actions per day" box under the daily limit. It sets how many times each bot can use its computer in a day (10 to 5000, 500 by default). Before, a bot that hit the limit said you could raise it, but there was no way to.
+
 ## 1.0.17
 
 - Pictures you attach in a chat now reach your bot. A model that can see images gets the picture itself; one that can't is told so, with where the file is.

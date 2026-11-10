@@ -136,6 +136,26 @@ describe('Settings > Potato Bot', () => {
     expect(field.value).toBe('0.05');
   });
 
+  it('computer actions per day shows 500, saves the typed value and stays between 10 and 5000', async () => {
+    await mount();
+    const field = byLabel<HTMLInputElement>(m.host, 'Computer actions per day')!;
+    expect(field.value).toBe('500');
+    expect(field.min).toBe('10');
+    expect(field.max).toBe('5000');
+    expect(hasText(m.host, 'Every command, file read and screenshot counts.')).toBe(true);
+    const saved = async (typed: string) => {
+      await typeInto(field, typed);
+      await blur(field);
+      await settle(4);
+      return calls('settingsSet').at(-1)?.args[0] as { sandboxActionsPerDay: number };
+    };
+    expect((await saved('1200')).sandboxActionsPerDay).toBe(1200);
+    expect((await saved('99999')).sandboxActionsPerDay).toBe(5000);
+    expect(field.value).toBe('5000');
+    expect((await saved('3')).sandboxActionsPerDay).toBe(10);
+    expect(field.value).toBe('10');
+  });
+
   it('No limit is a switch next to the limit, saved as its own field, with a plain note', async () => {
     await mount();
     expect(hasText(m.host, "Spending won't stop by itself.")).toBe(true);

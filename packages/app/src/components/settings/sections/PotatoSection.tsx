@@ -23,6 +23,10 @@ import { usePotatoSettings } from '../potato/usePotatoSettings';
 /** The limits of the daily limit, in cents ($0.05 to $20). Rust clamps again. */
 export const MIN_LIMIT_CENTS = 5;
 export const MAX_LIMIT_CENTS = 2000;
+/** The limits of computer actions per bot per day. Rust clamps again. */
+export const MIN_ACTIONS_PER_DAY = 10;
+export const MAX_ACTIONS_PER_DAY = 5000;
+export const DEFAULT_ACTIONS_PER_DAY = 500;
 const PERSONAS: TalkPersona[] = ['fish', 'potato', 'pro'];
 
 function KeyRow({ transport, api }: { transport: PotatoTransport; api: SecretsApi }) {
@@ -112,6 +116,36 @@ function LimitRow({ transport, onSaved, setError }: { transport: PotatoTransport
         onCommit={(next) => {
           setError(null);
           save({ dailyLimitCents: limitCentsOf(next) }).then(onSaved, (error) => setError(plainError(error, 'Could not save that.')));
+        }}
+      />
+    </SettingRow>
+  );
+}
+
+/** Actions typed in the box, whole numbers kept between 10 and 5000. */
+export function actionsPerDayOf(typed: number): number {
+  return Math.min(MAX_ACTIONS_PER_DAY, Math.max(MIN_ACTIONS_PER_DAY, Math.round(typed)));
+}
+
+function ActionsRow({ transport, onSaved, setError }: { transport: PotatoTransport; onSaved: () => void; setError: (m: string | null) => void }) {
+  const { settings, save } = usePotatoSettings(transport);
+  return (
+    <SettingRow
+      label="Computer actions per day"
+      description={`How many times each bot can use its computer in a day. Every command, file read and screenshot counts. From ${MIN_ACTIONS_PER_DAY} to ${MAX_ACTIONS_PER_DAY}.`}
+    >
+      <NumberControl
+        aria-label="Computer actions per day"
+        value={settings?.sandboxActionsPerDay ?? DEFAULT_ACTIONS_PER_DAY}
+        min={MIN_ACTIONS_PER_DAY}
+        max={MAX_ACTIONS_PER_DAY}
+        step={10}
+        normalize={actionsPerDayOf}
+        suffix="actions a day"
+        disabled={!settings}
+        onCommit={(next) => {
+          setError(null);
+          save({ sandboxActionsPerDay: actionsPerDayOf(next) }).then(onSaved, (error) => setError(plainError(error, 'Could not save that.')));
         }}
       />
     </SettingRow>
@@ -215,13 +249,14 @@ export function makePotatoRows(transport: PotatoTransport = tauriPotatoTransport
     {
       id: 'potato-limit',
       label: 'Daily limit',
-      hint: 'The most one bot may spend in a day. From $0.05 to $20, or No limit.',
-      keywords: `${KEYWORDS} dollars money spend no limit unlimited`,
+      hint: 'The most one bot may spend in a day, and how many computer actions it may take. From $0.05 to $20, or No limit.',
+      keywords: `${KEYWORDS} dollars money spend no limit unlimited computer actions sandbox`,
       group: 'Potato Bot',
       render: (env) => (
         <>
           <LimitRow transport={transport} onSaved={env.markSaved} setError={env.setError} />
           <NoLimitRow transport={transport} onSaved={env.markSaved} setError={env.setError} />
+          <ActionsRow transport={transport} onSaved={env.markSaved} setError={env.setError} />
         </>
       ),
     },
