@@ -176,3 +176,19 @@ fn spend_is_still_counted_with_no_limit_and_no_limit_note_is_asked_for() {
     assert_eq!(c.budget, Budget::Under);
     assert_eq!(day_of(&root, "2026-11-30", "nimbus").unwrap().cost_nano(), c.used_nano);
 }
+
+#[test]
+fn the_eighty_percent_action_warning_is_given_once_per_bot_and_day_and_never_at_the_cap() {
+    let root = temp("actions-warn");
+    let warn = |day: &str, bot: &str, cap: u32| take_actions_warning(&root, day, bot, cap).unwrap();
+    assert!(!warn("2026-11-01", "a", 100), "nothing used yet");
+    spend_sandbox_actions(&root, "2026-11-01", "a", 79, 100).unwrap();
+    assert!(!warn("2026-11-01", "a", 100));
+    spend_sandbox_actions(&root, "2026-11-01", "a", 1, 100).unwrap();
+    assert!(warn("2026-11-01", "a", 100));
+    assert!(!warn("2026-11-01", "a", 100), "once");
+    assert!(!warn("2026-11-01", "b", 100), "another bot has used nothing");
+    spend_sandbox_actions(&root, "2026-11-02", "a", 100, 100).unwrap();
+    assert!(!warn("2026-11-02", "a", 100), "at the cap the cap has its own words");
+    assert!(day_of(&root, "2026-11-01", "a").unwrap().actions_warned);
+}

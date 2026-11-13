@@ -15,6 +15,10 @@ Endpoints (POST, JSON, Authorization: Bearer <token>):
   POST /v1/mcp/call      {"server", "tool", "arguments"} -> {"content": [...], "isError"}
   POST /v1/lend/open|close|frame|frame-raw|events (mirror a Windows app; viewer page on 127.0.0.1:47812)
   PUT  /v1/mcp/config    {"servers": [{"name", "command", "args", "env"}]} replaces the user MCP servers
+  POST /v1/task/start    {"argv": [...], "cwd", "label"?} -> {"task"}   (a background process owned by this daemon; argv only)
+  POST /v1/task/status   {"id"?} -> {"task"} or {"tasks": [...]}
+  POST /v1/task/tail     {"id", "bytes"?} -> {"task": {..., "text"}}
+  POST /v1/task/stop     {"id"} -> {"task"}
 
 Only argv lists are executed, never through a shell. Argv shapes are
 allowlisted: xdotool forms (key, mousemove, mouseup, type, click) and
@@ -22,6 +26,7 @@ focus-or-launch of a launcher named in the launcher JSON file.
 """
 
 import base64
+import contextlib
 import dataclasses
 import hmac
 import importlib.machinery
@@ -30,6 +35,7 @@ import json
 import os
 import re
 import signal
+import stat as stat_module
 import subprocess
 import sys
 import threading
@@ -98,10 +104,27 @@ CHILD_ENV_PINS = {
     "QT_QPA_PLATFORM": "xcb",
 }
 
-# MCP hub: user servers saved root-only at DEFAULT_MCP_CONFIG; one stderr log per server under DEFAULT_MCP_LOG_DIR.
-DEFAULT_MCP_CONFIG = "/var/lib/pm-sbx/mcp.json"
-DEFAULT_MCP_LOG_DIR = "/var/log/pm-sbx/mcp"
+# MCP hub: user servers saved at DEFAULT_MCP_CONFIG; one stderr log per server under DEFAULT_MCP_LOG_DIR. Both folders are
+# root's alone (0700) when this daemon runs as root: the pm user (the bot and the MCP servers) can write /var/lib/pm-sbx and
+# /var/log/pm-sbx/mcp, and root must never open, chown or replace anything inside a folder pm can write. The old config path
+# is then only read once, to move an existing config over. When the daemon runs as pm itself (today's start by
+# pm-sbx-start-desktop) there is nothing to protect from pm, and the pm-owned folders are the only ones it can write.
+RUNS_AS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
+DEFAULT_MCP_CONFIG = "/var/lib/pm-sbx-root/mcp.json" if RUNS_AS_ROOT else "/var/lib/pm-sbx/mcp.json"
+LEGACY_MCP_CONFIG = "/var/lib/pm-sbx/mcp.json"
+DEFAULT_MCP_LOG_DIR = "/var/log/pm-sbx-mcp" if RUNS_AS_ROOT else "/var/log/pm-sbx/mcp"
 MCP_RUN_AS = "pm"
+
+
+def default_task_dir(as_root):
+    """As root the table sits outside the pm-owned /var/lib/pm-sbx (pm could swap anything in it for a link); the parent
+    /var/lib is root's. As pm (today: pm-sbx-start-desktop starts this daemon as pm) there is no one to protect from, and
+    /var/lib/pm-sbx is the pm-owned folder the installer makes (its parent /var/lib is root's). Either way TaskManager checks
+    the folder (owner = this process, 0700, no link, parents root's or ours and not writable by others) before every use."""
+    return "/var/lib/pm-sbx-tasks" if as_root else "/var/lib/pm-sbx/tasks"
+
+
+DEFAULT_TASK_DIR = default_task_dir(RUNS_AS_ROOT)
 
 DISPLAY_LOCKS = {}
 DISPLAY_LOCKS_GUARD = threading.Lock()
@@ -155,6 +178,7 @@ class Settings:
     mcp_log_dir: str = DEFAULT_MCP_LOG_DIR
     lend_view: str = LEND_VIEW_BIN
     lend_port: int = LEND_VIEW_PORT
+    task_dir: str = DEFAULT_TASK_DIR
 
 
 def display_lock(display):
@@ -555,9 +579,614 @@ def make_hub(settings):
         display=settings.default_display,
         log_dir=settings.mcp_log_dir,
         config_path=settings.mcp_config,
+        legacy_config_path=LEGACY_MCP_CONFIG if RUNS_AS_ROOT and settings.mcp_config == DEFAULT_MCP_CONFIG else None,
         computer_script=os.path.join(os.path.dirname(os.path.abspath(__file__)), "pm-sbx-computer-mcp"),
         run_as=MCP_RUN_AS,
     )
+
+
+# ---- Background tasks (owned by this daemon, not by a terminal) ---------------------------------------------------
+# /v1/task/start|status|tail|stop. A task is an argv list plus a folder, started as the pm user in the work cgroup, in its
+# own session, behind a small wrapper that copies the output into a size-capped log and records the exit code. The table
+# of tasks lives on disk (DEFAULT_TASK_DIR, private to this daemon's user, checked before every use) so it survives a restart of this daemon. Never a shell: there is no
+# command string anywhere in this API. A task is identified by its PID *and* the start time in /proc/<pid>/stat, so a PID
+# the kernel handed out again is never mistaken for the task, and never signalled.
+TASK_RUN_AS = "pm"
+TASK_ID_RE = re.compile(r"t-[0-9a-f]{8}")
+MAX_RUNNING_TASKS = 4
+MAX_TASK_ENTRIES = 20  # finished ones beyond this are forgotten (oldest first), logs and all
+TASK_LOG_CAP = 4 * 1024 * 1024  # a log never grows past this: older output is dropped, the newest is kept
+TASK_LOG_KEEP = 1024 * 1024  # what is kept when the cap is hit
+TASK_TAIL_DEFAULT = 16 * 1024
+TASK_TAIL_MAX = 64 * 1024
+TASK_STOP_GRACE_SEC = 3.0
+TASK_LIST_ARG_CHARS = 200
+TASK_PATH = "/home/pm/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+# Runs as `python -I -c <this> LOG_FD EXIT_FD CAP KEEP ARGV...` (the fds are inherited from the daemon: the child needs no
+# path into the daemon's folder). It is not a shell: ARGV goes to subprocess.Popen as it is. It copies the output into the log
+# (rotating in place, newest kept), and writes {"code": n} to the exit file when the command ends (n < 0: killed by that
+# signal). Its own TERM/INT/HUP only wake it: the command gets the same signal from the group kill and the wrapper
+# waits for it, so the exit code is still written. A SIGKILL of the group leaves no exit file; the daemon reads that as stopped
+# or interrupted, never as finished. A handler (not SIG_IGN) is used so the command does not inherit an ignored signal.
+TASK_WRAPPER_SRC = r'''
+import json, os, signal, subprocess, sys, threading
+
+MARKER = b"[... earlier output dropped ...]\n"
+
+
+def main(args):
+    log_fd, exit_fd, cap, keep = (int(x) for x in args[:4])
+    argv = args[4:]
+    for name in ("SIGTERM", "SIGINT", "SIGHUP"):
+        if hasattr(signal, name):
+            signal.signal(getattr(signal, name), lambda *_: None)
+    state = {"off": 0}
+
+    def put(data):
+        view = memoryview(data)
+        while view:
+            if state["off"] >= cap:  # full: keep the newest `keep` bytes behind a marker, in place
+                os.lseek(log_fd, max(0, state["off"] - keep), 0)
+                kept = os.read(log_fd, keep)
+                os.ftruncate(log_fd, 0)
+                os.lseek(log_fd, 0, 0)
+                os.write(log_fd, MARKER + kept)
+                state["off"] = len(MARKER) + len(kept)
+            os.lseek(log_fd, state["off"], 0)
+            n = os.write(log_fd, view[: cap - state["off"]])
+            view = view[n:]
+            state["off"] += n
+
+    def finish(code):
+        os.lseek(exit_fd, 0, 0)
+        os.ftruncate(exit_fd, 0)
+        os.write(exit_fd, json.dumps({"code": code}).encode("ascii"))
+        try:
+            os.fsync(exit_fd)
+        except OSError:
+            pass
+
+    try:
+        child = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    except OSError as error:
+        put(("could not start: %s\n" % (error.strerror or error)).encode("utf-8", "replace"))
+        finish(126 if isinstance(error, PermissionError) else 127)
+        return 0
+    out = child.stdout.fileno()
+
+    def pump():
+        while True:
+            try:
+                chunk = os.read(out, 65536)
+            except OSError:
+                return
+            if not chunk:
+                return
+            put(chunk)
+
+    # A thread, not a blocking loop: a background grandchild may keep the pipe open after the command itself has ended.
+    reader = threading.Thread(target=pump, daemon=True)
+    reader.start()
+    code = child.wait()
+    reader.join(1.0)  # whatever the command printed is in the pipe by now; a pipe held open by a grandchild is not waited for
+    finish(code)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
+'''
+
+
+def proc_start_ticks(pid):
+    """Start time of `pid` in clock ticks since boot (field 22 of /proc/<pid>/stat), or None when it is gone.
+
+    The process name in field 2 may hold spaces and parentheses, so the fields are counted from the LAST ')'.
+    A zombie counts as gone."""
+    try:
+        with open(f"/proc/{int(pid)}/stat", "rb") as handle:
+            raw = handle.read().decode("utf-8", "replace")
+        fields = raw[raw.rindex(")") + 2:].split()
+        if fields[0] in ("Z", "X"):
+            return None
+        return int(fields[19])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def current_boot_id():
+    try:
+        with open("/proc/sys/kernel/random/boot_id", encoding="ascii") as handle:
+            return handle.read().strip()
+    except OSError:
+        return ""
+
+
+def _task_env(run_as_ids, display):
+    """The environment of a task: built from scratch, never the daemon's own (that holds the token file path)."""
+    home = "/home/pm"
+    if run_as_ids is None:
+        home = os.environ.get("HOME", home)
+    env = {
+        "PATH": TASK_PATH,
+        "HOME": home,
+        "USER": TASK_RUN_AS,
+        "LOGNAME": TASK_RUN_AS,
+        "LANG": "C.UTF-8",
+        "DISPLAY": display,
+    }
+    env.update(CHILD_ENV_PINS)
+    return env
+
+
+def validate_task_start(body):
+    """(argv, cwd, label) of a start request. Only an argv list and a folder: any other key is refused, so a
+    `command` string can never slip in."""
+    extra = set(body) - {"argv", "cwd", "label"}
+    if extra:
+        raise RequestError("start takes argv, cwd and label only")
+    argv = body.get("argv")
+    if not isinstance(argv, list) or not (1 <= len(argv) <= MAX_ARGV):
+        raise RequestError(f"argv must be a list of 1 to {MAX_ARGV} strings")
+    for value in argv:
+        if not isinstance(value, str) or len(value) > MAX_ARG_LEN or "\0" in value:
+            raise RequestError("argv must hold plain strings")
+    if argv[0] == "":
+        raise RequestError("argv[0] must be a program")
+    cwd = body.get("cwd")
+    if not isinstance(cwd, str) or not cwd.startswith("/") or "\0" in cwd or len(cwd) > 1024 or ".." in cwd.split("/"):
+        raise RequestError("cwd must be an absolute folder path")
+    label = body.get("label", "")
+    if not isinstance(label, str):
+        raise RequestError("label must be text")
+    label = CONTROL_CHARS_RE.sub(" ", label).strip()[:80]
+    return list(argv), cwd, label
+
+
+TASKS_OFF = "background tasks are off: the task folder is not safe"
+# Every path below the task folder is reached through a directory fd with O_NOFOLLOW where the platform has it (Linux, the
+# real sandbox). Elsewhere (Windows unit tests) the plain path is used; the folder checks still run.
+HAVE_DIR_FD = bool(getattr(os, "O_NOFOLLOW", 0)) and os.open in os.supports_dir_fd and os.mkdir in os.supports_dir_fd
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_BINARY = getattr(os, "O_BINARY", 0)
+_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
+
+
+class TaskDirUnsafe(RuntimeError):
+    """The task folder is a link, belongs to someone else, or sits under a folder others can write."""
+
+    def __init__(self, why=""):
+        super().__init__(TASKS_OFF)
+        self.why = why
+
+
+def _o(ref, name, flags, mode=0o600):
+    fd, path = ref
+    if fd >= 0:
+        return os.open(name, flags | _NOFOLLOW | _CLOEXEC, mode, dir_fd=fd)
+    return os.open(os.path.join(path, name), flags | _BINARY, mode)
+
+
+def _mkdir_at(ref, name):
+    fd, path = ref
+    if fd >= 0:
+        os.mkdir(name, 0o700, dir_fd=fd)
+    else:
+        os.mkdir(os.path.join(path, name), 0o700)
+
+
+def _unlink_at(ref, name):
+    fd, path = ref
+    if fd >= 0:
+        os.unlink(name, dir_fd=fd)
+    else:
+        os.unlink(os.path.join(path, name))
+
+
+def _rmdir_at(ref, name):
+    fd, path = ref
+    if fd >= 0:
+        os.rmdir(name, dir_fd=fd)
+    else:
+        os.rmdir(os.path.join(path, name))
+
+
+def _open_sub(ref, name):
+    """A (fd, path) reference to the sub-folder `name`; never follows a link. The caller closes the fd when it is >= 0."""
+    fd, path = ref
+    if fd >= 0:
+        return os.open(name, os.O_RDONLY | os.O_DIRECTORY | _NOFOLLOW | _CLOEXEC, dir_fd=fd), os.path.join(path, name)
+    sub = os.path.join(path, name)
+    if os.path.islink(sub) or not os.path.isdir(sub):
+        raise OSError("not a plain folder")
+    return -1, sub
+
+
+def _close_ref(ref):
+    if ref[0] >= 0:
+        os.close(ref[0])
+
+
+def _check_owner_mode(info, why):
+    if os.name != "posix":
+        return
+    if info.st_uid != os.geteuid():
+        raise TaskDirUnsafe(f"{why} belongs to uid {info.st_uid}")
+    if info.st_mode & 0o077:
+        raise TaskDirUnsafe(f"{why} is open to group or others")
+
+
+def _check_ancestors(path):
+    """Every folder above `path` is root's (or ours) and cannot be written by group or others (a sticky folder like /tmp
+    is fine: others cannot rename or delete what is not theirs). Only on POSIX."""
+    if os.name != "posix":
+        return
+    current = os.path.realpath(os.path.dirname(os.path.abspath(path)))
+    while True:
+        info = os.stat(current)
+        if info.st_uid not in (0, os.geteuid()):
+            raise TaskDirUnsafe(f"{current} belongs to uid {info.st_uid}")
+        if info.st_mode & 0o022 and not info.st_mode & stat_module.S_ISVTX:
+            raise TaskDirUnsafe(f"{current} can be written by others")
+        up = os.path.dirname(current)
+        if up == current:
+            return
+        current = up
+
+
+class TaskManager:
+    """The task table and its processes. Thread safe. `spawn`, `ticks`, `killpg` and `now` are replaceable for tests."""
+
+    def __init__(self, base_dir, run_as=TASK_RUN_AS, display=DEFAULT_DISPLAY, spawn=None, ticks=None, killpg=None,
+                 now=None, boot_id=None, max_running=MAX_RUNNING_TASKS, grace=TASK_STOP_GRACE_SEC, python=None):
+        self._dir = base_dir
+        self._ids = mcp_hub._pm_ids(run_as)
+        self._display = display
+        self._spawn = spawn or self._real_spawn
+        self._ticks = ticks or proc_start_ticks
+        self._killpg = killpg or (lambda pid, sig: os.killpg(pid, sig))
+        self._now = now or time.time
+        self._boot = current_boot_id() if boot_id is None else boot_id
+        self._max_running = max_running
+        self._grace = grace
+        self._python = python or sys.executable
+        self._lock = threading.RLock()
+        self._tasks = None  # id -> record, loaded on first use
+        self._dfd = -1  # the checked task folder, open only while a request runs
+        self._depth = 0
+
+    # -- the task folder: checked on every request, then used only through its directory fd
+    def _check_dir(self):
+        """Creates the folder when missing (mode 0700) and proves it is safe; returns its fd (-1 where fds are not used)."""
+        try:
+            _check_ancestors(self._dir)
+            try:
+                before = os.lstat(self._dir)
+            except FileNotFoundError:
+                os.makedirs(os.path.dirname(os.path.abspath(self._dir)), mode=0o755, exist_ok=True)
+                _check_ancestors(self._dir)
+                os.mkdir(self._dir, 0o700)
+                before = os.lstat(self._dir)
+            if not stat_module.S_ISDIR(before.st_mode):
+                raise TaskDirUnsafe("the task folder is a link or not a folder")
+            _check_owner_mode(before, "the task folder")
+            if not HAVE_DIR_FD:
+                return -1
+            fd = os.open(self._dir, os.O_RDONLY | os.O_DIRECTORY | _NOFOLLOW | _CLOEXEC)
+            try:
+                info = os.fstat(fd)
+                if (info.st_dev, info.st_ino) != (before.st_dev, before.st_ino):
+                    raise TaskDirUnsafe("the task folder was swapped")
+                _check_owner_mode(info, "the task folder")
+            except BaseException:
+                os.close(fd)
+                raise
+            return fd
+        except TaskDirUnsafe:
+            raise
+        except OSError as error:
+            raise TaskDirUnsafe(str(error)) from None
+
+    @contextlib.contextmanager
+    def _session(self):
+        with self._lock:
+            if self._depth:
+                self._depth += 1
+                try:
+                    yield
+                finally:
+                    self._depth -= 1
+                return
+            self._dfd = self._check_dir()
+            self._depth = 1
+            try:
+                yield
+            finally:
+                self._depth = 0
+                fd, self._dfd = self._dfd, -1
+                if fd >= 0:
+                    os.close(fd)
+
+    def _ref(self):
+        return (self._dfd, self._dir)
+
+    # -- table on disk
+    def _load(self):
+        if self._tasks is not None:
+            return
+        self._tasks = {}
+        try:
+            fd = _o(self._ref(), "tasks.json", os.O_RDONLY)
+            with os.fdopen(fd, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            rows = data.get("tasks") if isinstance(data, dict) else None
+            for row in rows if isinstance(rows, list) else []:
+                if isinstance(row, dict) and isinstance(row.get("id"), str) and TASK_ID_RE.fullmatch(row["id"]):
+                    self._tasks[row["id"]] = row
+        except (OSError, ValueError):
+            pass
+
+    def _save(self):
+        ref = self._ref()
+        try:
+            _unlink_at(ref, "tasks.json.tmp")  # unlink never follows a link
+        except OSError:
+            pass
+        fd = _o(ref, "tasks.json.tmp", os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump({"version": 1, "tasks": list(self._tasks.values())}, handle, separators=(",", ":"))
+        if ref[0] >= 0:
+            os.replace("tasks.json.tmp", "tasks.json", src_dir_fd=ref[0], dst_dir_fd=ref[0])
+        else:
+            os.replace(os.path.join(self._dir, "tasks.json.tmp"), os.path.join(self._dir, "tasks.json"))
+
+    # -- reading files the task can write: never follow a link, only plain files
+    def _read_plain(self, task_id, name, limit, tail=False):
+        try:
+            run = _open_sub(self._ref(), task_id)
+        except OSError:
+            return None, 0
+        try:
+            fd = _o(run, name, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+        except OSError:
+            return None, 0
+        finally:
+            _close_ref(run)
+        try:
+            info = os.fstat(fd)
+            if not stat_module.S_ISREG(info.st_mode):
+                return None, 0
+            size = info.st_size
+            start = max(0, size - limit) if tail else 0
+            os.lseek(fd, start, 0)
+            return os.read(fd, min(limit, size - start)), size
+        except OSError:
+            return None, 0
+        finally:
+            os.close(fd)
+
+    def _alive(self, rec):
+        ticks = rec.get("ticks")
+        return rec.get("boot") == self._boot and ticks is not None and self._ticks(rec["pid"]) == ticks
+
+    def _exit_code(self, task_id):
+        data, _ = self._read_plain(task_id, "exit", 256)
+        if not data:
+            return None
+        try:
+            code = json.loads(data.decode("ascii", "replace")).get("code")
+        except (ValueError, AttributeError):
+            return None
+        return code if isinstance(code, int) and not isinstance(code, bool) else None
+
+    def _refresh(self, rec):
+        """Moves a running record to its final state when its process is gone. True when it changed."""
+        if rec.get("state") != "running" or self._alive(rec):
+            return False
+        code = self._exit_code(rec["id"])
+        if rec.get("stopRequested"):
+            rec["state"] = "stopped"
+        elif code is not None:
+            rec["state"] = "finished"
+        else:
+            rec["state"] = "interrupted"  # gone with no exit file: killed or lost, never reported as finished
+        if code is not None:
+            rec["exitCode"] = code
+        rec["ended"] = int(self._now())
+        return True
+
+    def recover(self):
+        """Called once when the daemon starts."""
+        try:
+            with self._session():
+                self._load()
+                changed = False
+                for rec in self._tasks.values():
+                    changed = self._refresh(rec) or changed
+                if changed:
+                    self._save()
+        except TaskDirUnsafe as error:
+            print(f"pm-sbx-control: {TASKS_OFF} ({error.why})", file=sys.stderr)
+
+    def _running(self):
+        return [rec for rec in self._tasks.values() if rec.get("state") == "running"]
+
+    # -- requests
+    def start(self, body):
+        argv, cwd, label = validate_task_start(body)
+        with self._session():
+            self._load()
+            for rec in list(self._tasks.values()):
+                self._refresh(rec)
+            if len(self._running()) >= self._max_running:
+                raise RequestError(f"{self._max_running} tasks are already running; stop one first")
+            self._forget_old()
+            ref = self._ref()
+            while True:
+                task_id = "t-" + os.urandom(4).hex()
+                if task_id in self._tasks:
+                    continue
+                try:
+                    _mkdir_at(ref, task_id)  # fails when the name exists, even as a planted link
+                except FileExistsError:
+                    continue
+                except OSError as error:
+                    raise RuntimeError(f"could not start the task: {error.strerror or error}") from None
+                break
+            try:
+                run = _open_sub(ref, task_id)
+            except OSError:
+                self._remove_files(task_id)
+                raise RuntimeError(TASKS_OFF) from None
+            log_fd = exit_fd = -1
+            try:
+                log_fd = self._make_file(run, "log")
+                exit_fd = self._make_file(run, "exit")
+                proc = self._spawn(argv, cwd, _task_env(self._ids, self._display), log_fd, exit_fd)
+            except (OSError, ValueError) as error:
+                for fd in (log_fd, exit_fd):
+                    if fd >= 0:
+                        os.close(fd)
+                _close_ref(run)
+                self._remove_files(task_id)
+                raise RuntimeError(f"could not start the task: {getattr(error, 'strerror', None) or error}") from None
+            os.close(log_fd)
+            os.close(exit_fd)
+            _close_ref(run)
+            rec = {
+                "id": task_id, "label": label, "argv": argv, "cwd": cwd, "state": "running", "pid": proc.pid,
+                "ticks": self._ticks(proc.pid), "boot": self._boot, "started": int(self._now()),
+            }
+            self._tasks[task_id] = rec
+            self._refresh(rec)  # an instant failure is already over
+            self._save()
+            return {"task": self._view(rec)}
+
+    def _make_file(self, run, name):
+        fd = _o(run, name, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+        if self._ids is not None:
+            os.fchown(fd, self._ids[0], self._ids[1])
+        return fd
+
+    def _real_spawn(self, argv, cwd, env, log_fd, exit_fd):
+        kwargs = {} if self._ids is None else {"user": self._ids[0], "group": self._ids[1], "extra_groups": []}
+        command = [self._python, "-I", "-c", TASK_WRAPPER_SRC, str(log_fd), str(exit_fd), str(TASK_LOG_CAP),
+                   str(TASK_LOG_KEEP), *argv]
+        proc = subprocess.Popen(
+            command, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            pass_fds=(log_fd, exit_fd), start_new_session=True, **kwargs,
+        )
+        threading.Thread(target=proc.wait, daemon=True).start()  # reaps it, so it never lingers as a zombie
+        return proc
+
+    def _remove_files(self, task_id):
+        ref = self._ref()
+        try:
+            run = _open_sub(ref, task_id)
+        except OSError:
+            run = None
+        if run is not None:
+            for name in ("log", "exit"):
+                try:
+                    _unlink_at(run, name)
+                except OSError:
+                    pass
+            _close_ref(run)
+        try:
+            _rmdir_at(ref, task_id)
+        except OSError:
+            pass
+
+    def _forget_old(self):
+        done = sorted((r for r in self._tasks.values() if r.get("state") != "running"), key=lambda r: r.get("started", 0))
+        while len(self._tasks) >= MAX_TASK_ENTRIES and done:
+            old = done.pop(0)
+            self._remove_files(old["id"])
+            del self._tasks[old["id"]]
+
+    def _view(self, rec, brief=False):
+        argv = [a[:TASK_LIST_ARG_CHARS] for a in rec["argv"]]
+        view = {"id": rec["id"], "state": rec["state"], "argv": argv, "cwd": rec["cwd"], "started": rec["started"]}
+        if rec.get("label"):
+            view["label"] = rec["label"]
+        for key in ("exitCode", "ended"):
+            if key in rec:
+                view[key] = rec[key]
+        if not brief:
+            _, size = self._read_plain(rec["id"], "log", 0)
+            view["logBytes"] = size
+        return view
+
+    def _get(self, body):
+        task_id = body.get("id")
+        if not isinstance(task_id, str) or not TASK_ID_RE.fullmatch(task_id):
+            raise RequestError("invalid task id")
+        self._load()
+        rec = self._tasks.get(task_id)
+        if rec is None:
+            raise RequestError("no such task")
+        return rec
+
+    def status(self, body):
+        with self._session():
+            self._load()
+            if "id" not in body:
+                changed = False
+                for rec in self._tasks.values():
+                    changed = self._refresh(rec) or changed
+                if changed:
+                    self._save()
+                rows = sorted(self._tasks.values(), key=lambda r: r.get("started", 0))
+                return {"tasks": [self._view(r, brief=True) for r in rows], "maxRunning": self._max_running}
+            rec = self._get(body)
+            if self._refresh(rec):
+                self._save()
+            return {"task": self._view(rec)}
+
+    def tail(self, body):
+        size = _int_field(body, "bytes", TASK_TAIL_DEFAULT, 1, TASK_TAIL_MAX)
+        with self._session():
+            rec = self._get(body)
+            if self._refresh(rec):
+                self._save()
+            data, total = self._read_plain(rec["id"], "log", size, tail=True)
+            view = self._view(rec, brief=True)
+        view["logBytes"] = total
+        view["text"] = (data or b"").decode("utf-8", "replace")
+        view["cutStart"] = total > len(data or b"")
+        return {"task": view}
+
+    def stop(self, body):
+        with self._session():
+            rec = self._get(body)
+            if self._refresh(rec):
+                self._save()
+            if rec["state"] == "running":
+                rec["stopRequested"] = True
+                self._save()
+                self._signal(rec, signal.SIGTERM)
+                deadline = time.monotonic() + self._grace
+                while self._alive(rec) and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                if self._alive(rec):
+                    self._signal(rec, getattr(signal, "SIGKILL", signal.SIGTERM))
+                    for _ in range(40):
+                        if not self._alive(rec):
+                            break
+                        time.sleep(0.05)
+                self._refresh(rec)
+                self._save()
+            return {"task": self._view(rec)}
+
+    def _signal(self, rec, sig):
+        # Checked right before the signal: a PID that is not this task's process any more is never touched.
+        if not self._alive(rec):
+            return
+        try:
+            self._killpg(rec["pid"], sig)
+        except (OSError, ProcessLookupError):
+            pass
 
 
 # ---- Lend an app (mirror into the sandbox screen) ----------------------------------------------------------------
@@ -939,9 +1568,10 @@ class ViewerServer(ThreadingHTTPServer):
     daemon_threads = True
 
 
-def make_handler(settings, hub=None, lend=None):
+def make_handler(settings, hub=None, lend=None, tasks=None):
     hub = make_hub(settings) if hub is None else hub
     lend = LendHub(lambda i, t, w, h: launch_lend_view(settings, i, t, w, h)) if lend is None else lend
+    tasks = TaskManager(settings.task_dir, display=settings.default_display) if tasks is None else tasks
     get_routes = {"/v1/mcp/tools": lambda body: hub.snapshot()}
     post_routes = {
         "/v1/desktop": lambda body: run_desktop(settings, body),
@@ -951,6 +1581,10 @@ def make_handler(settings, hub=None, lend=None):
         "/v1/lend/close": lambda body: lend_close(lend, body),
         "/v1/lend/frame": lambda body: lend_frame(lend, body),
         "/v1/lend/events": lambda body: lend_events(lend, body),
+        "/v1/task/start": lambda body: tasks.start(body),
+        "/v1/task/status": lambda body: tasks.status(body),
+        "/v1/task/tail": lambda body: tasks.tail(body),
+        "/v1/task/stop": lambda body: tasks.stop(body),
     }
     put_routes = {"/v1/mcp/config": lambda body: run_mcp_config(hub, body)}
     raw_routes = {"/v1/lend/frame-raw": lambda headers, data: lend_frame_raw(lend, headers, data)}
@@ -1061,6 +1695,7 @@ def load_settings(env):
         mcp_log_dir=env.get("PM_SBX_MCP_LOG_DIR", DEFAULT_MCP_LOG_DIR),
         lend_view=env.get("PM_SBX_LEND_VIEW", LEND_VIEW_BIN),
         lend_port=parse_port(env.get("PM_SBX_LEND_PORT", str(LEND_VIEW_PORT))),
+        task_dir=env.get("PM_SBX_TASK_DIR", DEFAULT_TASK_DIR),
     )
 
 
@@ -1074,7 +1709,9 @@ def main(env=None):
     signal.signal(signal.SIGTERM, lambda _signo, _frame: sys.exit(0))
     hub.start()
     lend = LendHub(lambda i, t, w, h: launch_lend_view(settings, i, t, w, h))
-    server = ThreadingHTTPServer((BIND_HOST, settings.port), make_handler(settings, hub, lend))
+    tasks = TaskManager(settings.task_dir, display=settings.default_display)
+    tasks.recover()  # a task whose process is gone with no exit file becomes "interrupted", never "finished"
+    server = ThreadingHTTPServer((BIND_HOST, settings.port), make_handler(settings, hub, lend, tasks))
     viewer = ViewerServer((BIND_HOST, settings.lend_port), make_viewer_handler(lend))
     threading.Thread(target=viewer.serve_forever, daemon=True).start()
     try:

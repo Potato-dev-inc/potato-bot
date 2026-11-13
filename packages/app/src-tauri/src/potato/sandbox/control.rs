@@ -35,6 +35,8 @@ const READ_TIMEOUT: Duration = Duration::from_secs(40);
 /// How long a call waits for the guest's server to start listening. A refused connection sent nothing, so only that is retried.
 const CONNECT_WAIT: Duration = Duration::from_secs(5);
 const CONNECT_STEP: Duration = Duration::from_millis(250);
+/// The background-task calls the guest knows.
+pub const TASK_OPS: [&str; 4] = ["start", "status", "tail", "stop"];
 /// The transport text of a refused connection (the one ControlError::Unreachable that is safe to retry).
 const REFUSED: &str = "connection refused";
 
@@ -383,6 +385,15 @@ impl ControlClient {
     /// Same auth, timeouts and retry rule as `post`.
     pub fn post_raw(&self, path: &str, headers: &[(&str, String)], bytes: &[u8]) -> Result<Value, ControlError> {
         self.call_raw(path, headers, bytes)
+    }
+
+    /// One call to the guest's background-task routes (`/v1/task/start|status|tail|stop`). Only those four names go out.
+    /// A start or a stop is not repeated after a failure: it may already have happened.
+    pub fn task(&self, op: &str, body: Value) -> Result<Value, ControlError> {
+        if !TASK_OPS.contains(&op) {
+            return Err(ControlError::Invalid("there is no such task call"));
+        }
+        self.call(&format!("/v1/task/{op}"), body)
     }
 
     /// The MCP tools the guest offers (GET /v1/mcp/tools).

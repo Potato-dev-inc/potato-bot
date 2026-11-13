@@ -1,7 +1,7 @@
 import type { ChatRequest, ChatResult, Msg, Provider, ToolCall, Usage } from "../types.ts";
 import { estimateTokens } from "./budget.ts";
 import { modelSeesImages } from "./models.ts";
-import { CodedError, codeForStatus } from "./errors.ts";
+import { CONTEXT_TOO_LONG_REASON, CodedError, codeForStatus } from "./errors.ts";
 
 export interface OpenAIOptions {
   apiKey: string;
@@ -183,11 +183,21 @@ export function parseTextToolCalls(raw: string): { text: string; calls: ToolCall
   return { text: visible.trim(), calls };
 }
 
-type Attempt = { ok: true; result: ChatResult } | { ok: false; reason: string; usage: Usage };
+type Attempt = { ok: true; result: ChatResult } | { ok: false; reason: string; usage: Usage; cut?: ChatResult };
 
 /** The room a retry gets after an empty or cut-off reply: four times the budget, between these bounds. */
 const MIN_RETRY_TOKENS = 4000;
 const MAX_RETRY_TOKENS = 16000;
+
+/** Whether an error reply says the prompt does not fit the model's window. Reads a little of the body; keeps none of it. */
+async function bodyMeansTooLong(res: Response): Promise<boolean> {
+  try {
+    const text = (await res.text()).slice(0, 4000);
+    return /context[_ ]length|context window|maximum context|too many tokens|prompt is too long|input.{0,20}too long|exceeds? the (?:model|maximum)|reduce the length/i.test(text);
+  } catch {
+    return false;
+  }
+}
 
 /** A server fault or an unreadable reply is worth one more try; 4xx (401, 402, 403, 429 too) and a lost network are not. */
 function retryable(err: CodedError): boolean {
@@ -281,6 +291,8 @@ export class OpenAICompatProvider implements Provider {
     const bigger = Math.min(MAX_RETRY_TOKENS, Math.max(MIN_RETRY_TOKENS, budget * 4));
     const second = await this.attempt(req, model, bigger, true);
     if (second.ok) return { ...second.result, usage: addUsage(first.usage, second.result.usage) };
+    // Cut off even with room: the loop hears of it (cutOff) and tells the model to write smaller pieces. Nothing runs.
+    if (second.cut) return { ...second.cut, usage: addUsage(first.usage, second.cut.usage) };
     throw new CodedError("PROVIDER_DOWN", `${this.name}/${model}: ${second.reason}`, undefined, second.reason);
   }
 
@@ -328,6 +340,10 @@ export class OpenAICompatProvider implements Provider {
 
     if (!res.ok) {
       // The body is never read: it can echo the request or the account.
+      // Only a 400/413 body is looked at, for the one question "was the request too long?"; none of it is kept or passed on.
+      if ((res.status === 400 || res.status === 413) && (await bodyMeansTooLong(res))) {
+        throw new CodedError(codeForStatus(res.status), `${this.name} ${res.status}`, res.status, CONTEXT_TOO_LONG_REASON);
+      }
       void res.body?.cancel().catch(() => {});
       throw new CodedError(codeForStatus(res.status), `${this.name} ${res.status}`, res.status, `http ${res.status}`);
     }
@@ -364,7 +380,11 @@ export class OpenAICompatProvider implements Provider {
     const cutOff = toolCalls.length > 0 && finishReason === "length";
     if (empty || cutOff) {
       const reason = empty ? `empty reply finish=${finishReason}` : "tool call cut off finish=length";
-      return { ok: false, reason, usage: usageOf(u, req.messages, text) };
+      const spent = usageOf(u, req.messages, text);
+      const cut: ChatResult | undefined = cutOff
+        ? { text, usage: spent, model, toolCalls, cutOff: true, ...(reasoning === "" ? {} : { reasoning }) }
+        : undefined;
+      return { ok: false, reason, usage: spent, ...(cut ? { cut } : {}) };
     }
     const usage = usageOf(u, req.messages, text);
 

@@ -2,7 +2,7 @@
 import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { OpenAICompatProvider } from "../src/core/openai.ts";
-import { CodedError, reasonOf } from "../src/core/errors.ts";
+import { CodedError, isContextTooLong, reasonOf } from "../src/core/errors.ts";
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -65,14 +65,28 @@ test("a cut-off tool call is never passed on; the retry's whole call is", async 
   assert.equal(res.toolCalls?.[0]?.arguments, '{"command":"ls"}');
 });
 
-test("a tool call cut off twice fails with a safe reason and sends nothing", async () => {
-  fake([cutCall(), cutCall()]);
+test("a tool call cut off twice comes back flagged cutOff, so the loop can tell the model", async () => {
+  const f = fake([cutCall(), cutCall()]);
+  const res = await make().chat(req);
+  assert.equal(f.calls(), 2);
+  assert.equal(res.cutOff, true);
+  assert.equal(res.toolCalls?.length, 1);
+});
+
+test("a 400 that says the context is too long fails with the fixed reason and none of the body", async () => {
+  fake([json({ error: { message: "This model's maximum context length is 8192 tokens. secret-detail" } }, 400)]);
   await assert.rejects(make().chat(req), (e: unknown) => {
     assert.ok(e instanceof CodedError);
-    assert.equal(e.code, "PROVIDER_DOWN");
-    assert.equal(reasonOf(e), "tool call cut off finish=length");
+    assert.equal(isContextTooLong(e), true);
+    assert.equal(reasonOf(e), "context too long");
+    assert.ok(!String(e.message).includes("secret-detail"));
     return true;
   });
+});
+
+test("any other 400 is not a context error", async () => {
+  fake([json({ error: { message: "bad parameter" } }, 400)]);
+  await assert.rejects(make().chat(req), (e: unknown) => e instanceof CodedError && !isContextTooLong(e));
 });
 
 test("empty twice reports the finish reason", async () => {

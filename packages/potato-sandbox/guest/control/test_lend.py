@@ -295,7 +295,11 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(self.api_post("/v1/lend/frame", self.frame_payload("big", jpeg=big))[0], 200)  # over the 256 KB cap
         self.assertEqual(self.api_post("/v1/lend/open", {"id": "big", "title": "x" * 300_000})[0], 400)  # general cap holds
         huge = {"id": "big", "seq": 9, "w": 1, "h": 1, "jpeg_b64": "A" * (4 * 1024 * 1024 + 10)}
-        self.assertEqual(self.api_post("/v1/lend/frame", huge)[0], 400)
+        # The daemon refuses before reading the body. Windows reads the 400; Linux often breaks the pipe while still sending.
+        try:
+            self.assertEqual(self.api_post("/v1/lend/frame", huge)[0], 400)
+        except urllib.error.URLError as err:
+            self.assertIsInstance(err.reason, (BrokenPipeError, ConnectionResetError))
 
     def test_full_round_trip(self):
         status, _ = self.api_post("/v1/lend/open", {"id": "rt1", "title": "My\x00 <App>", "w": 640, "h": 480})

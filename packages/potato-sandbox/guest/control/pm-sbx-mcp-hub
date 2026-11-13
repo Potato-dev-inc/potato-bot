@@ -9,15 +9,18 @@ Rules:
   and the hung child is killed. A child that dies gets one restart; a second death leaves the server failed until
   the config is replaced.
 - Child stdout is read in a thread; one line is capped at 4 MB (oversize kills the child). Child stderr goes to
-  <log_dir>/<name>.stderr.log (mode 0600). Nothing logs argv values or env values.
+  <log_dir>/<name>.stderr.log (mode 0600). Nothing logs argv values or env values. The log folder and the config
+  folder are root's alone (never the pm user's): root opens the log itself, without following a link, and hands the open
+  file to the child, so no path in a folder the child can write is ever opened, chowned or replaced by root.
 - The built-in "computer" server is always present and cannot be replaced by the config.
-- User servers are saved to config_path (root-only, 0600) and reloaded at start.
+- User servers are saved to config_path (root-only folder, file 0600) and reloaded at start.
 """
 
 import json
 import os
 import queue
 import re
+import stat as stat_module
 import subprocess
 import sys
 import threading
@@ -136,23 +139,161 @@ def _pm_ids(run_as):
     return entry.pw_uid, entry.pw_gid
 
 
-def _open_log(path, ids):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-    if ids is not None:
-        os.fchown(fd, ids[0], ids[1])
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
+_BINARY = getattr(os, "O_BINARY", 0)
+# Where the platform has them (Linux, the real sandbox) every file below a root folder is reached through the folder's fd
+# with O_NOFOLLOW. Elsewhere (Windows unit tests) the plain path is used; the checks that can run still run.
+HAVE_DIR_FD = bool(_NOFOLLOW) and os.open in os.supports_dir_fd and os.rename in os.supports_dir_fd
+MAX_CONFIG_BYTES = 4 * 1024 * 1024
+
+
+def _open_root_dir(path, create=True):
+    """(fd, path) of a folder only we may write: created 0700 when missing, never a link, owned by this process and not
+    writable by group or others. fd is -1 where directory fds are not used. The caller closes fd when it is >= 0."""
+    if create:
+        os.makedirs(os.path.dirname(os.path.abspath(path)), mode=0o755, exist_ok=True)
+        try:
+            os.mkdir(path, 0o700)
+        except FileExistsError:
+            pass
+    if not HAVE_DIR_FD:
+        if os.path.islink(path) or not os.path.isdir(path):
+            raise OSError("not a plain folder")
+        return -1, path
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | _NOFOLLOW | _CLOEXEC)
+    try:
+        info = os.fstat(fd)
+        if not stat_module.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o022:
+            raise OSError("the folder is not private to this process")
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd, path
+
+
+def _close_dir(ref):
+    if ref[0] >= 0:
+        os.close(ref[0])
+
+
+def _open_at(ref, name, flags, mode=0o600):
+    if "/" in name or name in ("", ".", ".."):
+        raise OSError("bad file name")
+    fd, path = ref
+    if fd >= 0:
+        return os.open(name, flags | _NOFOLLOW | _CLOEXEC, mode, dir_fd=fd)
+    return os.open(os.path.join(path, name), flags | _BINARY, mode)
+
+
+def _require_plain_file(fd, single_link=False):
+    info = os.fstat(fd)
+    if not stat_module.S_ISREG(info.st_mode) or (single_link and info.st_nlink != 1):
+        raise OSError("not a plain file")
+    return info
+
+
+def _open_log(path):
+    """The log opened for append by root, inside the root-only log folder, never through a link, never chowned. The child
+    gets this open file as its stderr; it does not need a path (and has no access to the folder)."""
+    ref = _open_root_dir(os.path.dirname(path))
+    try:
+        fd = _open_at(ref, os.path.basename(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    finally:
+        _close_dir(ref)
+    try:
+        _require_plain_file(fd, single_link=True)
+    except BaseException:
+        os.close(fd)
+        raise
     return os.fdopen(fd, "ab")
 
 
-def load_config(path):
-    """User servers from the config file. A missing file means none; a broken file is ignored with a warning."""
-    if not path or not os.path.exists(path):
+def _read_plain(ref, name, limit=MAX_CONFIG_BYTES):
+    """The bytes of a plain file reached without following a link. FileNotFoundError when it is missing."""
+    fd = _open_at(ref, name, os.O_RDONLY)
+    try:
+        info = _require_plain_file(fd)
+        if info.st_size > limit:
+            raise OSError("file too large")
+        with os.fdopen(fd, "rb") as handle:
+            fd = -1
+            return handle.read(limit + 1)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
+def _write_plain(ref, name, data):
+    """Atomic: a new temp file (O_EXCL, no link followed), then a rename inside the same folder fd."""
+    temp = name + ".tmp"
+    try:
+        if ref[0] >= 0:
+            os.unlink(temp, dir_fd=ref[0])  # unlink never follows a link
+        else:
+            os.unlink(os.path.join(ref[1], temp))
+    except FileNotFoundError:
+        pass
+    fd = _open_at(ref, temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(data)
+        handle.flush()
+        os.fsync(handle.fileno())
+    if ref[0] >= 0:
+        os.replace(temp, name, src_dir_fd=ref[0], dst_dir_fd=ref[0])
+    else:
+        os.replace(os.path.join(ref[1], temp), os.path.join(ref[1], name))
+
+
+def _read_legacy(path):
+    """One safe read of the old config in the pm-owned folder: a plain file (not a link), opened without following a link."""
+    try:
+        if not stat_module.S_ISREG(os.lstat(path).st_mode):
+            return None
+        fd = os.open(path, os.O_RDONLY | _NOFOLLOW | _CLOEXEC | _BINARY)
+    except OSError:
+        return None
+    try:
+        info = _require_plain_file(fd)
+        if info.st_size > MAX_CONFIG_BYTES:
+            return None
+        with os.fdopen(fd, "rb") as handle:
+            fd = -1
+            return handle.read(MAX_CONFIG_BYTES + 1)
+    except OSError:
+        return None
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
+def _specs_from_bytes(data):
+    parsed = json.loads(data.decode("utf-8"))
+    raw = parsed.get("servers") if isinstance(parsed, dict) else None
+    return validate_servers(raw if raw is not None else [])
+
+
+def load_config(path, legacy_path=None):
+    """User servers from the config file. A missing file means none; a broken file is ignored with a warning. When the file
+    is missing and legacy_path (the old place, in a folder the pm user can write) holds a plain file, that is read once and
+    saved to the new place."""
+    if not path:
         return []
     try:
-        with open(path, encoding="utf-8") as handle:
-            data = json.load(handle)
-        raw = data.get("servers") if isinstance(data, dict) else None
-        return validate_servers(raw if raw is not None else [])
+        ref = _open_root_dir(os.path.dirname(path))
+        try:
+            try:
+                return _specs_from_bytes(_read_plain(ref, os.path.basename(path)))
+            except FileNotFoundError:
+                pass
+        finally:
+            _close_dir(ref)
+        data = _read_legacy(legacy_path) if legacy_path else None
+        if data is None:
+            return []
+        specs = _specs_from_bytes(data)
+        save_config(path, specs)
+        return specs
     except (OSError, ValueError, InvalidRequest) as error:
         print(f"pm-sbx-mcp-hub: ignoring the MCP config file ({type(error).__name__})", file=sys.stderr)
         return []
@@ -165,14 +306,11 @@ def save_config(path, specs):
             for spec in specs
         ]
     }
-    directory = os.path.dirname(path)
-    os.makedirs(directory, mode=0o700, exist_ok=True)
-    temp = path + ".tmp"
-    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        json.dump(data, handle, separators=(",", ":"))
-    os.chmod(temp, 0o600)
-    os.replace(temp, path)
+    ref = _open_root_dir(os.path.dirname(path))
+    try:
+        _write_plain(ref, os.path.basename(path), json.dumps(data, separators=(",", ":")).encode("utf-8"))
+    finally:
+        _close_dir(ref)
 
 
 class _Child:
@@ -182,7 +320,7 @@ class _Child:
         self._on_exit = on_exit
         self._next_id = 0
         self.inbox = queue.Queue()
-        stderr = _open_log(stderr_path, ids)
+        stderr = _open_log(stderr_path)
         # Another user also means no supplementary groups of ours (root's, when the secret hub runs this).
         kwargs = {} if ids is None else {"user": ids[0], "group": ids[1], "extra_groups": []}
         try:
@@ -457,12 +595,13 @@ class McpHub:
     """The server set. Built with start() and replaced with replace_user_servers(); close() reaps every child."""
 
     def __init__(self, *, display=DEFAULT_DISPLAY, log_dir, config_path, computer_script, run_as=None,
-                 call_timeout=CALL_TIMEOUT_SEC, start_timeout=START_TIMEOUT_SEC, identity=None):
+                 call_timeout=CALL_TIMEOUT_SEC, start_timeout=START_TIMEOUT_SEC, identity=None, legacy_config_path=None):
         # identity(name) -> ((uid, gid), home): each server runs as its own user with its own home (pm-sbx-secret-hub).
         self.identity = identity
         self.display = display
         self.log_dir = log_dir
         self.config_path = config_path
+        self.legacy_config_path = legacy_config_path
         self.run_as = run_as
         self.ids = _pm_ids(run_as)
         self.call_timeout = call_timeout
@@ -475,7 +614,7 @@ class McpHub:
     def start(self):
         """Start the built-in server and every saved user server. Returns at once; each child starts in a thread."""
         self._computer.start()
-        self._install(load_config(self.config_path))
+        self._install(load_config(self.config_path, self.legacy_config_path))
 
     def _install(self, specs):
         servers = {spec.name: _Server(self, spec) for spec in specs}

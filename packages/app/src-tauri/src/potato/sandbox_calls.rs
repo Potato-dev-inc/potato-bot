@@ -55,13 +55,13 @@ use super::sandbox::control::{self, Action, Button, Direction};
 use super::sandbox::lease::{Holder, LeaseError, NeedsYou, ScreenLease};
 use super::mcp;
 use super::artifacts;
-use super::sandbox::{shell_quote, Observation, PageFetch, Sandbox, SandboxError};
+use super::sandbox::{shell_quote, FileRange, Observation, PageFetch, Sandbox, SandboxError};
 use super::service::Host;
 use super::rooms::store::{self as rstore, RoomFrom, RoomLine, Speaker};
 use super::store::{self, FileCard, FromKind, Message, MsgKind};
 
 #[cfg_attr(not(test), allow(dead_code))]
-pub const TOOL_NAMES: [&str; 18] = [
+pub const TOOL_NAMES: [&str; 19] = [
     "computer_observe",
     "computer_act",
     "browser_navigate",
@@ -80,6 +80,7 @@ pub const TOOL_NAMES: [&str; 18] = [
     "send_file",
     "app_observe",
     "app_act",
+    "task",
 ];
 /// The longest description a `send_file` card carries (the card keeps it short).
 pub const MAX_SEND_DESCRIPTION_CHARS: usize = 300;
@@ -124,6 +125,8 @@ pub enum Tool {
     /// A lent Windows app (`lend_tools.rs`): runs on the owner's PC, not in the sandbox.
     AppObserve,
     AppAct,
+    /// Background tasks owned by the computer's control service (start, status, tail, stop).
+    Task,
 }
 
 impl Tool {
@@ -159,6 +162,7 @@ impl Tool {
             "mcp_call_tool" => Tool::McpCallTool,
             "app_observe" => Tool::AppObserve,
             "app_act" => Tool::AppAct,
+            "task" => Tool::Task,
             _ => return None,
         })
     }
@@ -184,6 +188,7 @@ impl Tool {
             Tool::McpCallTool => "mcp_call_tool",
             Tool::AppObserve => "app_observe",
             Tool::AppAct => "app_act",
+            Tool::Task => "task",
         }
     }
 }
@@ -239,7 +244,10 @@ pub enum Request {
     /// Not a screen action: the "Needs you" card. `reason` is trimmed and not empty.
     AskPerson { reason: String },
     Terminal { command: String, cwd: Option<String>, timeout_ms: u64 },
-    ReadFile { path: String },
+    /// `offset`: start at this byte. `tail_bytes`: read the END of the file instead (this many bytes). Never both.
+    ReadFile { path: String, offset: Option<u64>, tail_bytes: Option<usize> },
+    /// A background task: start, look at, read the end of, or stop a program that keeps running between turns.
+    Task(TaskCall),
     /// A file from the sandbox into the owner's chat as a card. `name` is the label (no folder part).
     SendFile { path: String, name: String, description: Option<String> },
     WriteFile { path: String, content: String, append: bool },
@@ -256,6 +264,124 @@ pub enum Request {
     AppAct { app: String, action: super::lend_tools::AppAction },
 }
 
+/// One call to the bot's background tasks. A program is an argv list and a folder, never a shell string.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TaskCall {
+    Start { argv: Vec<String>, cwd: String, label: Option<String> },
+    /// One task, or (no id) all of them.
+    Status { id: Option<String> },
+    Tail { id: String, bytes: Option<u32> },
+    Stop { id: String },
+}
+
+/// Most words in a task's argv and most characters in one word (the control service checks the same numbers).
+pub const MAX_TASK_ARGS: usize = 32;
+pub const MAX_TASK_ARG_CHARS: usize = 16 * 1024;
+const MAX_TASK_LABEL_CHARS: usize = 80;
+const MAX_TASK_TAIL_BYTES: f64 = 65_536.0;
+
+impl TaskCall {
+    /// The control service's route name and JSON body for this call.
+    pub fn wire(&self) -> (&'static str, Value) {
+        match self {
+            TaskCall::Start { argv, cwd, label } => {
+                let mut body = json!({ "argv": argv, "cwd": cwd });
+                if let Some(label) = label {
+                    body["label"] = json!(label);
+                }
+                ("start", body)
+            }
+            TaskCall::Status { id: Some(id) } => ("status", json!({ "id": id })),
+            TaskCall::Status { id: None } => ("status", json!({})),
+            TaskCall::Tail { id, bytes } => {
+                let mut body = json!({ "id": id });
+                if let Some(bytes) = bytes {
+                    body["bytes"] = json!(bytes);
+                }
+                ("tail", body)
+            }
+            TaskCall::Stop { id } => ("stop", json!({ "id": id })),
+        }
+    }
+}
+
+/// What a task `status` or `tail` is called in the answer cache: bot, call, task and size. None for the calls that change things.
+fn task_key(bot: &str, request: &Request) -> Option<String> {
+    match request {
+        Request::Task(TaskCall::Status { id }) => Some(format!("{bot}\u{1}status\u{1}{}", id.as_deref().unwrap_or("*"))),
+        Request::Task(TaskCall::Tail { id, bytes }) => Some(format!("{bot}\u{1}tail\u{1}{id}\u{1}{}", bytes.unwrap_or(0))),
+        _ => None,
+    }
+}
+
+/// An argv as one command line, for the risk check and the approval card: a word is quoted only when it needs it.
+fn argv_line(argv: &[String]) -> String {
+    argv.iter()
+        .map(|word| {
+            let plain = !word.is_empty() && word.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_./=:,+@%".contains(&b));
+            if plain { word.clone() } else { shell_quote(word) }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn task_id(obj: &Map<String, Value>) -> Result<String, CallError> {
+    let id = obj.get("id").and_then(Value::as_str).map(str::trim).unwrap_or("");
+    let ok = id.len() == 10 && id.starts_with("t-") && id[2..].bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    if ok { Ok(id.to_string()) } else { Err(bad("Give the task id the start call answered with (like t-1a2b3c4d).")) }
+}
+
+fn validate_task(obj: &Map<String, Value>) -> Result<Request, CallError> {
+    let action = obj.get("action").and_then(Value::as_str).map(str::trim).unwrap_or("");
+    Ok(Request::Task(match action {
+        "start" => {
+            if obj.contains_key("command") {
+                return Err(bad("A task takes argv (a list of words), not a command string. To use a pipe or a redirect, write a script file and start [\"bash\", \"script.sh\"]."));
+            }
+            let words = obj.get("argv").and_then(Value::as_array).ok_or_else(|| bad("Give argv: the program and its arguments as a list of strings."))?;
+            if words.is_empty() || words.len() > MAX_TASK_ARGS {
+                return Err(bad(format!("argv must hold 1 to {MAX_TASK_ARGS} words.")));
+            }
+            let mut argv = Vec::with_capacity(words.len());
+            for word in words {
+                let Some(word) = word.as_str() else { return Err(bad("Every word of argv must be a string.")) };
+                if word.chars().count() > MAX_TASK_ARG_CHARS || word.contains('\0') {
+                    return Err(bad("A word of argv is too long or holds a NUL."));
+                }
+                argv.push(word.to_string());
+            }
+            if argv[0].trim().is_empty() {
+                return Err(bad("argv[0] must be the program to run."));
+            }
+            let cwd = optional_guest_path(obj, "cwd")?.unwrap_or_else(|| "/home/pm".to_string());
+            let label = obj
+                .get("label")
+                .and_then(Value::as_str)
+                .map(|l| l.chars().filter(|c| !c.is_control()).take(MAX_TASK_LABEL_CHARS).collect::<String>())
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty());
+            TaskCall::Start { argv, cwd, label }
+        }
+        "status" => {
+            let id = match obj.get("id") {
+                None | Some(Value::Null) => None,
+                Some(_) => Some(task_id(obj)?),
+            };
+            TaskCall::Status { id }
+        }
+        "tail" => {
+            let bytes = match number(obj, "bytes")? {
+                None => None,
+                Some(v) if (1.0..=MAX_TASK_TAIL_BYTES).contains(&v) => Some(v.floor() as u32),
+                Some(_) => return Err(bad("bytes must be between 1 and 65536.")),
+            };
+            TaskCall::Tail { id: task_id(obj)?, bytes }
+        }
+        "stop" => TaskCall::Stop { id: task_id(obj)? },
+        _ => return Err(bad("action must be start, status, tail or stop.")),
+    }))
+}
+
 /// A wallpaper is a picture inside the sandbox or one plain colour.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WallpaperTarget {
@@ -270,6 +396,8 @@ impl Request {
             Request::Act { actions, .. } => actions.len() as u32,
             Request::BrowserAct { actions } => actions.len() as u32,
             Request::AskPerson { .. } | Request::McpList => 0,
+            // Looking at a task costs nothing; `Calls::task_cached` is what stops a bot from asking over and over. Start and stop are actions.
+            Request::Task(TaskCall::Status { .. } | TaskCall::Tail { .. }) => 0,
             _ => 1,
         }
     }
@@ -505,7 +633,7 @@ fn wallpaper_target(obj: &Map<String, Value>) -> Result<WallpaperTarget, CallErr
 impl Request {
     /// Calls that only look or read: repeating one cannot change anything on the computer.
     pub fn is_read_only(&self) -> bool {
-        matches!(self, Request::Observe | Request::Snapshot | Request::AppObserve { .. } | Request::ReadFile { .. } | Request::ListFiles { .. } | Request::McpList | Request::WebFetch { .. })
+        matches!(self, Request::Observe | Request::Snapshot | Request::AppObserve { .. } | Request::ReadFile { .. } | Request::ListFiles { .. } | Request::McpList | Request::WebFetch { .. } | Request::Task(TaskCall::Status { .. } | TaskCall::Tail { .. }))
         // `SendFile` is not read-only: it posts a chat message, so it is never repeated.
     }
 }
@@ -580,7 +708,23 @@ pub fn validate(tool: Tool, args: &Value, pointer: Option<(i32, i32)>, opts: &Op
                 .clamp(1000.0, MAX_TERMINAL_MS as f64) as u64;
             Request::Terminal { command: command.to_string(), cwd, timeout_ms }
         }
-        Tool::ReadFile => Request::ReadFile { path: guest_path(obj, "path")? },
+        Tool::ReadFile => {
+            let path = guest_path(obj, "path")?;
+            let offset = match number(obj, "offset")? {
+                None => None,
+                Some(v) if v >= 0.0 && v <= 9.0e15 => Some(v.floor() as u64),
+                Some(_) => return Err(bad("offset must be zero or more.")),
+            };
+            let tail_bytes = match number(obj, "tail_bytes")? {
+                None => None,
+                Some(v) if v >= 1.0 => Some((v.floor().min(MAX_FILE_BYTES as f64)) as usize),
+                Some(_) => return Err(bad("tail_bytes must be at least 1.")),
+            };
+            if offset.is_some() && tail_bytes.is_some() {
+                return Err(bad("Give offset or tail_bytes, not both."));
+            }
+            Request::ReadFile { path, offset, tail_bytes }
+        }
         Tool::SendFile => {
             let path = guest_path(obj, "path")?;
             // The label is the file's own name unless the bot gives one; any folder part is dropped.
@@ -620,6 +764,7 @@ pub fn validate(tool: Tool, args: &Value, pointer: Option<(i32, i32)>, opts: &Op
         }
         Tool::SetWallpaper => Request::Wallpaper { target: wallpaper_target(obj)? },
         Tool::McpListTools => Request::McpList,
+        Tool::Task => return validate_task(obj),
         Tool::McpCallTool => {
             let server = obj.get("server").and_then(Value::as_str).map(str::trim).unwrap_or("");
             if !mcp::valid_server_name(server) {
@@ -676,7 +821,13 @@ pub struct Calls {
     pub(super) serial: Mutex<()>,
     /// True while the owner's sign-in card is filling a page (`login_calls.rs`): every call from the bot is refused.
     pub(super) login_busy: std::sync::atomic::AtomicBool,
+    /// The last fresh answer to each task `status` / `tail` (when, and what), so a bot that polls gets the same answer back
+    /// instead of a new look every time. Keyed by bot, call and task (`task_key`).
+    task_seen: Mutex<HashMap<String, (i64, Value)>>,
 }
+
+/// A task `status` or `tail` gives a fresh answer at most this often per task; in between the last answer comes back.
+pub const TASK_POLL_MS: i64 = 30_000;
 
 /// A tool name that reads: it starts with get, list, read, search, fetch or find, and the word ends there (get_issue,
 /// listFiles, search-docs). A tool named otherwise may change things. A name is only a name: this is a net, not a wall.
@@ -698,7 +849,7 @@ impl Calls {
     }
 
     pub fn new(root: PathBuf, host: Arc<dyn Host>) -> Calls {
-        Calls { root, host, opts: Mutex::new(Options::from_environment()), runs: Mutex::new(HashMap::new()), serial: Mutex::new(()), login_busy: Default::default() }
+        Calls { root, host, opts: Mutex::new(Options::from_environment()), runs: Mutex::new(HashMap::new()), serial: Mutex::new(()), login_busy: Default::default(), task_seen: Mutex::new(HashMap::new()) }
     }
 
     /// Runs one call and logs how long it took: the tool kind, the milliseconds and the outcome code. Never the arguments.
@@ -772,6 +923,14 @@ impl Calls {
             Request::McpCall { server, .. } => bot_settings::load(&self.root, &ctx.bot).ok().and_then(|s| mcp::remote_of(&s, server)),
             _ => None,
         };
+        // A status or tail asked again inside the poll window gets the last answer: no new look, no screen, no action.
+        let task_key = task_key(&ctx.bot, &request);
+        if let Some(key) = &task_key {
+            if let Some(answer) = self.task_cached(key, now) {
+                return Ok(answer);
+            }
+        }
+        let task_changes = matches!(request, Request::Task(TaskCall::Start { .. } | TaskCall::Stop { .. }));
         if remote.is_none() {
             self.hold_screen(port, ctx, &id, now)?;
         }
@@ -796,7 +955,35 @@ impl Calls {
             }
         }
         redact(&mut answer);
+        if task_changes {
+            // The tasks changed: the old answers are no longer true.
+            let prefix = format!("{}\u{1}", ctx.bot);
+            self.task_seen.lock().retain(|key, _| !key.starts_with(&prefix));
+        }
+        if let Some(key) = task_key {
+            let mut seen = self.task_seen.lock();
+            seen.retain(|_, (at, _)| now - *at < 10 * TASK_POLL_MS);
+            seen.insert(key, (now, answer.clone()));
+        }
         Ok(answer)
+    }
+
+    /// The last fresh answer to this task look, when it is still inside the poll window: marked `cached: true`, with how many
+    /// seconds are left until a new look is allowed.
+    fn task_cached(&self, key: &str, now: i64) -> Option<Value> {
+        let seen = self.task_seen.lock();
+        let (at, answer) = seen.get(key)?;
+        let age = now - *at;
+        if !(0..TASK_POLL_MS).contains(&age) {
+            return None;
+        }
+        let mut answer = answer.clone();
+        if let Some(map) = answer.as_object_mut() {
+            map.insert("cached".to_string(), json!(true));
+            map.insert("freshAnswerInSeconds".to_string(), json!(((TASK_POLL_MS - age) + 999) / 1000));
+            map.insert("note".to_string(), json!("This is the answer from a moment ago. Do not ask again yet: do something else, or use wait_until."));
+        }
+        Some(answer)
     }
 
     /// The owner's site limit for this bot, read fresh from its settings file. A file that cannot be read is the strictest answer: the
@@ -990,6 +1177,15 @@ impl Calls {
                 let needs = vec![("connected tool".to_string(), "may change things or use a real account through a connected tool".to_string())];
                 Some((key, None, format!("Use the tool {tool} on {server}"), "This tool call".to_string(), needs))
             }
+            Request::Task(TaskCall::Start { argv, cwd, .. }) => {
+                // A task is a command that outlives the turn: it gets the same check as a terminal command.
+                let command = argv_line(argv);
+                let mut needs: Vec<(String, String)> = risk::classify(&command, Some(cwd)).iter().map(|r| (r.class.to_string(), r.label.to_string())).collect();
+                if ask_first && !risk::read_only(&command) {
+                    needs.push(change());
+                }
+                (!needs.is_empty()).then(|| (command.clone(), Some(cwd.clone()), command, "This task".to_string(), needs))
+            }
             Request::SendFile { path, name, .. } if ask_first => {
                 let needs = vec![("send file".to_string(), "puts a file from its computer into the chat".to_string())];
                 Some((format!("send_file {path} {name}"), None, format!("Send the file {name} from {path}"), "This".to_string(), needs))
@@ -1124,10 +1320,14 @@ impl Calls {
         let day = self.host.local_day(now);
         match super::cost::spend_sandbox_actions(&self.root, &day, &ctx.bot, cost, cap) {
             Ok(spent) if spent.allowed => Ok(()),
-            Ok(spent) => Err(CallError::new(
-                "SANDBOX_DAILY_CAP",
-                format!("The bot has used {} of its {} computer actions for today. It can use the computer again tomorrow, or the person can raise the limit.", spent.used, spent.cap),
-            )),
+            Ok(spent) => {
+                // A running job remembers it: the app pauses the job and asks, instead of the bot giving up on its own.
+                super::jobs::mark_actions_capped(&self.root, &ctx.bot, &day, spent.cap, now);
+                Err(CallError::new(
+                    "SANDBOX_DAILY_CAP",
+                    format!("The bot has used {} of its {} computer actions for today. It can use the computer again tomorrow, or the person can raise the limit.", spent.used, spent.cap),
+                ))
+            }
             Err(_) => Err(CallError::new("SANDBOX_COUNT_FAILED", "The day's action count could not be saved, so nothing was run. Try the same call again in a moment.")),
         }
     }
@@ -1173,8 +1373,23 @@ impl Calls {
                     "timedOut": out.timed_out,
                 }))
             }
+            Request::Task(call) => {
+                let (op, body) = call.wire();
+                Ok(sandbox.task_call(op, &body)?)
+            }
             Request::SendFile { path, name, description } => self.send_file(port, ctx, &path, &name, description.as_deref()),
-            Request::ReadFile { path } => {
+            Request::ReadFile { path, offset, tail_bytes } if offset.is_some() || tail_bytes.is_some() => {
+                let range = match (offset, tail_bytes) {
+                    (Some(o), _) => FileRange::From(o),
+                    _ => FileRange::Tail,
+                };
+                let slice = sandbox.read_file_range(&path, range, tail_bytes.unwrap_or(MAX_FILE_BYTES))?;
+                let start = slice.start(range);
+                let end = start + slice.bytes.len() as u64;
+                let text = String::from_utf8_lossy(&slice.bytes).to_string();
+                Ok(json!({ "ok": true, "path": path, "bytes": slice.bytes.len(), "totalBytes": slice.total, "startByte": start, "endByte": end, "truncated": end < slice.total, "text": text }))
+            }
+            Request::ReadFile { path, .. } => {
                 let bytes = sandbox.read_file(&path, MAX_FILE_BYTES)?;
                 let truncated = bytes.len() >= MAX_FILE_BYTES;
                 let text = String::from_utf8_lossy(&bytes).to_string();

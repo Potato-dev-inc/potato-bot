@@ -448,6 +448,34 @@ fn a_person_who_holds_the_screen_keeps_the_sandbox_up_past_the_idle_minutes() {
     assert!(!guest.holder_alive());
 }
 
+#[test]
+fn an_active_job_keeps_the_sandbox_up_while_it_is_renewed_and_the_idle_stop_works_as_before_when_it_is_not() {
+    let (guest, lifecycle) = rig();
+    let m = 60_000;
+    lifecycle.ensure_ready(0).unwrap();
+    // the app renews a one-minute hold every few seconds while a job runs: no bot call at all for an hour
+    for minute in 0..60 {
+        lifecycle.hold_for_job(minute * m + m);
+        assert!(!lifecycle.idle_check(minute * m + 30_000).unwrap(), "minute {minute}");
+    }
+    assert_eq!(lifecycle.phase(), Phase::Ready);
+    assert!(guest.holder_alive());
+    // the job ends, nothing renews the hold: the idle minutes run from its last renewal (60 min)
+    assert!(!lifecycle.idle_check(74 * m).unwrap());
+    assert!(lifecycle.idle_check(76 * m).unwrap());
+    assert_eq!(lifecycle.phase(), Phase::Stopped);
+    assert!(!guest.holder_alive());
+}
+
+#[test]
+fn without_a_job_hold_the_idle_stop_is_unchanged() {
+    let (_guest, lifecycle) = rig();
+    let m = 60_000;
+    lifecycle.ensure_ready(0).unwrap();
+    assert!(!lifecycle.idle_check(14 * m).unwrap());
+    assert!(lifecycle.idle_check(15 * m).unwrap());
+}
+
 fn wait_for_call(guest: &FakeGuest, needle: &str) {
     let began = std::time::Instant::now();
     while !guest.joined().iter().any(|c| c.contains(needle)) {

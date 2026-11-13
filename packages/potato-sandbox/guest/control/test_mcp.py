@@ -211,6 +211,123 @@ class HubTests(FakeServerFixture):
         self.assertIsNotNone(child.proc.poll())
 
 
+POSIX = os.name == "posix" and hasattr(os, "symlink")
+
+
+@unittest.skipUnless(POSIX, "needs symbolic links and unix permissions")
+class RootFolderSafetyTests(unittest.TestCase):
+    """What root does inside its own folders must never follow a link planted by the pm user, and never chown by path."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="pm-mcp-safe-")
+        self.victim = os.path.join(self.dir, "victim")
+        with open(self.victim, "w", encoding="utf-8") as handle:
+            handle.write("keep")
+        os.chmod(self.victim, 0o640)
+        self.before = os.stat(self.victim)
+        self.folder = os.path.join(self.dir, "root-only")
+        self.config = os.path.join(self.folder, "mcp.json")
+        self.logs = os.path.join(self.dir, "logs")
+
+    def assert_victim_untouched(self):
+        after = os.stat(self.victim)
+        self.assertEqual((after.st_uid, after.st_gid, after.st_mode), (self.before.st_uid, self.before.st_gid, self.before.st_mode))
+        with open(self.victim, encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), "keep")
+
+    def no_chown(self):
+        from unittest import mock
+
+        def refuse(*_args, **_kwargs):
+            raise AssertionError("nothing may be chowned")
+
+        patches = [mock.patch.object(os, name, refuse) for name in ("chown", "fchown", "lchown") if hasattr(os, name)]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def test_a_planted_log_link_is_not_followed_or_chowned(self):
+        self.no_chown()
+        os.makedirs(self.logs, mode=0o700)
+        os.symlink(self.victim, os.path.join(self.logs, "evil.stderr.log"))
+        with self.assertRaises(OSError):
+            hub_mod._open_log(os.path.join(self.logs, "evil.stderr.log"))
+        self.assert_victim_untouched()
+
+    def test_a_hard_linked_log_is_refused(self):
+        os.makedirs(self.logs, mode=0o700)
+        os.link(self.victim, os.path.join(self.logs, "evil.stderr.log"))
+        with self.assertRaises(OSError):
+            hub_mod._open_log(os.path.join(self.logs, "evil.stderr.log"))
+        self.assert_victim_untouched()
+
+    def test_a_log_folder_that_is_a_link_or_open_to_others_is_refused(self):
+        os.makedirs(os.path.join(self.dir, "real"), mode=0o700)
+        os.symlink(os.path.join(self.dir, "real"), self.logs)
+        with self.assertRaises(OSError):
+            hub_mod._open_log(os.path.join(self.logs, "a.stderr.log"))
+        self.assertEqual(os.listdir(os.path.join(self.dir, "real")), [])
+        other = os.path.join(self.dir, "open")
+        os.makedirs(other)
+        os.chmod(other, 0o777)
+        with self.assertRaises(OSError):
+            hub_mod._open_log(os.path.join(other, "a.stderr.log"))
+
+    def test_the_log_is_created_private_in_a_new_root_folder(self):
+        self.no_chown()
+        handle = hub_mod._open_log(os.path.join(self.logs, "ok.stderr.log"))
+        handle.close()
+        self.assertEqual(os.stat(self.logs).st_mode & 0o777, 0o700)
+        self.assertEqual(os.stat(os.path.join(self.logs, "ok.stderr.log")).st_mode & 0o777, 0o600)
+
+    def test_a_planted_config_link_is_not_read(self):
+        os.makedirs(self.folder, mode=0o700)
+        with open(self.victim, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps({"servers": [{"name": "x", "command": "echo"}]}))
+        os.symlink(self.victim, self.config)
+        self.assertEqual(hub_mod.load_config(self.config), [])
+
+    def test_save_does_not_follow_a_planted_config_or_temp_link(self):
+        self.no_chown()
+        os.makedirs(self.folder, mode=0o700)
+        os.symlink(self.victim, self.config)
+        os.symlink(self.victim, self.config + ".tmp")
+        hub_mod.save_config(self.config, [hub_mod.ServerSpec("a", ("echo",), {})])
+        self.assert_victim_untouched()
+        self.assertFalse(os.path.islink(self.config))
+        self.assertEqual([spec.name for spec in hub_mod.load_config(self.config)], ["a"])
+
+    def test_save_refuses_a_config_folder_that_is_a_link(self):
+        real = os.path.join(self.dir, "real")
+        os.makedirs(real, mode=0o700)
+        os.symlink(real, self.folder)
+        with self.assertRaises(OSError):
+            hub_mod.save_config(self.config, [])
+        self.assertEqual(os.listdir(real), [])
+
+    def test_an_old_plain_config_is_moved_once_and_an_old_link_is_ignored(self):
+        old = os.path.join(self.dir, "old", "mcp.json")
+        os.makedirs(os.path.dirname(old))
+        with open(old, "w", encoding="utf-8") as handle:
+            json.dump({"servers": [{"name": "moved", "command": "echo", "args": ["x"]}]}, handle)
+        self.assertEqual([spec.name for spec in hub_mod.load_config(self.config, old)], ["moved"])
+        self.assertTrue(os.path.isfile(self.config))
+        os.unlink(old)
+        self.assertEqual([spec.name for spec in hub_mod.load_config(self.config, old)], ["moved"])  # now from the new file
+        # A link in the old place is never read.
+        other = os.path.join(self.dir, "other", "mcp.json")
+        os.symlink(self.victim, old)
+        self.assertEqual(hub_mod.load_config(other, old), [])
+        self.assertFalse(os.path.exists(other))
+
+    def test_the_new_file_wins_over_the_old_one(self):
+        old = os.path.join(self.dir, "old.json")
+        with open(old, "w", encoding="utf-8") as handle:
+            json.dump({"servers": [{"name": "stale", "command": "echo"}]}, handle)
+        hub_mod.save_config(self.config, [hub_mod.ServerSpec("fresh", ("echo",), {})])
+        self.assertEqual([spec.name for spec in hub_mod.load_config(self.config, old)], ["fresh"])
+
+
 class ValidationTests(unittest.TestCase):
     def check_refused(self, raw):
         with self.assertRaises(hub_mod.InvalidRequest):

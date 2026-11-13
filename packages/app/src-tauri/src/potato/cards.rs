@@ -453,7 +453,7 @@ fn decision_text(card: &Card, answer: Answer) -> String {
         (Answer::Choice(n), _) if card.login.is_some() => login_decision(card, n),
         (Answer::Choice(n), _) => {
             let choice = card.choices.get(n).map_or("", String::as_str);
-            if card.keep_going.as_deref() == Some(reason::DAILY_LIMIT) {
+            if matches!(card.keep_going.as_deref(), Some(reason::DAILY_LIMIT | reason::ACTION_LIMIT)) {
                 format!("Your owner chose \"{choice}\".{}", if n == 0 { " Go on with the goal." } else { "" })
             } else if card.keep_going.is_some() {
                 if n == 0 {

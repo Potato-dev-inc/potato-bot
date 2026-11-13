@@ -17,6 +17,7 @@ import sys
 import tempfile
 import time
 import unittest
+import unittest.mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FAKE_TOKEN = "fake-token-4c1e9a07d2b8"
@@ -216,6 +217,55 @@ class IdentityTests(unittest.TestCase):
         text = open(os.path.join(HERE, "pm-sbx-secret-hub"), encoding="utf-8").read()
         for word in ("import socket", "bind(", "listen(", "HTTPServer", "sudo "):
             self.assertNotIn(word, text.split('"""', 2)[2], word)
+
+
+@unittest.skipUnless(os.name == "posix" and hasattr(os, "fchown"), "needs unix permissions and symlinks")
+class PrepareSafetyTests(unittest.TestCase):
+    """The server's own user can swap its folders for links; root must not chown or chmod through one."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="pm-prep-")
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        self.home_root = os.path.join(self.dir, "home")
+        self.logs = os.path.join(self.dir, "logs")
+        self.passwd = os.path.join(self.dir, "passwd")
+        self.group = os.path.join(self.dir, "group")
+        for path in (self.passwd, self.group):
+            open(path, "w").close()
+        self.victim = os.path.join(self.dir, "victim")
+        os.mkdir(self.victim, 0o755)
+        # The test's own uid stands in for the server's, so a non-root run can give a folder to it.
+        uid = os.geteuid()
+        orig = secret.uid_for
+        secret.uid_for = lambda name: uid
+        self.addCleanup(setattr, secret, "uid_for", orig)
+
+    def prepare(self):
+        secret.prepare("probe", self.home_root, self.logs, self.passwd, self.group)
+
+    def test_a_home_is_made_private_without_chown_by_path(self):
+        with unittest.mock.patch.object(os, "chown", side_effect=AssertionError("no chown by path")),                 unittest.mock.patch.object(os, "chmod", side_effect=AssertionError("no chmod by path")):
+            self.prepare()
+        for folder in ("probe", "probe/tmp"):
+            self.assertEqual(os.stat(os.path.join(self.home_root, folder)).st_mode & 0o777, 0o700)
+        self.assertEqual(os.stat(self.logs).st_mode & 0o777, 0o700)
+
+    def test_a_tmp_replaced_by_a_link_is_refused_and_the_target_untouched(self):
+        self.prepare()
+        tmp = os.path.join(self.home_root, "probe", "tmp")
+        os.rmdir(tmp)
+        os.symlink(self.victim, tmp)
+        with self.assertRaises(OSError):
+            self.prepare()
+        self.assertEqual(os.stat(self.victim).st_mode & 0o777, 0o755)
+
+    def test_a_home_replaced_by_a_link_is_refused(self):
+        os.makedirs(self.home_root, mode=0o711)
+        os.symlink(self.victim, os.path.join(self.home_root, "probe"))
+        with self.assertRaises(OSError):
+            self.prepare()
+        self.assertEqual(os.stat(self.victim).st_mode & 0o777, 0o755)
+        self.assertEqual(os.listdir(self.victim), [])
 
 
 @unittest.skipUnless(ON_LINUX_ROOT, "needs Linux and root")

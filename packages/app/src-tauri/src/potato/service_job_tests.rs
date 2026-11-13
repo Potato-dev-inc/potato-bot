@@ -12,6 +12,7 @@ use super::cards;
 use super::cost;
 use super::hold;
 use super::jobs::{self, reason, Status};
+use super::waits;
 use super::rooms::store::{self as rstore, Room};
 use super::service::*;
 use super::service_tests::Rig;
@@ -396,6 +397,243 @@ fn a_model_failure_counts_as_no_progress_and_the_job_goes_on_until_the_third() {
     assert_eq!(continuations(&rig).len(), 2);
     // the failed turns did not tell the person to say continue: the job went on by itself
     assert!(rig.notes().iter().all(|n| !n.contains("Say continue")), "{:?}", rig.notes());
+}
+
+// ---- waits --------------------------------------------------------------------------------------------------------
+
+/// An open wait of the bot, as `wait_until` makes it.
+fn open_wait(rig: &Rig, note: &str) -> String {
+    let wait = waits::make("nimbus", &json!({ "check": "test -f done.txt", "note": note }), false, rig.host.now_ms()).unwrap();
+    waits::create(&rig.root, wait).unwrap().id
+}
+
+#[test]
+fn a_turn_that_ends_with_a_wait_open_parks_the_job_and_does_not_count_as_no_progress() {
+    let rig = rig("parked");
+    let first = running(&rig);
+    open_wait(&rig, "the render");
+    end_turn(&rig, &first);
+    assert!(continuations(&rig).is_empty(), "no next turn while the wait is open");
+    let saved = job(&rig);
+    assert_eq!((saved.status, saved.wait_parked, saved.no_progress, saved.turns), (Status::Running, true, 0, 1));
+    assert_eq!(last_note(&rig), "Nimbus is waiting for the render and will go on when it is done.");
+    // the 5-second tick does not start a turn either, and says nothing more
+    let notes = rig.notes().len();
+    for _ in 0..3 {
+        rig.advance(10_000);
+        rig.svc.tick();
+    }
+    assert!(continuations(&rig).is_empty());
+    assert_eq!(rig.notes().len(), notes);
+    assert!(cards::open_cards(&rig.root, "nimbus").is_empty());
+}
+
+#[test]
+fn when_the_wait_is_over_the_parked_job_goes_on_and_many_waits_never_stop_it() {
+    let rig = rig("resumes");
+    let mut turn = running(&rig);
+    // five waits in a row, each ending a turn with nothing logged: the three-turn stop does not apply
+    for n in 1..=5 {
+        let id = open_wait(&rig, "the render");
+        end_turn(&rig, &turn);
+        assert_eq!(continuations(&rig).len(), n - 1, "parked at wait {n}");
+        assert_eq!(job(&rig).no_progress, 0);
+        waits::cancel(&rig.root, Some("nimbus"), &id).unwrap();
+        rig.advance(10_000);
+        rig.svc.tick();
+        assert_eq!(continuations(&rig).len(), n, "the end of wait {n} resumes the job");
+        assert!(!job(&rig).wait_parked);
+        turn = last_continuation(&rig);
+    }
+    assert_eq!(job(&rig).status, Status::Running);
+    assert!(cards::open_cards(&rig.root, "nimbus").is_empty());
+}
+
+#[test]
+fn a_failed_turn_is_not_parked_even_with_a_wait_open_and_the_wait_time_is_not_the_jobs() {
+    let rig = rig("failwait");
+    let turn = running(&rig);
+    open_wait(&rig, "the render");
+    rig.post(vec![usage(10), json!({"v":1,"type":"error","code":"PROVIDER_DOWN","conversationId":DM,"inReplyTo":turn})]);
+    assert_eq!(job(&rig).no_progress, 1, "a failure is still no progress");
+    assert!(!job(&rig).wait_parked);
+    assert_eq!(continuations(&rig).len(), 1);
+    // a long wait does not spend the job's time
+    let turn = last_continuation(&rig);
+    end_turn(&rig, &turn);
+    assert!(job(&rig).wait_parked);
+    let spent = job(&rig).spent_ms;
+    rig.advance(3 * 60 * 60 * 1000);
+    rig.svc.tick();
+    assert_eq!(job(&rig).spent_ms, spent);
+    assert_eq!(job(&rig).status, Status::Running);
+}
+
+// ---- the day's computer actions ---------------------------------------------------------------------------------------
+
+fn today(rig: &Rig) -> String {
+    rig.host.local_day(rig.host.now_ms())
+}
+
+fn set_cap(rig: &Rig, cap: u32) {
+    store::save_settings(&rig.root, &Settings { sandbox_actions_per_day: cap, ..Settings::default() }).unwrap();
+}
+
+/// What a refused computer call does to the bot's running job (`Calls::spend`).
+fn hit_the_cap(rig: &Rig, cap: u32) {
+    jobs::mark_actions_capped(&rig.root, "nimbus", &today(rig), cap, rig.host.now_ms());
+}
+
+#[test]
+fn a_job_that_hits_the_action_cap_is_paused_with_a_card_and_not_counted_as_stuck() {
+    let rig = rig("cap-pause");
+    let first = running(&rig);
+    set_cap(&rig, 50);
+    hit_the_cap(&rig, 50);
+    end_turn(&rig, &first);
+    assert!(continuations(&rig).is_empty(), "no turn that cannot use the computer");
+    let card = keep_going_card(&rig, reason::ACTION_LIMIT);
+    assert_eq!(card.action, "Nimbus's job is paused: it used all 50 of today's computer actions.");
+    assert!(card.why.contains("goes on by itself tomorrow") && card.why.contains("Computer actions per day"), "{}", card.why);
+    assert_eq!(job(&rig).no_progress, 0);
+    // still the same day and the same cap: it stays paused, with one card
+    for _ in 0..3 {
+        rig.advance(10_000);
+        rig.svc.tick();
+    }
+    assert!(continuations(&rig).is_empty());
+    assert_eq!(cards::open_cards(&rig.root, "nimbus").len(), 1);
+    assert_eq!(job(&rig).status, Status::Waiting);
+}
+
+#[test]
+fn a_paused_job_goes_on_by_itself_when_the_next_day_starts() {
+    let rig = rig("cap-tomorrow");
+    let first = running(&rig);
+    set_cap(&rig, 50);
+    hit_the_cap(&rig, 50);
+    end_turn(&rig, &first);
+    keep_going_card(&rig, reason::ACTION_LIMIT);
+    rig.advance(24 * 60 * 60 * 1000);
+    rig.svc.tick();
+    let saved = job(&rig);
+    assert_eq!((saved.status, saved.actions_cap.clone()), (Status::Running, None));
+    // the brain was idle for a day and is a new one; the turn was handed over when the decision is gone from the record
+    assert!(saved.decision.is_none(), "the job's next turn was sent with the decision");
+    assert!(cards::open_cards(&rig.root, "nimbus").is_empty());
+}
+
+#[test]
+fn a_paused_job_goes_on_by_itself_when_the_cap_is_raised() {
+    let rig = rig("cap-raised");
+    let first = running(&rig);
+    set_cap(&rig, 50);
+    hit_the_cap(&rig, 50);
+    end_turn(&rig, &first);
+    keep_going_card(&rig, reason::ACTION_LIMIT);
+    set_cap(&rig, 200);
+    rig.advance(10_000);
+    rig.svc.tick();
+    assert_eq!(job(&rig).status, Status::Running);
+    assert!(job(&rig).decision.is_none(), "the job's next turn was sent");
+    assert!(cards::open_cards(&rig.root, "nimbus").is_empty());
+}
+
+#[test]
+fn keep_going_while_the_cap_is_still_hit_asks_again_without_spending_a_turn_and_stop_ends_the_job() {
+    let rig = rig("cap-again");
+    let first = running(&rig);
+    set_cap(&rig, 50);
+    hit_the_cap(&rig, 50);
+    end_turn(&rig, &first);
+    let card = keep_going_card(&rig, reason::ACTION_LIMIT);
+    rig.svc.answer_card("nimbus", &card.id, "0").unwrap();
+    assert!(continuations(&rig).is_empty(), "no turn was started");
+    let again = keep_going_card(&rig, reason::ACTION_LIMIT);
+    assert_ne!(again.id, card.id);
+    rig.svc.answer_card("nimbus", &again.id, "1").unwrap();
+    let saved = job(&rig);
+    assert_eq!((saved.status, saved.stop_reason.as_deref()), (Status::Stopped, Some(reason::ACTION_LIMIT)));
+    assert_eq!(last_note(&rig), "Nimbus's job stopped: today's computer actions are used up. Raise the limit in Settings or wait until tomorrow.");
+}
+
+#[test]
+fn a_job_without_a_cap_hit_is_not_asked_and_a_cap_hit_without_a_job_marks_nothing() {
+    let rig = rig("cap-none");
+    let first = running(&rig);
+    end_turn(&rig, &first);
+    assert_eq!(continuations(&rig).len(), 1);
+    assert!(cards::open_cards(&rig.root, "nimbus").is_empty());
+    // no running job: nothing is written
+    let other = Rig::ready("cap-nojob");
+    hit_the_cap(&other, 50);
+    assert!(jobs::load(&other.root, "nimbus").is_none());
+}
+
+#[test]
+fn the_eighty_percent_note_comes_once_a_day() {
+    let rig = rig("cap-warn");
+    set_cap(&rig, 100);
+    let day = today(&rig);
+    cost::spend_sandbox_actions(&rig.root, &day, "nimbus", 79, 100).unwrap();
+    rig.svc.warn_actions_nearly_used("nimbus");
+    assert!(rig.notes().iter().all(|n| !n.contains("computer actions")), "79 of 100 is not yet 80%");
+    cost::spend_sandbox_actions(&rig.root, &day, "nimbus", 1, 100).unwrap();
+    rig.svc.warn_actions_nearly_used("nimbus");
+    rig.svc.warn_actions_nearly_used("nimbus");
+    let warned: Vec<String> = rig.notes().into_iter().filter(|n| n.contains("computer actions")).collect();
+    assert_eq!(warned, vec!["Nimbus has used most of today's computer actions (80% of 100). At 100 it stops using the computer until tomorrow, or until you raise the limit in Settings.".to_string()]);
+    // tomorrow it can say it again
+    rig.advance(24 * 60 * 60 * 1000);
+    let day = today(&rig);
+    cost::spend_sandbox_actions(&rig.root, &day, "nimbus", 85, 100).unwrap();
+    rig.svc.warn_actions_nearly_used("nimbus");
+    assert_eq!(rig.notes().iter().filter(|n| n.contains("computer actions")).count(), 2);
+}
+
+// ---- the computer stays on for a job ------------------------------------------------------------------------------
+
+#[test]
+fn a_running_or_parked_job_holds_the_computer_from_the_idle_stop_and_a_job_that_waits_for_an_answer_or_no_job_holds_nothing() {
+    use super::sandbox::lease::ScreenLease;
+    use super::sandbox::FakeSandbox;
+    use super::sandbox_calls::Port;
+    let rig = rig("hold");
+    let fake = Arc::new(FakeSandbox::new());
+    rig.svc.set_sandbox_port(Some(Port { sandbox: fake.clone(), lease: Arc::new(parking_lot::Mutex::new(ScreenLease::new())) }));
+    // no job: nothing is held
+    rig.advance(10_000);
+    rig.svc.tick();
+    assert!(fake.job_hold_log().is_empty());
+    // a running job holds for a minute from now, renewed at every look
+    let first = running(&rig);
+    rig.advance(10_000);
+    rig.svc.tick();
+    let first_hold = fake.job_hold_log();
+    assert_eq!(first_hold.len(), 1);
+    assert_eq!(first_hold[0], rig.host.now_ms() + 60_000);
+    rig.advance(10_000);
+    rig.svc.tick();
+    assert_eq!(fake.job_hold_log().len(), 2);
+    // parked for a wait: still held
+    open_wait(&rig, "the render");
+    end_turn(&rig, &first);
+    assert!(job(&rig).wait_parked);
+    rig.advance(10_000);
+    rig.svc.tick();
+    assert_eq!(fake.job_hold_log().len(), 3);
+    // waiting for the owner's answer (a card), or stopped: nothing is held
+    let mut saved = job(&rig);
+    saved.status = Status::Waiting;
+    jobs::save(&rig.root, "nimbus", &saved).unwrap();
+    rig.advance(10_000);
+    rig.svc.tick();
+    assert_eq!(fake.job_hold_log().len(), 3);
+    saved.status = Status::Stopped;
+    jobs::save(&rig.root, "nimbus", &saved).unwrap();
+    rig.advance(10_000);
+    rig.svc.tick();
+    assert_eq!(fake.job_hold_log().len(), 3);
 }
 
 // ---- Stop and Pause all -------------------------------------------------------------------------------------------

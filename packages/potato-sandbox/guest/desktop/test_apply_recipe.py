@@ -584,6 +584,159 @@ class DebRetryTests(unittest.TestCase):
         self.assertEqual(self.slept, [])
 
 
+GOOD_SOURCES = ("Types: deb\nURIs: http://archive.ubuntu.com/ubuntu/\nSuites: noble noble-updates\n"
+                "Components: main universe\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n")
+
+
+class SourcesOrigTrustTests(unittest.TestCase):
+    """A copy of the apt sources from the pm-owned folder is only trusted when it is plain Ubuntu archive sources."""
+
+    def test_plain_ubuntu_sources_are_trusted(self):
+        self.assertTrue(ar.sources_orig_is_safe(GOOD_SOURCES.encode()))
+        self.assertTrue(ar.sources_orig_is_safe(b"URIs: http://security.ubuntu.com/ubuntu/\n"))
+
+    def test_anything_else_is_not(self):
+        for text in (
+            "URIs: http://evil.example/ubuntu/\n",
+            "URIs: http://archive.ubuntu.com.evil.example/ubuntu/\n",
+            "URIs: http://archive.ubuntu.com@evil.example/ubuntu/\n",
+            GOOD_SOURCES + "Trusted: yes\n",
+            GOOD_SOURCES + "Signed-By: /home/pm/key.gpg\n",
+            "Types: deb\nSuites: noble\n",
+            "Types: rpm\nURIs: http://archive.ubuntu.com/ubuntu/\n",
+            "URIs: http://archive.ubuntu.com/ubuntu/\n Suites: noble\n",
+        ):
+            self.assertFalse(ar.sources_orig_is_safe(text.encode()), text)
+        self.assertFalse(ar.sources_orig_is_safe(b"\xff\xfe"))
+
+
+POSIX = os.name == "posix" and hasattr(os, "symlink")
+
+
+@unittest.skipUnless(POSIX, "needs symbolic links and unix permissions")
+class RootFolderSafetyTests(unittest.TestCase):
+    """Root reads and writes its state only in its own folder, never follows a planted link, and never chowns."""
+
+    def setUp(self):
+        import tempfile
+        self.dir = tempfile.mkdtemp(prefix="pm-recipe-safe-")
+        self.victim = os.path.join(self.dir, "victim")
+        with open(self.victim, "w", encoding="utf-8") as handle:
+            handle.write("keep")
+        os.chmod(self.victim, 0o640)
+        self.before = os.stat(self.victim)
+        self.root_dir = os.path.join(self.dir, "root-only")
+        self.state = os.path.join(self.root_dir, "recipes-state.json")
+        for name in ("chown", "fchown", "lchown"):
+            if hasattr(os, name):
+                patcher = unittest.mock.patch.object(os, name, side_effect=AssertionError("nothing may be chowned"))
+                patcher.start()
+                self.addCleanup(patcher.stop)
+
+    def assert_victim_untouched(self):
+        after = os.stat(self.victim)
+        self.assertEqual((after.st_uid, after.st_gid, after.st_mode), (self.before.st_uid, self.before.st_gid, self.before.st_mode))
+        with open(self.victim, encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), "keep")
+
+    def test_a_planted_state_link_is_not_read(self):
+        os.makedirs(self.root_dir, mode=0o700)
+        with open(self.victim, "w", encoding="utf-8") as handle:
+            handle.write('{"base": "digest"}')
+        os.symlink(self.victim, self.state)
+        self.assertEqual(ar.load_state(self.state), {})
+
+    def test_saving_the_state_does_not_follow_planted_links(self):
+        os.makedirs(self.root_dir, mode=0o700)
+        os.symlink(self.victim, self.state)
+        os.symlink(self.victim, self.state + ".tmp")
+        ar.save_state(self.state, {"base": "digest"})
+        self.assert_victim_untouched()
+        self.assertFalse(os.path.islink(self.state))
+        self.assertEqual(ar.load_state(self.state), {"base": "digest"})
+
+    def test_a_state_folder_that_is_a_link_or_open_to_others_is_refused(self):
+        real = os.path.join(self.dir, "real")
+        os.makedirs(real, mode=0o700)
+        os.symlink(real, self.root_dir)
+        with self.assertRaises(OSError):
+            ar.save_state(self.state, {"a": "b"})
+        self.assertEqual(os.listdir(real), [])
+        self.assertEqual(ar.load_state(self.state), {})
+        os.unlink(self.root_dir)
+        os.makedirs(self.root_dir)
+        os.chmod(self.root_dir, 0o777)
+        with self.assertRaises(OSError):
+            ar.save_state(self.state, {"a": "b"})
+
+    def test_an_old_plain_state_file_is_moved_once_and_an_old_link_is_ignored(self):
+        old = os.path.join(self.dir, "old-state.json")
+        with open(old, "w", encoding="utf-8") as handle:
+            handle.write('{"base": "digest", "bad": 5}')
+        self.assertEqual(ar.load_state(self.state, old), {"base": "digest"})
+        self.assertTrue(os.path.isfile(self.state))
+        os.unlink(old)
+        self.assertEqual(ar.load_state(self.state), {"base": "digest"})
+        other = os.path.join(self.dir, "other", "recipes-state.json")
+        os.symlink(self.victim, old)
+        self.assertEqual(ar.load_state(other, old), {})
+        self.assertFalse(os.path.exists(other))
+
+    def use_sources(self, orig_path):
+        sources = os.path.join(self.dir, "ubuntu.sources")
+        with open(sources, "w", encoding="utf-8") as handle:
+            handle.write("URIs: http://mirror.example/ubuntu/\n")
+        old = (ar.SOURCES_FILE, ar.SOURCES_ORIG)
+        ar.SOURCES_FILE, ar.SOURCES_ORIG = sources, orig_path
+        self.addCleanup(lambda: setattr(ar, "SOURCES_FILE", old[0]) or setattr(ar, "SOURCES_ORIG", old[1]))
+        return sources
+
+    def test_the_restore_never_uses_a_planted_link(self):
+        os.makedirs(self.root_dir, mode=0o700)
+        orig = os.path.join(self.root_dir, "ubuntu.sources.orig")
+        with open(self.victim, "w", encoding="utf-8") as handle:
+            handle.write("URIs: http://archive.ubuntu.com/ubuntu/\n")
+        os.symlink(self.victim, orig)
+        sources = self.use_sources(orig)
+        runner = ar.Runner(False, "/x/assets", os.path.join(self.dir, "log.txt"))
+        runner.mirror = "http://mirror.example/ubuntu/"
+        self.assertFalse(runner.fall_back_to_archive())
+        with open(sources, encoding="utf-8") as handle:
+            self.assertIn("mirror.example", handle.read())
+
+    def test_old_sources_are_moved_only_when_they_are_plain_ubuntu_sources(self):
+        old = os.path.join(self.dir, "old.orig")
+        new = os.path.join(self.root_dir, "ubuntu.sources.orig")
+        with open(old, "w", encoding="utf-8") as handle:
+            handle.write("URIs: http://evil.example/ubuntu/\n")
+        self.assertIsNone(ar.read_root_file(new, old, ar.sources_orig_is_safe))
+        self.assertFalse(os.path.exists(new))
+        with open(old, "w", encoding="utf-8") as handle:
+            handle.write(GOOD_SOURCES)
+        self.assertEqual(ar.read_root_file(new, old, ar.sources_orig_is_safe).decode(), GOOD_SOURCES)
+        self.assertTrue(os.path.isfile(new))
+
+    def test_saving_the_original_sources_does_not_follow_a_planted_link(self):
+        os.makedirs(self.root_dir, mode=0o700)
+        orig = os.path.join(self.root_dir, "ubuntu.sources.orig")
+        os.symlink(self.victim, orig + ".tmp")
+        ar.write_root_file(orig, GOOD_SOURCES.encode())
+        self.assert_victim_untouched()
+
+    def test_truncating_logs_leaves_links_alone(self):
+        folder = os.path.join(self.dir, "log")
+        os.makedirs(folder)
+        plain = os.path.join(folder, "plain.log")
+        with open(plain, "w", encoding="utf-8") as handle:
+            handle.write("text")
+        link = os.path.join(folder, "link.log")
+        os.symlink(self.victim, link)
+        ar.truncate_plain(plain)
+        ar.truncate_plain(link)
+        self.assertEqual(os.path.getsize(plain), 0)
+        self.assert_victim_untouched()
+
+
 class ImageBuildTests(unittest.TestCase):
     """--image-build: the exported distro carries no apt lists, caches or machine identity, the state file stays."""
 
@@ -594,7 +747,7 @@ class ImageBuildTests(unittest.TestCase):
         self.root = self.dir.name
         for rel, text in {
             "etc/apt/sources.list.d/ubuntu.sources": "URIs: http://mirror.example/ubuntu/\n",
-            "var/lib/pm-sbx/ubuntu.sources.orig": "URIs: http://archive.ubuntu.com/ubuntu/\n",
+            "var/lib/pm-sbx-root/ubuntu.sources.orig": "URIs: http://archive.ubuntu.com/ubuntu/\n",
             "var/lib/apt/lists/archive_InRelease": "list",
             "var/cache/apt/archives/x.deb": "deb",
             "var/cache/pm-sbx/debs/google-chrome.deb": "deb",
@@ -605,7 +758,7 @@ class ImageBuildTests(unittest.TestCase):
             "tmp/junk/file": "x",
             "var/log/syslog": "a line of log",
             "var/log/pm-sbx/apply-recipe.log": "a log",
-            "var/lib/pm-sbx/recipes-state.json": "{\"base\": \"d\"}",
+            "var/lib/pm-sbx-root/recipes-state.json": "{\"base\": \"d\"}",
         }.items():
             path = os.path.join(self.root, rel)
             os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -636,7 +789,7 @@ class ImageBuildTests(unittest.TestCase):
         self.assertEqual(self.read("var/log/pm-sbx/apply-recipe.log"), "")
         self.assertEqual(json.loads(self.read("etc/pm-sbx/image.json")),
                          {"desktop": "light", "recipes": ["base", "light"], "guest_digest": "abc"})
-        self.assertEqual(self.read("var/lib/pm-sbx/recipes-state.json"), "{\"base\": \"d\"}")
+        self.assertEqual(self.read("var/lib/pm-sbx-root/recipes-state.json"), "{\"base\": \"d\"}")
 
     def test_the_desktop_is_the_exclusive_desktop_recipe(self):
         self.assertEqual(ar.desktop_of(RECIPES, ["base", "light"]), "light")

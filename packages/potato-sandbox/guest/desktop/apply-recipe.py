@@ -33,6 +33,7 @@ import re
 import shlex
 import shutil
 import ssl
+import stat
 import subprocess
 import sys
 import threading
@@ -45,7 +46,11 @@ from pathlib import Path
 
 DEFAULT_RECIPES_DIR = "/usr/local/share/pm-sbx/recipes"
 DEFAULT_ASSETS_DIR = "/usr/local/share/pm-sbx/desktop"
-DEFAULT_STATE_FILE = "/var/lib/pm-sbx/recipes-state.json"
+# Root's own folder (0700). /var/lib/pm-sbx belongs to the pm user, who could plant a link there, so nothing root reads or
+# writes lives in it; the LEGACY_ names are only read once to carry an older install's file over.
+ROOT_STATE_DIR = "/var/lib/pm-sbx-root"
+DEFAULT_STATE_FILE = ROOT_STATE_DIR + "/recipes-state.json"
+LEGACY_STATE_FILE = "/var/lib/pm-sbx/recipes-state.json"
 DEFAULT_LOG_FILE = "/var/log/pm-sbx/apply-recipe.log"
 DESKTOP_CONF = "/etc/pm-sbx/desktop.conf"
 DEB_CACHE = "/var/cache/pm-sbx/debs"
@@ -79,7 +84,9 @@ IMAGE_REMOVE = ("/var/lib/apt/lists/*", "/var/cache/apt/*", DEB_CACHE, "/var/lib
                 "/root/.bash_history", "/tmp/*")
 IMAGE_TRUNCATE = ("/etc/machine-id",)
 SOURCES_FILE = "/etc/apt/sources.list.d/ubuntu.sources"
-SOURCES_ORIG = "/var/lib/pm-sbx/ubuntu.sources.orig"
+DEFAULT_SOURCES_ORIG = ROOT_STATE_DIR + "/ubuntu.sources.orig"
+SOURCES_ORIG = DEFAULT_SOURCES_ORIG
+LEGACY_SOURCES_ORIG = "/var/lib/pm-sbx/ubuntu.sources.orig"
 ARCHIVE_URL = "http://archive.ubuntu.com/ubuntu/"
 SECURITY_URL = "http://security.ubuntu.com/ubuntu/"
 MIRROR_LIST_URL = "http://mirrors.ubuntu.com/%s.txt"
@@ -128,6 +135,179 @@ class StepError(Exception):
 
 class PreflightError(Exception):
     """The desktop user has more rights than it may have. Exit 4."""
+
+
+
+# ---------------------------------------------------------------- root-only files
+# The state file and the saved apt sources live in a folder only root can write. /var/lib/pm-sbx belongs to the unprivileged
+# pm user (the bot and its programs), who can plant a link in it; root therefore never opens, writes or restores from it,
+# except for one careful read when moving an older install's file over (read_root_file with `legacy`).
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
+_BINARY = getattr(os, "O_BINARY", 0)
+HAVE_DIR_FD = bool(_NOFOLLOW) and os.open in os.supports_dir_fd and os.rename in os.supports_dir_fd
+MAX_ROOT_FILE = 4 * 1024 * 1024
+SOURCES_ORIG_FIELDS = ("Types", "URIs", "Suites", "Components", "Signed-By", "Architectures")
+SOURCES_ORIG_HOSTS = ("archive.ubuntu.com", "security.ubuntu.com", "ports.ubuntu.com")
+SOURCES_ORIG_KEYRING = "/usr/share/keyrings/ubuntu-archive-keyring.gpg"
+
+
+def open_root_dir(path, create=False):
+    """(fd, path) of a folder only we may write: a plain folder (never a link), owned by this process, not writable by group
+    or others. With create the folder is made 0700 when missing. fd is -1 where directory fds are not used (Windows tests)."""
+    if create:
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        try:
+            os.mkdir(path, 0o700)
+        except FileExistsError:
+            pass
+    if not HAVE_DIR_FD:
+        if os.path.islink(path) or not os.path.isdir(path):
+            raise FileNotFoundError(path) if not os.path.lexists(path) else OSError("not a plain folder")
+        return -1, path
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | _NOFOLLOW | _CLOEXEC)
+    try:
+        info = os.fstat(fd)
+        if info.st_uid != os.geteuid() or info.st_mode & 0o022:
+            raise OSError("the folder is not private to root")
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd, path
+
+
+def _close_ref(ref):
+    if ref[0] >= 0:
+        os.close(ref[0])
+
+
+def _open_at(ref, name, flags, mode=0o600):
+    fd, path = ref
+    if fd >= 0:
+        return os.open(name, flags | _NOFOLLOW | _CLOEXEC, mode, dir_fd=fd)
+    return os.open(os.path.join(path, name), flags | _BINARY, mode)
+
+
+def _read_fd(fd):
+    """All bytes of a plain file from an open fd (closed here); OSError for anything else or a file that is too large."""
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_ROOT_FILE:
+            raise OSError("not a plain file")
+        with os.fdopen(fd, "rb") as handle:
+            fd = -1
+            return handle.read(MAX_ROOT_FILE + 1)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
+def _read_legacy(path):
+    """The old copy, read once: a plain file (lstat), opened without following a link. None on anything else."""
+    try:
+        if not stat.S_ISREG(os.lstat(path).st_mode):
+            return None
+        return _read_fd(os.open(path, os.O_RDONLY | _NOFOLLOW | _CLOEXEC | _BINARY))
+    except OSError:
+        return None
+
+
+def write_root_file(path, data):
+    """Atomic: a fresh temp file (O_EXCL, never through a link), then a rename within the same folder."""
+    ref = open_root_dir(os.path.dirname(path), create=True)
+    try:
+        name, temp = os.path.basename(path), os.path.basename(path) + ".tmp"
+        try:
+            if ref[0] >= 0:
+                os.unlink(temp, dir_fd=ref[0])  # unlink never follows a link
+            else:
+                os.unlink(os.path.join(ref[1], temp))
+        except FileNotFoundError:
+            pass
+        fd = _open_at(ref, temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if ref[0] >= 0:
+            os.replace(temp, name, src_dir_fd=ref[0], dst_dir_fd=ref[0])
+        else:
+            os.replace(os.path.join(ref[1], temp), os.path.join(ref[1], name))
+    finally:
+        _close_ref(ref)
+
+
+def read_root_file(path, legacy=None, accept=None):
+    """The bytes of a root-only file, or None when it is missing (or its folder is unusable). When it is missing and `legacy`
+    (the old place in the pm-owned folder) holds a plain file that `accept` approves, that is copied over once and returned."""
+    try:
+        ref = open_root_dir(os.path.dirname(path))
+    except FileNotFoundError:
+        ref = None  # no folder yet: no file either
+    except OSError:
+        return None
+    if ref is not None:
+        try:
+            return _read_fd(_open_at(ref, os.path.basename(path), os.O_RDONLY))
+        except FileNotFoundError:
+            pass
+        except OSError:
+            return None
+        finally:
+            _close_ref(ref)
+    old = _read_legacy(legacy) if legacy else None
+    if old is None or (accept is not None and not accept(old)):
+        return None
+    try:
+        write_root_file(path, old)
+    except OSError:
+        return None
+    return old
+
+
+def sources_orig_is_safe(data):
+    """A copy of the apt sources taken from the pm-owned folder is trusted only when it is plain Ubuntu archive sources: only
+    the usual fields, only the Ubuntu archive hosts, only the Ubuntu keyring. Anything else could hand root an apt source."""
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    if len(data) > 16384 or "\0" in text:
+        return False
+    seen_uri = False
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        field, _, value = line.partition(":")
+        value = value.strip()
+        if field not in SOURCES_ORIG_FIELDS or line[:1].isspace():
+            return False
+        if field == "URIs":
+            for uri in value.split():
+                parts = urllib.parse.urlsplit(uri)
+                if parts.scheme not in ("http", "https") or parts.hostname not in SOURCES_ORIG_HOSTS or parts.port:
+                    return False
+                seen_uri = True
+        elif field == "Signed-By" and value != SOURCES_ORIG_KEYRING:
+            return False
+        elif field == "Types" and any(item not in ("deb", "deb-src") for item in value.split()):
+            return False
+    return seen_uri
+
+
+def read_sources_orig(root="/"):
+    """The saved original apt sources as text, from the root-only copy; None when there is none."""
+    def at(path):
+        return os.path.join(root, path.lstrip("/"))
+
+    legacy = at(LEGACY_SOURCES_ORIG) if SOURCES_ORIG == DEFAULT_SOURCES_ORIG else None
+    data = read_root_file(at(SOURCES_ORIG), legacy, sources_orig_is_safe)
+    if data is None:
+        return None
+    try:
+        return data.decode("utf-8").replace("\r\n", "\n")
+    except UnicodeDecodeError:
+        return None
 
 
 def progress(done, total, text):
@@ -745,9 +925,8 @@ def choose_mirror(log):
         return "default Ubuntu server", None
     mirror = best["base"]
     security = mirror if carries_security(mirror, codename) else SECURITY_URL
-    if not Path(SOURCES_ORIG).exists():
-        os.makedirs(os.path.dirname(SOURCES_ORIG), exist_ok=True)
-        Path(SOURCES_ORIG).write_text(original, encoding="utf-8")
+    if read_sources_orig() is None:
+        write_root_file(SOURCES_ORIG, original.encode("utf-8"))
     updated = rewrite_sources(original, codename, mirror, security)
     if updated != original:
         tmp = SOURCES_FILE + ".pm-tmp"
@@ -1236,13 +1415,16 @@ class Runner:
 
     def fall_back_to_archive(self):
         """The mirror we picked failed a real apt call: put the original sources back. True when that changed anything."""
-        if not self.mirror or not os.path.isfile(SOURCES_ORIG):
+        if not self.mirror:
+            return False
+        saved = read_sources_orig()
+        if saved is None:
             return False
         if urllib.parse.urlsplit(self.mirror).netloc == "archive.ubuntu.com":
             return False
         self._append("mirror %s failed a network call; switching sources to the Ubuntu archive (%s)" % (self.mirror, ARCHIVE_URL))
         tmp = SOURCES_FILE + ".pm-tmp"
-        Path(tmp).write_text(Path(SOURCES_ORIG).read_text(encoding="utf-8"), encoding="utf-8")
+        Path(tmp).write_text(saved, encoding="utf-8")
         os.replace(tmp, SOURCES_FILE)
         self.mirror = None
         return True
@@ -1260,9 +1442,10 @@ class Runner:
             print("  + truncate " + " ".join(IMAGE_TRUNCATE) + " and every file under /var/log", flush=True)
             print("  + write %s" % IMAGE_FILE, flush=True)
             return
-        if os.path.isfile(at(SOURCES_ORIG)):
+        saved = read_sources_orig(root)
+        if saved is not None:
             tmp = at(SOURCES_FILE) + ".pm-tmp"
-            Path(tmp).write_text(Path(at(SOURCES_ORIG)).read_text(encoding="utf-8"), encoding="utf-8")
+            Path(tmp).write_text(saved, encoding="utf-8")
             os.replace(tmp, at(SOURCES_FILE))
         self._append("image: apt sources reset to the Ubuntu archive")
         self.mirror = None
@@ -1273,13 +1456,10 @@ class Runner:
             for path in glob.glob(at(pattern)):
                 remove_path(path)
         for path in IMAGE_TRUNCATE:
-            if os.path.isfile(at(path)):
-                open(at(path), "w").close()
+            truncate_plain(at(path))
         for root_dir, _dirs, files in os.walk(at("/var/log")):
             for name in files:
-                path = os.path.join(root_dir, name)
-                if os.path.isfile(path) and not os.path.islink(path):
-                    open(path, "w").close()
+                truncate_plain(os.path.join(root_dir, name))
         record = {"desktop": desktop, "recipes": list(recipes), "guest_digest": guest_digest}
         os.makedirs(os.path.dirname(at(IMAGE_FILE)), exist_ok=True)
         Path(at(IMAGE_FILE)).write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -1514,6 +1694,21 @@ def is_network_error(text):
     return any(marker in text for marker in NETWORK_FAILURE_MARKERS)
 
 
+def truncate_plain(path):
+    """Empties a plain file; a link, a fifo or a device is left alone. Never follows a link."""
+    try:
+        if not stat.S_ISREG(os.lstat(path).st_mode):
+            return
+        fd = os.open(path, os.O_WRONLY | _NOFOLLOW | _CLOEXEC | _BINARY)
+    except OSError:
+        return
+    try:
+        if stat.S_ISREG(os.fstat(fd).st_mode):
+            os.ftruncate(fd, 0)
+    finally:
+        os.close(fd)
+
+
 def remove_path(path):
     if os.path.isdir(path) and not os.path.islink(path):
         shutil.rmtree(path)
@@ -1632,22 +1827,23 @@ def run_unit(runner, unit, up=None, upcoming=()):
 
 # ---------------------------------------------------------------- state and preflight
 
-def load_state(path):
+def load_state(path, legacy=None):
+    """The finished units. Read from root's folder without following a link; when the file is missing and `legacy` holds a
+    plain file, that is moved over once. A damaged or missing file only means steps run again (they are idempotent)."""
+    data = read_root_file(path, legacy)
+    if data is None:
+        return {}
     try:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-    except FileNotFoundError:
+        state = json.loads(data.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
         return {}
-    except (OSError, ValueError):
-        # A damaged state file only means steps run again. They are idempotent.
+    if not isinstance(state, dict):
         return {}
-    return data if isinstance(data, dict) else {}
+    return {key: value for key, value in state.items() if isinstance(key, str) and isinstance(value, str)}
 
 
 def save_state(path, state):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
-    Path(tmp).write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
-    os.replace(tmp, path)
+    write_root_file(path, json.dumps(state, indent=2, sort_keys=True).encode("utf-8"))
 
 
 def check_no_sudo(user):
@@ -1774,7 +1970,7 @@ def run_install(args, requested, units, chosen_all):
         return EXIT_SUDO
     started = time.monotonic()
     digests = {u["key"]: unit_digest(u, unit_files_digest(u, args.assets_dir)) for u in units}
-    state = load_state(args.state_file)
+    state = load_state(args.state_file, LEGACY_STATE_FILE if args.state_file == DEFAULT_STATE_FILE else None)
     pending = [u for u in units if state.get(u["key"]) != digests[u["key"]]]
     runner = Runner(False, args.assets_dir, args.log_file)
     runner._append("== apply %s" % " ".join(requested))

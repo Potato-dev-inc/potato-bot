@@ -116,6 +116,7 @@ fn all_the_tools_are_the_names_and_none_is_a_way_to_another_caller() {
         Tool::SendFile,
         Tool::AppObserve,
         Tool::AppAct,
+        Tool::Task,
     ]
     .iter()
     .map(|t| t.name())
@@ -362,7 +363,7 @@ fn only_the_looking_and_reading_calls_are_retried() {
     use crate::potato::sandbox_calls::Request;
     assert!(Request::Observe.is_read_only());
     assert!(Request::Snapshot.is_read_only());
-    assert!(Request::ReadFile { path: "/home/pm/a.txt".into() }.is_read_only());
+    assert!(Request::ReadFile { path: "/home/pm/a.txt".into(), offset: None, tail_bytes: None }.is_read_only());
     assert!(Request::ListFiles { path: "/home/pm".into() }.is_read_only());
     assert!(!Request::Terminal { command: "touch x".into(), cwd: None, timeout_ms: 1000 }.is_read_only());
     assert!(!Request::WriteFile { path: "/home/pm/a".into(), content: "x".into(), append: false }.is_read_only());
@@ -610,6 +611,21 @@ fn the_day_has_an_action_cap_and_a_call_that_would_pass_it_is_refused_whole() {
     assert_eq!(code(f.call("computer_observe", json!({}))), "LEASE_LOST", "a day later the old hold has run out");
     assert!(f.call("computer_observe", json!({})).is_ok());
     assert_eq!(f.used_today("nimbus"), 1);
+}
+
+#[test]
+fn a_call_refused_for_the_cap_marks_the_running_job_with_the_day_and_the_cap() {
+    let f = gated("cap-job");
+    f.set_cap(10);
+    // no job: nothing is written
+    f.call("computer_act", json!({ "actions": Value::Array((0..10).map(|i| json!({ "kind": "move", "x": i, "y": 0 })).collect()) })).unwrap();
+    assert_eq!(code(f.call("computer_observe", json!({}))), "SANDBOX_DAILY_CAP");
+    assert!(super::jobs::load(&f.root, "nimbus").is_none());
+    super::jobs::start(&f.root, "nimbus", "app:dm:nimbus", "Ship it", f.now()).unwrap();
+    assert!(super::jobs::load(&f.root, "nimbus").unwrap().actions_cap.is_none(), "nothing refused yet");
+    assert_eq!(code(f.call("computer_observe", json!({}))), "SANDBOX_DAILY_CAP");
+    let day = super::service::Host::local_day(&*f.host, f.now());
+    assert_eq!(super::jobs::load(&f.root, "nimbus").unwrap().actions_cap, Some(super::jobs::ActionsCap { day, cap: 10 }));
 }
 
 #[test]
@@ -868,7 +884,7 @@ fn the_trust_of_a_call_never_comes_from_the_brain_and_the_brain_cannot_name_a_ca
     assert!(service.contains("rt.turn_trust.get(&conversation_id)"), "the engine looks the trust up");
     assert!(service.contains("if !self.own_conversation(bot, &conversation_id)"), "a call is for the brain's own bot only");
     // anything the model could make the dispatcher do goes through the same tool list
-    assert_eq!(TOOL_NAMES.len(), 18);
+    assert_eq!(TOOL_NAMES.len(), 19);
 }
 
 // ---- the first navigation of a fresh sandbox starts Chrome
@@ -1606,4 +1622,253 @@ fn a_lent_app_call_needs_the_bot_on_the_owner_and_the_labs_switch_before_anythin
     let mut stranger = f.ctx("mochi");
     stranger.trust = Trust::Others;
     assert_eq!(f.calls.execute(None, gates, &stranger, "app_act", &json!({})).unwrap_err().code, "TOOL_NOT_ALLOWED");
+}
+
+#[test]
+fn read_file_can_read_the_end_or_a_window_of_a_big_file() {
+    let f = Fixture::new("tails");
+    f.fake.use_file_system();
+    f.fake.put_file("/home/pm/job.log", b"line one\nline two\nline three\nthe end\n");
+    let tail = f.call("read_file", json!({ "path": "job.log", "tail_bytes": 8 })).unwrap();
+    assert_eq!(tail["text"], "the end\n");
+    assert_eq!(tail["totalBytes"], 37);
+    assert_eq!(tail["startByte"], 29);
+    assert_eq!(tail["truncated"], false);
+    let window = f.call("read_file", json!({ "path": "job.log", "offset": 9, "tail_bytes": null })).unwrap();
+    assert!(window["text"].as_str().unwrap().starts_with("line two"));
+    assert_eq!(window["startByte"], 9);
+    let part = f.call("read_file", json!({ "path": "job.log", "offset": 0 })).unwrap();
+    assert_eq!(part["endByte"], 37);
+    // The plain call is unchanged: no totals, the start of the file.
+    let plain = f.call("read_file", json!({ "path": "job.log" })).unwrap();
+    assert!(plain.get("totalBytes").is_none());
+}
+
+#[test]
+fn read_file_refuses_a_bad_window() {
+    let f = Fixture::new("tails-bad");
+    assert_eq!(f.call("read_file", json!({ "path": "a", "offset": -1 })).unwrap_err().code, "BAD_ARGS");
+    assert_eq!(f.call("read_file", json!({ "path": "a", "tail_bytes": 0 })).unwrap_err().code, "BAD_ARGS");
+    assert_eq!(f.call("read_file", json!({ "path": "a", "offset": 5, "tail_bytes": 5 })).unwrap_err().code, "BAD_ARGS");
+    assert!(f.fake.calls().is_empty());
+}
+
+#[test]
+fn a_tail_larger_than_the_cap_is_cut_to_the_cap() {
+    let f = Fixture::new("tails-cap");
+    f.fake.use_file_system();
+    f.fake.put_file("/home/pm/big.bin", &vec![b'x'; MAX_FILE_BYTES + 100]);
+    let tail = f.call("read_file", json!({ "path": "big.bin", "tail_bytes": 99_999_999 })).unwrap();
+    assert_eq!(tail["bytes"], MAX_FILE_BYTES);
+    assert_eq!(tail["startByte"], 100);
+}
+
+// ---- background tasks ----
+
+#[test]
+fn a_task_start_goes_to_the_computer_as_an_argv_and_a_folder() {
+    let f = Fixture::new("task-start");
+    let answer = f.call("task", json!({ "action": "start", "argv": ["python3", "build.py", "--fast"], "cwd": "work", "label": "build" })).unwrap();
+    assert_eq!(answer["task"]["state"], "running");
+    assert_eq!(
+        f.fake.calls(),
+        vec![Recorded::Task("start".into(), json!({ "argv": ["python3", "build.py", "--fast"], "cwd": "/home/pm/work", "label": "build" }))]
+    );
+}
+
+#[test]
+fn a_task_without_a_folder_runs_in_the_home_folder() {
+    let f = Fixture::new("task-home");
+    f.call("task", json!({ "action": "start", "argv": ["sleep", "5"] })).unwrap();
+    assert_eq!(f.fake.calls(), vec![Recorded::Task("start".into(), json!({ "argv": ["sleep", "5"], "cwd": "/home/pm" }))]);
+}
+
+#[test]
+fn a_task_is_never_a_command_string() {
+    let f = Fixture::new("task-argv");
+    for args in [
+        json!({ "action": "start", "command": "npm run build | tee log" }),
+        json!({ "action": "start", "argv": "npm run build" }),
+        json!({ "action": "start", "argv": [] }),
+        json!({ "action": "start", "argv": [""] }),
+        json!({ "action": "start", "argv": ["ls", 3] }),
+        json!({ "action": "start", "argv": ["a\u{0}b"] }),
+        json!({ "action": "start", "argv": vec!["x"; MAX_TASK_ARGS + 1] }),
+        json!({ "action": "start", "argv": ["ls"], "cwd": "../etc" }),
+        json!({ "action": "fly" }),
+        json!({}),
+    ] {
+        assert_eq!(f.call("task", args.clone()).unwrap_err().code, "BAD_ARGS", "{args}");
+    }
+    assert!(f.fake.calls().is_empty(), "nothing reached the computer");
+    // the refusal says what to do instead
+    let e = f.call("task", json!({ "action": "start", "command": "ls | wc" })).unwrap_err();
+    assert!(e.message.contains("script"), "{}", e.message);
+}
+
+#[test]
+fn status_tail_and_stop_need_a_proper_task_id() {
+    let f = Fixture::new("task-ids");
+    for action in ["tail", "stop"] {
+        for id in [json!(null), json!(""), json!("t-1"), json!("../x"), json!("t-ZZZZZZZZ"), json!(5)] {
+            assert_eq!(f.call("task", json!({ "action": action, "id": id })).unwrap_err().code, "BAD_ARGS", "{action} {id}");
+        }
+    }
+    assert_eq!(f.call("task", json!({ "action": "status", "id": "nope" })).unwrap_err().code, "BAD_ARGS");
+    assert_eq!(f.call("task", json!({ "action": "tail", "id": "t-1a2b3c4d", "bytes": 0 })).unwrap_err().code, "BAD_ARGS");
+    assert_eq!(f.call("task", json!({ "action": "tail", "id": "t-1a2b3c4d", "bytes": 70000 })).unwrap_err().code, "BAD_ARGS");
+    assert!(f.fake.calls().is_empty());
+}
+
+#[test]
+fn status_without_an_id_lists_and_the_others_carry_the_id() {
+    let f = Fixture::new("task-ops");
+    f.call("task", json!({ "action": "status" })).unwrap();
+    f.call("task", json!({ "action": "status", "id": "t-1a2b3c4d" })).unwrap();
+    f.call("task", json!({ "action": "tail", "id": "t-1a2b3c4d", "bytes": 2000 })).unwrap();
+    f.call("task", json!({ "action": "stop", "id": "t-1a2b3c4d" })).unwrap();
+    assert_eq!(
+        f.fake.calls(),
+        vec![
+            Recorded::Task("status".into(), json!({})),
+            Recorded::Task("status".into(), json!({ "id": "t-1a2b3c4d" })),
+            Recorded::Task("tail".into(), json!({ "id": "t-1a2b3c4d", "bytes": 2000 })),
+            Recorded::Task("stop".into(), json!({ "id": "t-1a2b3c4d" })),
+        ]
+    );
+}
+
+#[test]
+fn a_task_answer_has_its_secrets_hidden_like_any_other_answer() {
+    let f = Fixture::new("task-redact");
+    f.fake.queue_task_reply(Ok(json!({ "task": { "id": "t-1a2b3c4d", "state": "running", "text": "key sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789" } })));
+    let answer = f.call("task", json!({ "action": "tail", "id": "t-1a2b3c4d" })).unwrap();
+    assert!(!answer.to_string().contains("abcdefghijklmnopqrstuvwxyz0123456789"), "{answer}");
+}
+
+#[test]
+fn a_task_error_from_the_computer_comes_back_with_its_code() {
+    let f = Fixture::new("task-error");
+    f.fake.queue_task_reply(Err(SandboxError::new("SANDBOX_REJECTED", "The sandbox refused that action: 4 tasks are already running; stop one first.")));
+    let e = f.call("task", json!({ "action": "start", "argv": ["sleep", "5"] })).unwrap_err();
+    assert_eq!(e.code, "SANDBOX_REJECTED");
+    assert!(e.message.contains("already running"));
+}
+
+#[test]
+fn a_risky_program_started_as_a_task_asks_the_owner_like_a_terminal_command() {
+    let f = gated("task-gate");
+    let e = f.call("task", json!({ "action": "start", "argv": ["git", "push", "origin", "main"] })).unwrap_err();
+    assert_eq!(e.code, "APPROVAL_PENDING");
+    assert!(f.fake.calls().is_empty(), "nothing reached the computer");
+    let cards = open_cards(&f);
+    assert_eq!(cards.len(), 1);
+    assert_eq!(cards[0].action, "git push origin main");
+    assert_eq!(cards[0].classes, vec!["git push"]);
+    // an ordinary program runs without a card
+    assert!(f.call("task", json!({ "action": "start", "argv": ["npm", "run", "build"] })).is_ok());
+    // status and tail never ask
+    assert!(f.call("task", json!({ "action": "status" })).is_ok());
+}
+
+#[test]
+fn task_calls_are_the_only_ones_that_may_be_retried_when_they_only_look() {
+    use crate::potato::sandbox_calls::{Request, TaskCall};
+    assert!(Request::Task(TaskCall::Status { id: None }).is_read_only());
+    assert!(Request::Task(TaskCall::Tail { id: "t-1a2b3c4d".into(), bytes: None }).is_read_only());
+    assert!(!Request::Task(TaskCall::Stop { id: "t-1a2b3c4d".into() }).is_read_only());
+    assert!(!Request::Task(TaskCall::Start { argv: vec!["ls".into()], cwd: "/home/pm".into(), label: None }).is_read_only());
+}
+
+#[test]
+fn an_argv_is_shown_as_one_command_line_with_quotes_only_where_needed() {
+    // the card shows what the terminal check saw
+    let f = gated("task-line");
+    f.call("task", json!({ "action": "start", "argv": ["git", "push", "origin", "my branch"] })).unwrap_err();
+    assert_eq!(open_cards(&f)[0].action, "git push origin 'my branch'");
+}
+
+// ---- what a task look costs, and how often it may ask ----
+
+const TASK: &str = "t-1a2b3c4d";
+
+#[test]
+fn start_and_stop_cost_one_action_and_status_and_tail_cost_none() {
+    let f = Fixture::new("task-cost");
+    f.call("task", json!({ "action": "start", "argv": ["sleep", "5"] })).unwrap();
+    assert_eq!(f.used_today("nimbus"), 1);
+    f.call("task", json!({ "action": "status", "id": TASK })).unwrap();
+    f.call("task", json!({ "action": "tail", "id": TASK })).unwrap();
+    f.call("task", json!({ "action": "status" })).unwrap();
+    assert_eq!(f.used_today("nimbus"), 1, "looking is free");
+    f.call("task", json!({ "action": "stop", "id": TASK })).unwrap();
+    assert_eq!(f.used_today("nimbus"), 2);
+}
+
+#[test]
+fn a_second_look_inside_thirty_seconds_gets_the_last_answer_and_does_not_reach_the_computer() {
+    let f = Fixture::new("task-cache");
+    f.fake.queue_task_reply(Ok(json!({ "task": { "id": TASK, "state": "running", "logBytes": 10 } })));
+    f.fake.queue_task_reply(Ok(json!({ "task": { "id": TASK, "state": "finished", "exitCode": 0 } })));
+    let first = f.call("task", json!({ "action": "status", "id": TASK })).unwrap();
+    assert!(first.get("cached").is_none());
+    f.advance(29_000);
+    let second = f.call("task", json!({ "action": "status", "id": TASK })).unwrap();
+    assert_eq!(second["cached"], true);
+    assert_eq!(second["task"]["state"], "running", "the same answer as the first");
+    assert_eq!(second["freshAnswerInSeconds"], 1);
+    assert_eq!(f.fake.calls().len(), 1, "the computer was asked once");
+    f.advance(1_001);
+    let third = f.call("task", json!({ "action": "status", "id": TASK })).unwrap();
+    assert!(third.get("cached").is_none());
+    assert_eq!(third["task"]["state"], "finished");
+    assert_eq!(f.fake.calls().len(), 2);
+    assert_eq!(f.used_today("nimbus"), 0);
+}
+
+#[test]
+fn each_task_and_each_kind_of_look_has_its_own_window() {
+    let f = Fixture::new("task-windows");
+    f.call("task", json!({ "action": "status", "id": TASK })).unwrap();
+    f.call("task", json!({ "action": "status", "id": "t-00000002" })).unwrap();
+    f.call("task", json!({ "action": "status" })).unwrap();
+    f.call("task", json!({ "action": "tail", "id": TASK })).unwrap();
+    f.call("task", json!({ "action": "tail", "id": TASK, "bytes": 500 })).unwrap();
+    assert_eq!(f.fake.calls().len(), 5, "five different looks, five fresh answers");
+    f.call("task", json!({ "action": "tail", "id": TASK, "bytes": 500 })).unwrap();
+    assert_eq!(f.fake.calls().len(), 5);
+}
+
+#[test]
+fn starting_or_stopping_makes_the_old_answers_stale() {
+    let f = Fixture::new("task-stale");
+    f.call("task", json!({ "action": "status", "id": TASK })).unwrap();
+    f.call("task", json!({ "action": "stop", "id": TASK })).unwrap();
+    let after = f.call("task", json!({ "action": "status", "id": TASK })).unwrap();
+    assert!(after.get("cached").is_none(), "a stop changes the state: ask again");
+    f.call("task", json!({ "action": "start", "argv": ["ls"] })).unwrap();
+    f.call("task", json!({ "action": "status" })).unwrap();
+    assert_eq!(f.fake.calls().len(), 5);
+}
+
+#[test]
+fn a_failed_look_is_not_remembered() {
+    let f = Fixture::new("task-failed-look");
+    f.fake.queue_task_reply(Err(SandboxError::new("SANDBOX_ROUTE_MISSING", "The sandbox does not know that request (it is an older version).")));
+    assert_eq!(f.call("task", json!({ "action": "status" })).unwrap_err().code, "SANDBOX_ROUTE_MISSING");
+    assert!(f.call("task", json!({ "action": "status" })).is_ok(), "the next look goes through");
+    assert_eq!(f.fake.calls().len(), 2);
+}
+
+#[test]
+fn looking_at_a_task_still_works_when_the_day_is_used_up() {
+    let f = Fixture::new("task-cap");
+    f.set_cap(10);
+    for _ in 0..10 {
+        f.call("computer_observe", json!({})).unwrap();
+    }
+    assert_eq!(f.call("task", json!({ "action": "start", "argv": ["ls"] })).unwrap_err().code, "SANDBOX_DAILY_CAP");
+    assert_eq!(f.call("task", json!({ "action": "stop", "id": TASK })).unwrap_err().code, "SANDBOX_DAILY_CAP");
+    assert!(f.call("task", json!({ "action": "status" })).is_ok(), "free looks are not refused by the cap");
+    assert!(f.call("task", json!({ "action": "tail", "id": TASK })).is_ok());
 }

@@ -46,6 +46,8 @@ pub mod reason {
     pub const STOPPED_BY_YOU: &str = "stopped_by_you";
     pub const PAUSED: &str = "paused";
     pub const DAILY_LIMIT: &str = "daily_limit";
+    /// The day's computer actions are used up (the setting "Computer actions per day").
+    pub const ACTION_LIMIT: &str = "action_limit";
     pub const CANNOT_START: &str = "cannot_start";
 }
 
@@ -94,6 +96,13 @@ pub struct Job {
     pub turn_started_ms: Option<i64>,
     /// An opaque card id the job waits for (P4). Empty unless status is `waiting`.
     pub waiting: Option<String>,
+    /// The job is parked: the bot's last turn ended with a `wait_until` open. No next turn starts, and the turn did not
+    /// count as "no progress", until the wait is over. The job is still `running`.
+    pub wait_parked: bool,
+    /// Set when a computer call was refused for the day's action cap while the job ran: the cap and the day. The job is
+    /// asked about (Keep going or Stop) instead of starting a turn that cannot use the computer. It goes on when the day
+    /// is a new one or the cap was raised.
+    pub actions_cap: Option<ActionsCap>,
     /// Time and money granted by "Keep going" cards, on top of the limits above.
     pub extra_ms: i64,
     pub extra_nano: u64,
@@ -107,6 +116,15 @@ pub struct Job {
     /// What the person wrote that the bot has not picked up yet, oldest first. Kept here so a restart does not lose it:
     /// the message is already in the thread; this is the copy that is sent to the brain again.
     pub queued: Vec<QueuedSend>,
+}
+
+/// The day's action cap a job ran into.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+pub struct ActionsCap {
+    /// The local day (`YYYY-MM-DD`).
+    pub day: String,
+    /// The cap (actions per day) that was reached.
+    pub cap: u32,
 }
 
 /// One message of the person that is waiting for the bot to pick it up.
@@ -141,6 +159,8 @@ impl Default for Job {
             snapshot_todo: 0,
             turn_started_ms: None,
             waiting: None,
+            wait_parked: false,
+            actions_cap: None,
             extra_ms: 0,
             extra_nano: 0,
             decision: None,
@@ -183,6 +203,11 @@ impl Job {
         } else {
             None
         }
+    }
+
+    /// Still stopped by the day's action cap: it is the same day and the cap has not been raised.
+    pub fn actions_capped_now(&self, day: &str, cap_now: u32) -> bool {
+        self.actions_cap.as_ref().is_some_and(|c| c.day == day && cap_now <= c.cap)
     }
 
     /// The time this job may work: the limit and what Keep going cards added.
@@ -391,6 +416,18 @@ pub fn stop(root: &std::path::Path, bot: &str, why: &str, now: i64) -> Option<Jo
     Some(job)
 }
 
+/// A computer call was refused for the day's action cap: the bot's running job remembers it. Does nothing without one.
+pub fn mark_actions_capped(root: &std::path::Path, bot: &str, day: &str, cap: u32, now: i64) {
+    let _files = files_lock();
+    if let Some(mut job) = load(root, bot).filter(Job::is_running) {
+        job.actions_cap = Some(ActionsCap { day: day.to_string(), cap });
+        job.updated_ms = now;
+        if let Err(e) = save(root, bot, &job) {
+            tracing::warn!(%bot, error = %e.message, "could not save the action cap on the job");
+        }
+    }
+}
+
 /// Adds money to a running job. The usage of every turn of the bot while the job runs counts, the job's own turns
 /// and the person's messages in between.
 pub fn add_spend(root: &std::path::Path, bot: &str, nano: u64) {
@@ -424,6 +461,7 @@ pub fn stop_note(name: &str, why: &str, steps: u64) -> String {
         reason::MONEY_LIMIT => format!("{name}'s job stopped: it reached the spending limit of {}.", dollars(MAX_JOB_NANO)),
         reason::NO_PROGRESS => format!("{name}'s job stopped: {MAX_NO_PROGRESS} turns in a row finished nothing new."),
         reason::DAILY_LIMIT => format!("{name}'s job stopped: today's limit is used up. Raise it in Settings or wait until tomorrow."),
+        reason::ACTION_LIMIT => format!("{name}'s job stopped: today's computer actions are used up. Raise the limit in Settings or wait until tomorrow."),
         reason::PAUSED => format!("{name}'s job was stopped because bots were paused."),
         reason::STOPPED_BY_YOU => format!("{name}'s job was stopped."),
         _ => format!("{name}'s job stopped: the brain could not start."),
@@ -558,6 +596,13 @@ pub fn keep_going_text_for_card(name: &str, job: &Job, why: &str) -> (String, St
             format!("{name}'s job is paused: today's spending limit is used up."),
             format!("Goal: {}. {steps} It cannot work any more today. Keep going works again tomorrow, or right away if you raise the daily limit in Settings. Stop ends the job.", job.goal),
         ),
+        reason::ACTION_LIMIT => {
+            let cap = job.actions_cap.as_ref().map_or(0, |c| c.cap);
+            (
+                format!("{name}'s job is paused: it used all {cap} of today's computer actions."),
+                format!("Goal: {}. {steps} It goes on by itself tomorrow, or as soon as you raise \"Computer actions per day\" in Settings. Stop ends the job.", job.goal),
+            )
+        }
         _ => {
             let tried = if job.steps.is_empty() { "It has not finished any step yet.".to_string() } else { format!("What it tried: {}.", job.steps.iter().rev().take(3).rev().cloned().collect::<Vec<_>>().join("; ")) };
             (

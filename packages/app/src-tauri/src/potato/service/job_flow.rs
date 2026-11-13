@@ -16,12 +16,15 @@
 //! use the brain-started count of the day (`cost::take_brain_turn`); they stop at the job's limits and the daily pause.
 
 use super::*;
+use crate::potato::cards;
 use crate::potato::jobs::{reason, Job, Status};
 
 /// How long after a reply the usage is waited for before the next turn is decided anyway.
 const USAGE_WAIT_MS: i64 = 15_000;
 /// How often the job files are looked at for a job nobody is running.
 const SCAN_EVERY_MS: i64 = 5_000;
+/// How long one look at the job files keeps the computer from the idle stop (the look comes every few seconds).
+const JOB_HOLD_MS: i64 = 60_000;
 const GOAL_NOTE_CHARS: usize = 120;
 
 /// The turn the bot's job waits for.
@@ -57,6 +60,8 @@ enum Plan {
     Stop(Job, &'static str),
     /// A limit or a stuck job: a Keep going card was raised and the job waits for the answer.
     Ask,
+    /// The last turn ended with a wait open: the job waits for it. The text is the one-time note, when this is the first time.
+    Parked(Option<String>),
     Send(Job),
 }
 
@@ -160,6 +165,14 @@ impl Service {
                 self.host.changed(bot);
                 false
             }
+            Plan::Parked(note) => {
+                self.release_claim(bot);
+                if let Some(note) = note {
+                    self.note(bot, &note);
+                }
+                self.host.changed(bot);
+                false
+            }
             Plan::Send(job) => {
                 let todo = open_work::list(&self.root, bot).unwrap_or_default();
                 // A job that waited for an answer starts again with the decision in its record, not as a restart.
@@ -231,15 +244,65 @@ impl Service {
     fn job_plan(&self, bot: &str, now: i64, ended: Option<(bool, bool)>) -> Plan {
         let _files = store::files_lock();
         let Some(mut job) = jobs::load(&self.root, bot).filter(Job::is_running) else { return Plan::Nothing };
+        let today = self.host.local_day(now);
+        let cap_now = store::load_settings(&self.root).map(|s| s.sandbox_actions_per_day).unwrap_or(cost::DEFAULT_SANDBOX_ACTIONS);
+        let capped = job.actions_capped_now(&today, cap_now);
+        if !capped {
+            job.actions_cap = None;
+        }
+        // A wait the bot set is open: the job is parked until it is over (the wake turn, or the end of the wait, resumes it).
+        let open_waits = crate::potato::waits::list(&self.root, Some(bot)).unwrap_or_default();
+        let mut park = false;
         match ended {
             Some((true, failed)) => {
                 job.close_clock(now);
                 job.turns += 1;
-                let progressed = !failed && (job.steps_total != job.snapshot_steps || jobs::todo_fingerprint(&self.root, bot) != job.snapshot_todo);
-                job.no_progress = if progressed { 0 } else { job.no_progress + 1 };
+                if !failed && !open_waits.is_empty() {
+                    // Waiting is not "no progress".
+                    park = true;
+                } else if capped {
+                    // The day's action cap ended the turn, not the bot: that is not "no progress" either.
+                } else {
+                    let progressed = !failed && (job.steps_total != job.snapshot_steps || jobs::todo_fingerprint(&self.root, bot) != job.snapshot_todo);
+                    job.no_progress = if progressed { 0 } else { job.no_progress + 1 };
+                }
             }
             // No turn was open (a restart, a crash): the time the app was closed is not the job's.
-            _ => job.turn_started_ms = None,
+            _ => {
+                job.turn_started_ms = None;
+                park = job.wait_parked && !open_waits.is_empty();
+            }
+        }
+        if park {
+            let first = !job.wait_parked;
+            if first || ended.is_some_and(|(matched, _)| matched) {
+                job.wait_parked = true;
+                job.updated_ms = now;
+                if jobs::save(&self.root, bot, &job).is_err() {
+                    return Plan::Nothing;
+                }
+            }
+            let note = first.then(|| {
+                let w = &open_waits[0];
+                format!("{} is waiting for {} and will go on when it is done.", self.name_of(bot), w.title)
+            });
+            return Plan::Parked(note);
+        }
+        job.wait_parked = false;
+        if capped {
+            // No turn is started that cannot use the computer: the owner is asked, and the job goes on by itself when the
+            // day is new or the cap is raised (`resume_action_paused`).
+            job.close_clock(now);
+            job.updated_ms = now;
+            if self.raise_keep_going(bot, &job, reason::ACTION_LIMIT, now) {
+                return Plan::Ask;
+            }
+            job.status = Status::Stopped;
+            job.stop_reason = Some(reason::ACTION_LIMIT.to_string());
+            return match jobs::save(&self.root, bot, &job) {
+                Ok(()) => Plan::Stop(job, reason::ACTION_LIMIT),
+                Err(_) => Plan::Nothing,
+            };
         }
         let money_cap = store::load_settings(&self.root).map(|s| s.daily_limit().is_some()).unwrap_or(true);
         let stop = if job.no_progress >= jobs::MAX_NO_PROGRESS { Some(reason::NO_PROGRESS) } else { job.limit_hit_with(now, money_cap) };
@@ -354,6 +417,47 @@ impl Service {
             .count()
     }
 
+    /// A job paused for the day's computer actions goes on by itself once the day is new or the limit was raised: its
+    /// Keep going card is answered for the owner.
+    fn resume_action_paused(&self, now: i64) {
+        let Ok(bots) = store::load_bots(&self.root) else { return };
+        let today = self.host.local_day(now);
+        let cap_now = store::load_settings(&self.root).map(|s| s.sandbox_actions_per_day).unwrap_or(cost::DEFAULT_SANDBOX_ACTIONS);
+        for bot in bots {
+            let Some(job) = jobs::load(&self.root, &bot.id).filter(|j| j.status == Status::Waiting && j.actions_cap.is_some()) else { continue };
+            if job.actions_capped_now(&today, cap_now) {
+                continue;
+            }
+            let Some(card) = cards::open_cards(&self.root, &bot.id).into_iter().find(|c| Some(&c.id) == job.waiting.as_ref() && c.keep_going.as_deref() == Some(reason::ACTION_LIMIT)) else { continue };
+            if let Err(e) = self.answer_card(&bot.id, &card.id, "0") {
+                tracing::debug!(bot = %bot.id, error = %e.message, "could not let a paused job go on");
+            }
+        }
+    }
+
+    /// A job that runs, or is parked waiting for something, counts as use of the computer: its background work (a render
+    /// started with nohup) has no call to keep the computer from the idle stop. A job that waits for the owner's answer,
+    /// or no job at all, holds nothing, so the idle stop works as before. The hold is short and renewed at every look.
+    fn keep_computer_for_jobs(&self, now: i64) {
+        let Some(port) = self.port.lock().clone() else { return };
+        let Ok(bots) = store::load_bots(&self.root) else { return };
+        if bots.iter().any(|b| jobs::load(&self.root, &b.id).is_some_and(|j| j.is_running())) {
+            port.sandbox.job_holds(now.saturating_add(JOB_HOLD_MS));
+        }
+    }
+
+    /// The one-time note at 80% of the day's computer actions.
+    pub(in crate::potato) fn warn_actions_nearly_used(&self, bot: &str) {
+        let now = self.host.now_ms();
+        let cap = store::load_settings(&self.root).map(|s| s.sandbox_actions_per_day).unwrap_or(cost::DEFAULT_SANDBOX_ACTIONS);
+        let day = self.host.local_day(now);
+        if cost::take_actions_warning(&self.root, &day, bot, cap).unwrap_or(false) {
+            let cap = cost::clamp_sandbox_actions(cap);
+            let name = self.name_of(bot);
+            self.note(bot, &format!("{name} has used most of today's computer actions (80% of {cap}). At {cap} it stops using the computer until tomorrow, or until you raise the limit in Settings."));
+        }
+    }
+
     /// Called by the tick: a turn whose usage never came is decided, and the job files are looked at every few seconds.
     pub(super) fn job_tick(&self, now: i64) {
         let stale: Vec<String> = {
@@ -366,7 +470,9 @@ impl Service {
         let last = self.job_scan_ms.load(Ordering::SeqCst);
         if last == i64::MIN || now - last >= SCAN_EVERY_MS {
             self.job_scan_ms.store(now, Ordering::SeqCst);
+            self.resume_action_paused(now);
             self.resume_jobs();
+            self.keep_computer_for_jobs(now);
         }
     }
 }

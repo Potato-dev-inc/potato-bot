@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.19
+
+- Long jobs hold up much better. A job waiting for something (like a video render) is no longer stopped for "no progress", and the bot's computer stays on while a job runs, so background work isn't cut off after 15 quiet minutes.
+- New background tasks: the bot can start a long program, check on it, read the end of its log and stop it, and it keeps track of it across restarts.
+- The bot reads the end of long logs and output, where the useful part usually is.
+- Daily computer actions: you get a note at 80%. At the limit a job pauses with a Keep going card and goes on by itself the next day or when you raise the limit.
+- A step cut off halfway is no longer run; the bot is told to do it in smaller pieces. Old output is trimmed during long turns, and a bot stuck repeating the same step with the same result is stopped.
+- Sandbox hardening: the computer's background services no longer follow links that the bot could plant in its own folders (MCP server logs and settings, software-source state, background tasks, the secret hub's server folders).
+
 ## 1.0.18
 
 - Settings > Potato Bot has a new "Computer actions per day" box under the daily limit. It sets how many times each bot can use its computer in a day (10 to 5000, 500 by default). Before, a bot that hit the limit said you could raise it, but there was no way to.

@@ -104,7 +104,8 @@ What the installer does so a fresh sandbox is ready sooner (all of it is in `app
   (answer time and date), drops a mirror that is more than a day behind, reads 400 KB from the three quickest, and writes
   the winner into `/etc/apt/sources.list.d/ubuntu.sources` (the security stanza too when the mirror carries `-security`, else
   `security.ubuntu.com`). The pick takes at most about 5 seconds. Offline or no answer: the archive stays. The first file is kept in
-  `/var/lib/pm-sbx/ubuntu.sources.orig`.
+  `/var/lib/pm-sbx-root/ubuntu.sources.orig` (root's own folder, 0700; the pm user cannot touch it. An older copy in `/var/lib/pm-sbx` is
+  carried over once, and only when it is plain Ubuntu archive sources).
 - **Several downloads at once.** `apt-get install --print-uris` says what is needed; the installer fetches those `.deb` files over 8
   keep-alive connections (biggest first), checks size and SHA-256 and puts them in `/var/cache/apt/archives`; Chrome (the `debs` entry of
   `chrome.json`) downloads beside them, and starts during the first list refresh. `apt-get install` then finds everything there. A file that failed

@@ -73,7 +73,7 @@
     "echo pm-sandbox > /etc/hostname",
     "bash \"$PM_SBX_ASSETS/pm-sbx-novnc-lite.sh\"",
     "apt-get install -y --no-install-recommends mtpaint || true",
-    "install -d -m 0755 /var/log/pm-sbx && install -d -o pm -g pm -m 0700 /var/lib/pm-sbx && install -d -o pm -g pm -m 0755 /var/log/pm-sbx/mcp",
+    "install -d -m 0755 /var/log/pm-sbx && install -d -o root -g root -m 0700 /var/lib/pm-sbx-root /var/log/pm-sbx-mcp && install -d -o pm -g pm -m 0700 /var/lib/pm-sbx && install -d -o pm -g pm -m 0755 /var/log/pm-sbx/mcp",
     "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install -g --no-audit --no-fund @modelcontextprotocol/server-filesystem @modelcontextprotocol/server-memory @playwright/mcp@0.0.83"
   ],
   "options": []

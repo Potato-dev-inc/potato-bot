@@ -294,6 +294,9 @@ struct Inner {
     last_active_ms: i64,
     /// Until when the person holds the screen (a live link or lease). Counts as use for the idle rule.
     person_until_ms: i64,
+    /// Until when a running job of a bot counts as use (the app renews it every few seconds while a job runs or is parked
+    /// waiting). A background task of the job has no call to keep the computer awake, so this does.
+    job_until_ms: i64,
     idle_minutes: u32,
     /// The CPU and memory limits the desktop work runs under (applied at every start and on every change).
     limits: Option<super::limits::Limits>,
@@ -357,6 +360,7 @@ impl Lifecycle {
                 secrets: None,
                 last_active_ms: 0,
                 person_until_ms: 0,
+                job_until_ms: 0,
                 idle_minutes: DEFAULT_IDLE_MINUTES,
                 limits: None,
             }),
@@ -485,6 +489,14 @@ impl Lifecycle {
     pub fn hold_for_person(&self, until_ms: i64) {
         let mut inner = self.inner.lock();
         inner.person_until_ms = inner.person_until_ms.max(until_ms);
+    }
+
+    /// A bot's job is running (or parked, waiting for something) until `until_ms`: the sandbox counts as in use until then,
+    /// the same way as for the person. The app renews this while a job is active; with no job nothing renews it and the
+    /// idle stop works as before.
+    pub fn hold_for_job(&self, until_ms: i64) {
+        let mut inner = self.inner.lock();
+        inner.job_until_ms = inner.job_until_ms.max(until_ms);
     }
 
     /// Test helper: holds the start lock (what a start or a stop takes) until the guard is dropped.
@@ -638,6 +650,7 @@ impl Lifecycle {
              tr -d '\\r' < {GUEST_SHARE}/control/pm-sbx-mcp-hub > /usr/local/bin/pm-sbx-mcp-hub && chmod 0755 /usr/local/bin/pm-sbx-mcp-hub\n\
              tr -d '\\r' < {GUEST_SHARE}/control/pm-sbx-secret-hub > /usr/local/sbin/pm-sbx-secret-hub && chmod 0750 /usr/local/sbin/pm-sbx-secret-hub\n\
              tr -d '\\r' < {GUEST_SHARE}/control/pm-sbx-limits > /usr/local/sbin/pm-sbx-limits && chmod 0750 /usr/local/sbin/pm-sbx-limits\n\
+             install -d -m 0755 /var/log/pm-sbx && install -d -o root -g root -m 0700 /var/lib/pm-sbx-root /var/log/pm-sbx-mcp\n\
              install -d -o pm -g pm -m 0700 /var/lib/pm-sbx && install -d -o pm -g pm -m 0755 /var/log/pm-sbx/mcp\n\
              install -d -m 0755 /opt/pm-connectors\n\
              tr -d '\\r' < {GUEST_SHARE}/page-browser/pm-sbx-page-browser > /usr/local/bin/pm-sbx-page-browser && chmod 0755 /usr/local/bin/pm-sbx-page-browser\n\
@@ -780,7 +793,7 @@ impl Lifecycle {
             let inner = self.inner.lock();
             should_idle_stop(
                 inner.phase == Phase::Ready,
-                inner.last_active_ms.max(inner.person_until_ms),
+                inner.last_active_ms.max(inner.person_until_ms).max(inner.job_until_ms),
                 now_ms,
                 inner.idle_minutes,
                 self.in_use.load(Ordering::SeqCst),

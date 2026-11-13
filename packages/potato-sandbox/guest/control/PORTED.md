@@ -56,5 +56,5 @@ See the table row above. Usage: `pm-sbx-focus-or-launch [--wm-class CLASS] [--pr
 
 Written for Puppet Master, no upstream code: `pm-sbx-computer-mcp` (the built-in `computer` MCP server: xdotool and import
 argv only), `pm-sbx-mcp-hub` (one stdio child per MCP server, timeouts, one restart, 4 MB output cap, config at
-`/var/lib/pm-sbx/mcp.json`), and `test_mcp.py` (fake stdio server, hub, computer and `/v1/mcp` route tests).
+`/var/lib/pm-sbx/mcp.json` when the daemon runs as pm; `/var/lib/pm-sbx-root/mcp.json` and logs in `/var/log/pm-sbx-mcp` when it runs as root), and `test_mcp.py` (fake stdio server, hub, computer and `/v1/mcp` route tests).
 Run: `python -I -m unittest discover -s <this folder> -p "test_*.py"`.

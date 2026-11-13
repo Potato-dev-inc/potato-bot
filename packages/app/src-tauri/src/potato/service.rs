@@ -2360,7 +2360,10 @@ impl Service {
             let gates = Gates { bot_on: self.brains.enabled(), sandbox_on: self.sandbox_on.load(Ordering::SeqCst) };
             let port = self.port.lock().clone();
             match self.calls.execute(port.as_ref(), gates, &ctx, &tool, &args) {
-                Ok(result) => protocol::sandbox_result_ok(&call_id, result),
+                Ok(result) => {
+                    self.warn_actions_nearly_used(&ctx.bot);
+                    protocol::sandbox_result_ok(&call_id, result)
+                }
                 Err(e) => protocol::sandbox_result_err(&call_id, e.code, &e.message, e.needs_you),
             }
         };

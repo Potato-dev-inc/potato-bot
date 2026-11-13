@@ -95,6 +95,8 @@ export interface ChatResult {
   usage: Usage;
   model: string;
   toolCalls?: ToolCall[];
+  /** The provider stopped the reply at its output limit while it was writing tool calls: their arguments are incomplete and must not run. */
+  cutOff?: boolean;
   /** thinking models only: the chain of thought, if the provider returned one */
   reasoning?: string;
 }

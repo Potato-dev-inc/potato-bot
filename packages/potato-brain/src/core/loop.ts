@@ -20,7 +20,7 @@ import type { ShareItem } from "../persona/share.ts";
 import { applySelf, emptySelf, planDue, renderSelf, tickSelf } from "../persona/self.ts";
 import type { SelfPatch, SelfState } from "../persona/self.ts";
 import { writeCheckpoint } from "../memory/checkpoint.ts";
-import { noteTurnFailure, reasonOf } from "./errors.ts";
+import { isContextTooLong, noteTurnFailure, reasonOf } from "./errors.ts";
 import {
   QUIET_WAIT_MS,
   RETRY_TURN_CAP,
@@ -34,8 +34,9 @@ import {
   waitFor,
 } from "./retry.ts";
 import type { Sleep } from "./retry.ts";
-import { advanceToolCallLoopGuard, loopGuardStopText } from "../lifted/tool-loop.ts";
+import { advanceToolCallLoopGuard, loopGuardStopText, noteToolResult, sameResultNudge, sameResultStopText } from "../lifted/tool-loop.ts";
 import type { ToolCallStreak } from "../lifted/tool-loop.ts";
+import { trimTurnToolResults, HARD_TRIM } from "./turn-budget.ts";
 import { pruneSandboxMessages, SANDBOX_TURN_NOTE } from "./sandbox-tools.ts";
 import type { SeenResult } from "./sandbox-tools.ts";
 import { SCRATCHPAD_TURN_NOTE } from "./scratchpad-tools.ts";
@@ -238,6 +239,29 @@ export function spacePathOk(path: string): boolean {
   }
   return true;
 }
+
+/**
+ * Why a call's arguments cannot be used, or null when they are fine (empty, "null" and objects are fine). Broken JSON is
+ * never quietly run as {}: the model is told, so it can write the call again.
+ */
+function argsProblem(call: ToolCall): string | null {
+  const raw = (call.arguments ?? "").trim();
+  if (raw === "" || raw === "null") return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return null;
+  } catch {
+    // fall through
+  }
+  return `Your call to ${call.name.slice(0, 60)} was not run: its arguments are not a valid JSON object (they may have been cut off). Write the call again, with complete arguments, in smaller pieces if it is long.`;
+}
+
+/** What the model hears for each call of a reply that the provider cut off at its output limit. Nothing was run. */
+const CUT_OFF_NOTE =
+  "Your last tool call was cut off before it finished, so it was not run. Write it again in smaller pieces (for example, one short command or a smaller file part at a time).";
+/** Replies cut off this many times in a row end the turn: the model cannot fit a call in its output room. */
+const CUT_OFF_STOP_AFTER = 3;
+const CUT_OFF_STOP_TEXT = "My replies kept getting cut off in the middle of a step, so I stopped. Ask me to do it in smaller steps.";
 
 /** The arguments a model wrote for a call; anything that is not an object is no arguments. */
 function parseArgs(call: ToolCall): Record<string, unknown> {
@@ -942,6 +966,8 @@ export class Agent {
     // The turn must end at once: Stop fired, or the host holds / pauses the bot.
     const mustStop = (): boolean => this.turnSignal?.aborted === true || this.turnHalted?.() === true;
     let turnRetries = 0;
+    let cutOffRun = 0;
+    let contextRetried = false;
     let waitedMs = 0;
     let noteSent = false;
 
@@ -968,6 +994,18 @@ export class Agent {
             messages: progress.messages,
             approxPromptTokens: progress.approxTokens,
           });
+          // The request does not fit the model's window: trim old tool output hard and ask again, once. No wait.
+          if (isContextTooLong(err) && !contextRetried && !mustStop()) {
+            contextRetried = true;
+            let smaller = trimTurnToolResults(req.messages, HARD_TRIM);
+            if (smaller === req.messages) smaller = shrinkOldToolResults(req.messages, HARD_TRIM.keepFull);
+            if (smaller !== req.messages) {
+              msgs = smaller;
+              req = { ...req, messages: smaller };
+              this.retryLog(`[retry] context too long: trimmed old tool output messages=${req.messages.length} approx_prompt_tokens=${approxTokens(req.messages)}`);
+              continue;
+            }
+          }
           if (!isOutage(err) || mustStop() || attempt > RETRY_WAITS_MS.length || turnRetries >= RETRY_TURN_CAP) throw err;
           turnRetries++;
           const wait = waitFor(attempt, this.random);
@@ -1016,6 +1054,20 @@ export class Agent {
         return { text: res.text, usage, model };
       }
 
+      // The reply hit the output limit while writing tool calls: their arguments are incomplete. Nothing runs; each call is
+      // answered with a note so the next request stays valid, and the model writes smaller pieces.
+      if (res.cutOff === true) {
+        if (++cutOffRun >= CUT_OFF_STOP_AFTER) return { text: CUT_OFF_STOP_TEXT, usage, model };
+        const cut = res.toolCalls.slice(0, 4);
+        msgs = [
+          ...msgs,
+          { role: "assistant", content: res.text, toolCalls: cut.map((c) => ({ ...c, arguments: "{}" })), ...(res.reasoning ? { reasoning: res.reasoning } : {}) },
+          ...cut.map((c): Msg => ({ role: "tool", toolCallId: c.id, content: CUT_OFF_NOTE })),
+        ];
+        continue;
+      }
+      cutOffRun = 0;
+
       // Text beside the tool calls is a message to the person: posted now, before the steps it announces.
       this.sayAlongside(res.text);
 
@@ -1032,6 +1084,11 @@ export class Agent {
         },
       ];
       for (const raw of calls) {
+        const broken = argsProblem(raw);
+        if (broken !== null) {
+          msgs = [...msgs, { role: "tool", toolCallId: raw.id, content: broken }];
+          continue;
+        }
         progress.steps++;
         // find_tool answers here; use_tool (or a hidden tool named directly) becomes that tool's own call.
         const bridge = this.bridgeCall(raw);
@@ -1075,6 +1132,16 @@ export class Agent {
         const facts = stepFacts(stepTool, args);
         this.step({ phase: "start", id: stepId, tool: stepTool, ...facts });
         const out = await this.runExtra(extra, args, model);
+        let outText = out.text;
+        if (isSandboxGate(extra.gate) && out.endTurn !== true) {
+          // The same call AND the same result again and again: a nudge first, then the turn ends.
+          const seenNow = noteToolResult(streak, out.text);
+          streak = seenNow.streak;
+          if (seenNow.stuck) return { text: sameResultStopText(call.name, seenNow.streak), usage, model };
+          if (seenNow.nudge) outText = `${out.text}
+
+${sameResultNudge(seenNow.streak)}`;
+        }
         this.step({ phase: "end", id: stepId, tool: stepTool, ok: out.isError !== true, ...(out.outcome ? { outcome: out.outcome } : {}) });
         usage = addUsage(usage, this.takeSubUsage());
         if (call.name === MESSAGE_USER_NAME && out.isError !== true) this.talk?.toldPerson(this.now().getTime());
@@ -1085,7 +1152,7 @@ export class Agent {
           {
             role: "tool",
             toolCallId: call.id,
-            content: out.text,
+            content: outText,
             ...(out.images && out.images.length > 0 ? { images: out.images } : {}),
           },
         ];
@@ -1098,6 +1165,8 @@ export class Agent {
         }
       }
       if (seen.size > 0) msgs = pruneSandboxMessages(msgs, seen);
+      // Old big outputs shrink in steps (oldest first), so the prompt's start stays the same between trims.
+      msgs = trimTurnToolResults(msgs);
       this.talk?.roundDone();
       if (this.turnSpace) {
         // The list may have shrunk (the diary was read). The next round and the offered set follow it.

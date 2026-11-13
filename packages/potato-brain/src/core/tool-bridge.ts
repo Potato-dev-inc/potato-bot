@@ -23,6 +23,7 @@ export const BRIDGE_MIN_HIDDEN = 5;
 export const CORE_EXTRA_TOOLS: ReadonlySet<string> = new Set([
   "ask_helper",
   "run_terminal",
+  "task",
   "read_file",
   "write_file",
   "edit_file",

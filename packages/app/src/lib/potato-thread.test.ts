@@ -74,6 +74,9 @@ describe('toolStep', () => {
 
   it('says a failure plainly, and when it needs you', () => {
     expect(step('Fish used computer_act: failed LEASE_LOST')).toMatchObject({ ok: false, needsYou: false, summary: 'The screen changed hands.' });
+    for (const code of ['SANDBOX_DAILY_CAP', 'ACTION_LIMIT']) {
+      expect(step(`Fish used computer_act: failed ${code}`)).toMatchObject({ ok: false, summary: expect.stringContaining("today's computer actions") });
+    }
     expect(step('Fish used computer_act: failed SOMETHING_ODD (needs you)')).toMatchObject({ ok: false, needsYou: true, summary: 'Something odd.' });
   });
 

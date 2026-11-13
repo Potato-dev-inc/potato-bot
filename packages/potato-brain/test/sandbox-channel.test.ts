@@ -22,127 +22,10 @@ import type { ChatRequest, ChatResult, Msg, Provider, ToolCall, Usage } from "..
 import { startMockBridge } from "./helpers/mock-bridge.ts";
 import type { MockBridge } from "./helpers/mock-bridge.ts";
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-const PERSONA = join(HERE, "..", "persona");
+import { Scripted, call, failed, okResult, rig, says, sendMsg, usage, wants, withComputer } from "./helpers/sandbox-rig.ts";
+import type { Rig } from "./helpers/sandbox-rig.ts";
 
-const usage = (): Usage => ({ promptTokens: 10, completionTokens: 5, cacheHitTokens: 0, cacheMissTokens: 10 });
-
-/** A model that answers from a list, and from a function once the list is empty. */
-class Scripted implements Provider {
-  readonly name = "scripted";
-  calls: ChatRequest[] = [];
-  private scripts: ChatResult[];
-  private after: ((n: number) => ChatResult) | undefined;
-  constructor(scripts: ChatResult[], after?: (n: number) => ChatResult) {
-    this.scripts = scripts;
-    this.after = after;
-  }
-  async chat(req: ChatRequest): Promise<ChatResult> {
-    this.calls.push(structuredClone({ ...req, signal: undefined }));
-    const next = this.scripts.shift();
-    if (next) return next;
-    return this.after ? this.after(this.calls.length) : { text: "done", usage: usage(), model: "scripted" };
-  }
-}
-
-const call = (name: string, args: Record<string, unknown>, id = `c-${Math.random().toString(36).slice(2, 8)}`): ToolCall => ({
-  id,
-  name,
-  arguments: JSON.stringify(args),
-});
-
-const wants = (calls: ToolCall[], model = "scripted"): ChatResult => ({ text: "", usage: usage(), model, toolCalls: calls });
-const says = (text: string, model = "scripted"): ChatResult => ({ text, usage: usage(), model });
-
-interface Rig {
-  bridge: MockBridge;
-  channel: PotatoChannel;
-  provider: Scripted;
-  /** every sandbox_call event the brain posted */
-  sent(): Array<Record<string, unknown>>;
-  /** the app answers each sandbox_call with this (default: nothing, the test pushes results by hand) */
-  answer(fn: (event: Record<string, unknown>) => Record<string, unknown> | null): void;
-  done(): Promise<void>;
-}
-
-async function rig(provider: Scripted, channel: Partial<PotatoChannelOptions> = {}): Promise<Rig> {
-  const root = mkdtempSync(join(tmpdir(), "potato-sbx-"));
-  const bridge = await startMockBridge();
-  const config: Config = {
-    model: "stub",
-    temperature: 1,
-    maxTokens: 600,
-    vaultRoot: join(root, "vault"),
-    personaDir: PERSONA,
-    shareDir: join(root, "share"),
-    staticBudget: 4000,
-    stableBudget: 900,
-    stateDir: join(root, "state"),
-    hotTurns: 24,
-    voice: { enabled: false, probability: 0, maxChars: 60 },
-  };
-  const factory = makeAgentFactory({ config, pack: () => "fish", share: false, sleep: async () => {}, provider: () => provider });
-  const ch = new PotatoChannel({
-    url: bridge.url,
-    token: "tok-test",
-    info: { version: "0.0.0-test", provider: "stub", packs: ["fish", "potato"], surfaces: ["app"] },
-    agentFor: (conversationId, tools) => factory(conversationId, tools),
-    waitMs: 60,
-    retryMs: 10,
-    retryMaxMs: 30,
-    maxOutageMs: 2000,
-    ...channel,
-  });
-  void ch.start();
-
-  let answering: ((event: Record<string, unknown>) => Record<string, unknown> | null) | null = null;
-  const answered = new Set<string>();
-  const timer = setInterval(() => {
-    if (!answering) return;
-    for (const event of bridge.events) {
-      const id = String(event["callId"] ?? "");
-      if (event["type"] !== "sandbox_call" || answered.has(id)) continue;
-      answered.add(id);
-      const item = answering(event);
-      if (item) bridge.push({ type: "sandbox_result", callId: id, ...item });
-    }
-  }, 5);
-
-  return {
-    bridge,
-    channel: ch,
-    provider,
-    sent: () => bridge.events.filter((e) => e["type"] === "sandbox_call"),
-    answer: (fn) => {
-      answering = fn;
-    },
-    async done() {
-      clearInterval(timer);
-      await ch.stop();
-      await bridge.close();
-      rmSync(root, { recursive: true, force: true });
-    },
-  };
-}
-
-const sendMsg = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
-  type: "send",
-  id: "m1",
-  conversationId: "app:dm:bot1",
-  surface: "app",
-  from: { id: "owner", name: "Pat", trust: "owner_pc" },
-  text: "hello",
-  tools: "full",
-  ...over,
-});
-
-const withComputer = (over: Record<string, unknown> = {}): Record<string, unknown> => sendMsg({ capabilities: { sandbox: true }, ...over });
-
-const okResult = (result: Record<string, unknown>): Record<string, unknown> => ({ ok: true, result });
-const failed = (code: string, message: string, needsYou = false): Record<string, unknown> => ({
-  ok: false,
-  error: { code, message, ...(needsYou ? { needsYou: true } : {}) },
-});
+const PERSONA = join(dirname(fileURLToPath(import.meta.url)), "..", "persona");
 
 /** The tool messages of the provider's `n`th request. */
 const toolMessages = (r: Rig, n: number): Msg[] => (r.provider.calls[n]?.messages ?? []).filter((m) => m.role === "tool");
@@ -424,7 +307,9 @@ test("the same call with the same input over and over stops the turn with an hon
   const same = (n: number): ChatResult => wants([call("computer_observe", {}, `loop-${n}`)]);
   const r = await rig(new Scripted([], same));
   try {
-    r.answer(() => okResult({ frameId: "f-1", changed: false }));
+    // each answer is new, so only the same-input rule (not the same-result one) is at work
+    let seq = 0;
+    r.answer(() => okResult({ frameId: `f-${++seq}`, changed: false }));
     r.bridge.push(withComputer());
     const reply = await r.bridge.waitFor((e) => e["type"] === "reply");
     const text = (reply["segments"] as string[]).join(" ");
@@ -585,7 +470,7 @@ test("the computer note says to act now, not to ask, and what is left for the ow
   assert.ok(note.includes("ask_person_for_screen"));
   assert.ok(note.includes("CAPTCHA"));
   assert.ok(note.includes("no sudo") || note.includes("There is no sudo"));
-  assert.ok(note.includes("nohup"));
+  assert.ok(note.includes("task tool"), "long jobs go to the task tool");
 });
 
 test("the helper description points to the bot's own computer and keeps the asks-only rule", () => {
@@ -597,12 +482,12 @@ test("the helper description points to the bot's own computer and keeps the asks
   assert.ok(d.includes("do not say the work has started"));
 });
 
-test("the terminal description says user-level installs and nohup for long jobs", () => {
+test("the terminal description says user-level installs and the task tool for long jobs", () => {
   const spec = sandboxToolSpecs().find((t) => t.name === "run_terminal");
   const d = spec?.description ?? "";
   assert.ok(d.includes("user-level installs"));
   assert.ok(!d.includes("installing a package"), "the old wording is gone");
-  assert.ok(d.includes("nohup"));
+  assert.ok(d.includes("task tool"));
   assert.ok(d.includes("120 seconds"));
 });
 

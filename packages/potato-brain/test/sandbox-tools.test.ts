@@ -14,8 +14,10 @@ import { toWireAll } from "../src/core/openai.ts";
 import {
   CALL_TIMEOUT_MS,
   MAX_RESULT_CHARS,
+  cut,
   PRUNE_TRIGGER_CHARS,
   SANDBOX_TOOL_NAMES,
+  SANDBOX_TURN_NOTE,
   formatReply,
   isSandboxTool,
   pruneSandboxMessages,
@@ -41,6 +43,7 @@ test("the tools are the five lifted names, then the ask, then the terminal and f
     "computer_act",
     "ask_person_for_screen",
     "run_terminal",
+    "task",
     "read_file",
     "write_file",
     "edit_file",
@@ -206,7 +209,7 @@ test("a result is fenced as data, with the frame id noted, and long ones are cut
   assert.equal(f.frameId, "f-1");
   assert.equal(f.isError, undefined);
   const big = formatReply("browser_snapshot", ok({ text: "x".repeat(MAX_RESULT_CHARS * 2) }), opts());
-  assert.match(big.text, /\[cut: \d+ more characters\]/);
+  assert.match(big.text, /\[… \d+ characters cut …\]/);
   assert.ok(big.text.length < MAX_RESULT_CHARS + 600);
   // a page tool's own failure is marked as an error so old ones are not counted as page state
   assert.equal(formatReply("browser_act", ok({ ok: false, error: "stale ref", fallback: "computer_act" }), opts()).isError, true);
@@ -407,4 +410,63 @@ test("send_file takes a path, an optional name and an optional description, and 
   assert.equal(send.parameters["additionalProperties"], false);
   const { SANDBOX_TURN_NOTE } = await import("../src/core/sandbox-tools.ts");
   assert.ok(SANDBOX_TURN_NOTE.includes("send it with send_file instead of pasting it"));
+});
+
+test("a long result keeps its start and its end, so the end of a log is not lost", () => {
+  const out = cut(`START${"m".repeat(5000)}END`, 400);
+  assert.ok(out.startsWith("START"));
+  assert.ok(out.endsWith("END"));
+  assert.match(out, /\[… 4608 characters cut …\]/);
+  assert.equal(cut("short", 400), "short");
+  // the end of a long terminal answer (exit code first, a failure last) is still there
+  const term = formatReply("run_terminal", ok({ ok: false, exitCode: 2, stdout: `log${"x".repeat(MAX_RESULT_CHARS * 2)}`, stderr: "BOOM at the end" }), opts());
+  assert.match(term.text, /"exitCode":2/);
+  assert.match(term.text, /BOOM at the end/);
+  assert.match(term.text, /characters cut/);
+});
+
+test("read_file offers tail_bytes and offset, and run_terminal says long output keeps its end", () => {
+  const props = (spec("read_file").parameters as { properties: Record<string, unknown> }).properties;
+  assert.ok("tail_bytes" in props && "offset" in props && "path" in props);
+  assert.match(spec("read_file").description, /tail_bytes/);
+  assert.match(spec("run_terminal").description, /keeps its start and its end/);
+});
+
+test("the task tool takes argv and an action, never a command string, and says how to wait", () => {
+  const task = spec("task");
+  const props = (task.parameters as { properties: Record<string, { enum?: string[]; type?: string }>; required: string[] }).properties;
+  assert.deepEqual(props["action"]?.enum, ["start", "status", "tail", "stop"]);
+  assert.equal(props["argv"]?.type, "array");
+  assert.ok(!("command" in props), "no command string");
+  assert.deepEqual((task.parameters as { required: string[] }).required, ["action"]);
+  assert.match(task.description, /NOT one command string/);
+  assert.match(task.description, /wait_until/);
+  assert.match(task.description, /cached:true/);
+  assert.match(task.description, /interrupted/);
+  assert.equal(sandboxTools({ call: async () => ok({}) }).find((t) => t.spec.name === "task")!.gate, "sandbox");
+  assert.ok(isSandboxTool("task"));
+});
+
+test("the computer note points at the task tool and wait_until instead of nohup", () => {
+  assert.match(SANDBOX_TURN_NOTE, /task tool/);
+  assert.match(SANDBOX_TURN_NOTE, /wait_until/);
+  assert.doesNotMatch(SANDBOX_TURN_NOTE, /start it in the background with nohup/);
+  assert.match(spec("run_terminal").description, /task tool/);
+  assert.doesNotMatch(spec("run_terminal").description, /start it with nohup and a log file/);
+});
+
+test("a task answer reaches the model fenced as data, with its cached flag", async () => {
+  const seen: Array<{ tool: string; args: Record<string, unknown> }> = [];
+  const tools = sandboxTools({
+    call: async (tool, args) => {
+      seen.push({ tool, args });
+      return ok({ task: { id: "t-1a2b3c4d", state: "running", text: "step 3 of 9" }, cached: true });
+    },
+  });
+  const run = tools.find((t) => t.spec.name === "task")!;
+  const out = await run.run({ action: "tail", id: "t-1a2b3c4d" }, { model: "m" } as never);
+  assert.deepEqual(seen, [{ tool: "task", args: { action: "tail", id: "t-1a2b3c4d" } }]);
+  assert.match((out as { text: string }).text, /<sandbox_data tool="task">/);
+  assert.match((out as { text: string }).text, /step 3 of 9/);
+  assert.match((out as { text: string }).text, /"cached":true/);
 });

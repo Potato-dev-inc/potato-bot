@@ -9,6 +9,7 @@ import {
   advanceToolCallLoopGuard,
   isLoopGuardStopText,
   loopGuardStopText,
+  noteToolResult,
   toolCallStreakLength,
   trackToolCallStreak,
 } from "../src/lifted/tool-loop.ts";
@@ -147,4 +148,41 @@ test("trackToolCallStreak does not blank numbers that are not part of a text arg
   streak = trackToolCallStreak(streak, "read_file", { offset: 2 });
   assert.equal(streak.count, 1);
   assert.equal(streak.shapeCount, 1);
+});
+
+test("task status and tail on many different tasks do not hit the similar-call limit", () => {
+  for (const action of ["status", "tail"]) {
+    let streak = EMPTY;
+    for (let index = 0; index < 60; index += 1) {
+      const result = advanceToolCallLoopGuard(streak, "task", { action, id: `t-${index}` });
+      streak = result.streak;
+      assert.equal(result.stuck, false, `${action} #${index}`);
+    }
+  }
+});
+
+test("task start and stop, and other tools, still hit the similar-call limit", () => {
+  for (const [name, args] of [["task", { action: "start", argv: ["x", "n-"] }], ["task", { action: "stop", id: "t-" }], ["shell", { command: "echo n-" }]] as const) {
+    let streak = EMPTY;
+    let stuck = false;
+    for (let index = 0; index < 25 && !stuck; index += 1) {
+      const text = JSON.stringify(args).replace(/n-|t-/, (m) => `${m}${index}`);
+      const result = advanceToolCallLoopGuard(streak, name, JSON.parse(text));
+      streak = result.streak;
+      stuck = result.stuck;
+    }
+    assert.equal(stuck, true, `${name} ${JSON.stringify(args)}`);
+  }
+});
+
+test("a task status poll that keeps getting the same answer still ends through the same-result guard", () => {
+  let streak = EMPTY;
+  let stuck = false;
+  for (let index = 0; index < 5 && !stuck; index += 1) {
+    streak = advanceToolCallLoopGuard(streak, "task", { action: "status", id: "t-1" }).streak;
+    const seen = noteToolResult(streak, '{"state":"running","cached":true}');
+    streak = seen.streak;
+    stuck = seen.stuck;
+  }
+  assert.equal(stuck, true);
 });

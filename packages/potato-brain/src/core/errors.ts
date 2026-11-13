@@ -38,6 +38,13 @@ export function codeForStatus(status: number): ErrorCode {
   return "INTERNAL";
 }
 
+/** The fixed reason of a provider error that says the request did not fit the model's window. */
+export const CONTEXT_TOO_LONG_REASON = "context too long";
+
+export function isContextTooLong(err: unknown): boolean {
+  return err instanceof CodedError && err.reason === CONTEXT_TOO_LONG_REASON;
+}
+
 export function isCodedError(err: unknown): err is CodedError {
   return err instanceof CodedError;
 }

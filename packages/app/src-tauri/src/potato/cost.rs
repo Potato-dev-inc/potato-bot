@@ -156,6 +156,8 @@ pub struct BotDay {
     pub limit_hit: bool,
     /// Sandbox actions used today (a screen picture, a click, a typed text, a page snapshot, each counts one).
     pub sandbox_actions: u64,
+    /// The 80% note for the actions was given today.
+    pub actions_warned: bool,
     /// Brain-started turns taken today (the person's own messages are not counted).
     pub brain_turns: u64,
 }
@@ -281,6 +283,22 @@ pub fn spend_sandbox_actions(root: &Path, day: &str, bot: &str, n: u32, cap: u32
     entry.sandbox_actions = next;
     save_month(root, day, &file)?;
     Ok(ActionsSpent { used: next, cap, allowed: true })
+}
+
+/// True once a day, the first time the bot has used 80% of the day's actions and the cap is not yet reached (the reached cap
+/// has its own words). Saved at once, so a restart does not say it twice.
+pub fn take_actions_warning(root: &Path, day: &str, bot: &str, cap: u32) -> Result<bool, String> {
+    let _files = super::store::files_lock();
+    let cap = u64::from(clamp_sandbox_actions(cap));
+    let mut file = load_month(root, day)?;
+    let Some(entry) = file.days.get_mut(day).and_then(|d| d.get_mut(bot)) else { return Ok(false) };
+    if entry.actions_warned || entry.sandbox_actions >= cap || entry.sandbox_actions.saturating_mul(100) < cap.saturating_mul(WARN_PERCENT) {
+        return Ok(false);
+    }
+    entry.actions_warned = true;
+    file.v = USAGE_VERSION;
+    save_month(root, day, &file)?;
+    Ok(true)
 }
 
 /// Counts one brain-started turn against the day's cap. A turn at the cap is refused and not counted.

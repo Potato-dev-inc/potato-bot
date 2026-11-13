@@ -290,6 +290,7 @@ fn security_dot_dot_and_outside_paths_are_refused_for_every_call() {
         "/opt/pm-connectors/github/token",
         "/run/pm-sbx/control.token",
         "/var/lib/pm-sbx/mcp.json",
+        "/var/lib/pm-sbx-root/mcp.json",
         "/",
         &sibling,
         &format!("{sibling}/secret.txt"),

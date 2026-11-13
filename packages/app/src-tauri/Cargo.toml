@@ -1,6 +1,6 @@
 [package]
 name = "puppet_master_app"
-version = "1.0.18"
+version = "1.0.19"
 description = "Potato Bot desktop app"
 authors = ["Potato-dev-inc"]
 license = "MIT"

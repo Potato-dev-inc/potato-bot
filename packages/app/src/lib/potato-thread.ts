@@ -129,6 +129,8 @@ const FAILURES: Record<string, string> = {
   LEASE_NOT_HOLDER: 'It did not have the screen.',
   PERSON_HAS_SCREEN: 'You had the screen.',
   DAILY_LIMIT: 'Hit the daily limit.',
+  SANDBOX_DAILY_CAP: "Paused: the bot used today's computer actions. It goes on tomorrow, or when you raise the limit in Settings > Potato Bot.",
+  ACTION_LIMIT: "Paused: the bot used today's computer actions. It goes on tomorrow, or when you raise the limit in Settings > Potato Bot.",
 };
 
 function failureWords(code: string): string {

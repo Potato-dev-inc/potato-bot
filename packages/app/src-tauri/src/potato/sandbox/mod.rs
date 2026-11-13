@@ -252,8 +252,18 @@ pub trait Sandbox: Send + Sync {
     fn lend_post_raw(&self, _path: &str, _headers: &[(&str, String)], _body: &[u8]) -> SbxResult<serde_json::Value> {
         Err(SandboxError::new("SANDBOX_NOT_RUNNING", "The computer is not running."))
     }
+    /// One call to the guest's background tasks: `op` is start, status, tail or stop, `body` its JSON. Starts the computer if
+    /// it is not up (a task is something the bot asked for). Default: unsupported.
+    fn task_call(&self, _op: &str, _body: &serde_json::Value) -> SbxResult<serde_json::Value> {
+        Err(SandboxError::new("SANDBOX_TASKS_UNSUPPORTED", "This sandbox cannot run background tasks."))
+    }
     /// Reads a file inside the sandbox (at most `max` bytes).
     fn read_file(&self, _path: &str, _max: usize) -> SbxResult<Vec<u8>> {
+        Err(SandboxError::new("SANDBOX_FILES_UNSUPPORTED", "This sandbox cannot read files."))
+    }
+    /// Reads a window of a file: from a byte offset, or the last `max` bytes. Also says how big the whole file is, so
+    /// the caller can tell what was left out. Default: unsupported.
+    fn read_file_range(&self, _path: &str, _range: FileRange, _max: usize) -> SbxResult<FileSlice> {
         Err(SandboxError::new("SANDBOX_FILES_UNSUPPORTED", "This sandbox cannot read files."))
     }
     /// Reads a whole file as raw bytes, for the owner to receive (`send_file`). Not cut at a text limit: a file bigger
@@ -283,6 +293,8 @@ pub trait Sandbox: Send + Sync {
     fn screen_target(&self) -> SbxResult<ScreenTarget>;
     /// The person holds the screen (a link or a lease) until `until_ms`: the sandbox counts as in use until then.
     fn person_holds(&self, _until_ms: i64) {}
+    /// A bot's job is active until `until_ms` (running, or parked waiting): the sandbox counts as in use until then.
+    fn job_holds(&self, _until_ms: i64) {}
 
     // ---- the operating systems (desktops) installed in this sandbox ----
 
@@ -364,13 +376,53 @@ pub fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
-fn cut_chars(text: String, max: usize) -> String {
-    if text.chars().count() <= max {
+/// Which part of a file `read_file_range` returns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileRange {
+    /// Up to `max` bytes starting at this byte offset.
+    From(u64),
+    /// The last `max` bytes.
+    Tail,
+}
+
+/// A window of a file and the size of the whole file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileSlice {
+    pub bytes: Vec<u8>,
+    pub total: u64,
+}
+
+impl FileSlice {
+    /// Where in the file the window starts (a tail starts at `total - len`).
+    pub fn start(&self, range: FileRange) -> u64 {
+        match range {
+            FileRange::From(offset) => offset.min(self.total),
+            FileRange::Tail => self.total.saturating_sub(self.bytes.len() as u64),
+        }
+    }
+}
+
+/// Splits what the guest script printed (the size and a newline, then the bytes) into a slice. None when the first line is not a number.
+fn parse_slice(mut stdout: Vec<u8>) -> Option<FileSlice> {
+    let line_end = stdout.iter().position(|b| *b == b'\n')?;
+    let total = std::str::from_utf8(&stdout[..line_end]).ok()?.trim().parse::<u64>().ok()?;
+    let bytes = stdout.split_off(line_end + 1);
+    Some(FileSlice { bytes, total })
+}
+
+/// Text cut to `max` characters, keeping the start AND the end. The end is where a build or a log says what went wrong,
+/// so it gets three quarters. The middle becomes a marker that says how many bytes are gone.
+pub fn cut_chars(text: String, max: usize) -> String {
+    let count = text.chars().count();
+    if count <= max {
         return text;
     }
-    let mut out: String = text.chars().take(max).collect();
-    out.push_str("\n[output cut]");
-    out
+    let head_n = max / 4;
+    let tail_n = max - head_n;
+    let head: String = text.chars().take(head_n).collect();
+    let tail: String = text.chars().skip(count - tail_n).collect();
+    let cut_bytes = text.len() - head.len() - tail.len();
+    format!("{head}\n… {cut_bytes} bytes cut …\n{tail}")
 }
 
 /// The real sandbox: a WSL 2 distro.
@@ -741,6 +793,15 @@ impl Sandbox for WslSandbox {
         Ok(reply)
     }
 
+    fn task_call(&self, op: &str, body: &serde_json::Value) -> SbxResult<serde_json::Value> {
+        self.ensure_finished()?;
+        let _busy = self.lifecycle.begin_use();
+        let ready = self.lifecycle.ensure_ready(now_ms())?;
+        let reply = ready.client.task(op, body.clone())?;
+        self.lifecycle.touch(now_ms());
+        Ok(reply)
+    }
+
     fn mcp_config(&self, servers: &serde_json::Value) -> SbxResult<()> {
         self.ensure_finished()?;
         let _busy = self.lifecycle.begin_use();
@@ -914,6 +975,31 @@ impl Sandbox for WslSandbox {
             return Err(SandboxError::new("SANDBOX_NO_FILE", format!("{path} could not be read.")));
         }
         Ok(out.stdout)
+    }
+
+    fn read_file_range(&self, path: &str, range: FileRange, max: usize) -> SbxResult<FileSlice> {
+        self.ensure_finished()?;
+        let _busy = self.lifecycle.begin_use();
+        self.lifecycle.ensure_ready(now_ms())?;
+        // Prints the size and a newline, then the window. `tail -c +N` starts at byte N (1-based). Path and numbers are argv words.
+        let script = "test -f -- \"$1\" || { echo 'not a file' >&2; exit 2; }; s=$(stat -c %s -- \"$1\") || exit 2; echo \"$s\";                       if [ \"$3\" = tail ]; then tail -c \"$2\" -- \"$1\"; else tail -c +\"$4\" -- \"$1\" | head -c \"$2\"; fi";
+        let max_text = max.to_string();
+        let (mode, from) = match range {
+            FileRange::Tail => ("tail", "1".to_string()),
+            FileRange::From(offset) => ("from", offset.saturating_add(1).to_string()),
+        };
+        let out = self.wsl.exec(
+            &self.name,
+            GuestUser::Pm,
+            &["/bin/sh", "-c", script, "sh", path, &max_text, mode, &from],
+            None,
+            std::time::Duration::from_secs(30),
+        )?;
+        self.lifecycle.touch(now_ms());
+        if !out.success() {
+            return Err(SandboxError::new("SANDBOX_NO_FILE", format!("{path} could not be read.")));
+        }
+        parse_slice(out.stdout).ok_or_else(|| SandboxError::new("SANDBOX_NO_FILE", format!("{path} could not be read.")))
     }
 
     fn fetch_file(&self, path: &str, max: usize) -> SbxResult<Vec<u8>> {
@@ -1094,6 +1180,10 @@ impl Sandbox for WslSandbox {
         self.lifecycle.hold_for_person(until_ms);
     }
 
+    fn job_holds(&self, until_ms: i64) {
+        self.lifecycle.hold_for_job(until_ms);
+    }
+
     fn installed_desktops(&self) -> Vec<String> {
         self.saved_options().map(|o| o.desktops().iter().map(|d| d.word().to_string()).collect()).unwrap_or_default()
     }
@@ -1244,6 +1334,8 @@ pub enum Recorded {
     FilesRun(Vec<String>),
     /// One step of a page fetch (the address asked for).
     FetchPageHop(String),
+    /// One background-task call (the op and its body).
+    Task(String, serde_json::Value),
 }
 
 #[cfg(any(test, feature = "dev-fake-tui"))]
@@ -1275,6 +1367,8 @@ struct FakeState {
     /// The last server list `mcp_config` got, and the reply `mcp_call` gives (for the connector tests).
     mcp_config: Option<serde_json::Value>,
     mcp_reply: Option<serde_json::Value>,
+    /// The answers `task_call` gives, first in first out (an empty queue answers `{"task": {"state": "running"}}`).
+    task_replies: Vec<SbxResult<serde_json::Value>>,
     secret_config: Option<serde_json::Value>,
     /// What `files_run` does: a test sets a function that plays the guest script (it may run the real script on a folder of
     /// this computer, from the test's own file). Without one the fake answers `SANDBOX_FILES_UNSUPPORTED`.
@@ -1290,6 +1384,8 @@ struct FakeState {
     agent_home_fails: bool,
     /// What `agent_run` does with the script when set (a test may run it against a tiny local program).
     agent_hook: Option<AgentHook>,
+    /// The `until` of every `job_holds`, oldest first.
+    job_holds: Vec<i64>,
 }
 
 #[cfg(any(test, feature = "dev-fake-tui"))]
@@ -1384,6 +1480,11 @@ impl FakeSandbox {
         self.state.lock().mcp_reply = Some(reply);
     }
 
+    /// Queues what the next `task_call` answers.
+    pub fn queue_task_reply(&self, reply: SbxResult<serde_json::Value>) {
+        self.state.lock().task_replies.push(reply);
+    }
+
     pub fn set_browser_reply(&self, reply: &str) {
         self.state.lock().browser_reply = reply.to_string();
     }
@@ -1423,6 +1524,11 @@ impl FakeSandbox {
 
     pub fn calls(&self) -> Vec<Recorded> {
         self.state.lock().calls.clone()
+    }
+
+    /// The `until` of every job hold the app made, oldest first.
+    pub fn job_hold_log(&self) -> Vec<i64> {
+        self.state.lock().job_holds.clone()
     }
 
     /// Every action of every `act` call, flattened.
@@ -1486,6 +1592,10 @@ impl Default for FakeSandbox {
 
 #[cfg(any(test, feature = "dev-fake-tui"))]
 impl Sandbox for FakeSandbox {
+    fn job_holds(&self, until_ms: i64) {
+        self.state.lock().job_holds.push(until_ms);
+    }
+
     fn status(&self) -> SbxResult<Status> {
         let state = self.state.lock();
         let which = match (state.installed, state.running) {
@@ -1665,6 +1775,15 @@ impl Sandbox for FakeSandbox {
         self.state.lock().mcp_reply.clone().ok_or_else(|| SandboxError::new("SANDBOX_MCP_UNSUPPORTED", "This sandbox cannot call tools."))
     }
 
+    fn task_call(&self, op: &str, body: &serde_json::Value) -> SbxResult<serde_json::Value> {
+        self.use_screen(Recorded::Task(op.to_string(), body.clone()))?;
+        let mut state = self.state.lock();
+        if state.task_replies.is_empty() {
+            return Ok(serde_json::json!({ "task": { "id": "t-00000001", "state": "running" } }));
+        }
+        state.task_replies.remove(0)
+    }
+
     fn agent_run(&self, script: &str, timeout: std::time::Duration, cancel: &Arc<std::sync::atomic::AtomicBool>) -> SbxResult<ShellOutput> {
         self.use_screen(Recorded::AgentRun(script.to_string()))?;
         let (hang, hook, queued) = {
@@ -1724,6 +1843,25 @@ impl Sandbox for FakeSandbox {
             };
         }
         Ok(b"fake file".to_vec())
+    }
+
+    fn read_file_range(&self, path: &str, range: FileRange, max: usize) -> SbxResult<FileSlice> {
+        self.use_screen(Recorded::ReadFile(path.to_string()))?;
+        let state = self.state.lock();
+        let all: Vec<u8> = if state.file_system {
+            match state.files.get(path) {
+                Some(bytes) => bytes.clone(),
+                None => return Err(SandboxError::new("SANDBOX_NO_FILE", format!("{path} could not be read."))),
+            }
+        } else {
+            b"fake file".to_vec()
+        };
+        let total = all.len() as u64;
+        let bytes = match range {
+            FileRange::Tail => all[all.len().saturating_sub(max)..].to_vec(),
+            FileRange::From(offset) => all.iter().skip(offset as usize).take(max).copied().collect(),
+        };
+        Ok(FileSlice { bytes, total })
     }
 
     fn fetch_file(&self, path: &str, max: usize) -> SbxResult<Vec<u8>> {
@@ -1837,3 +1975,6 @@ mod wsl_tests;
 
 #[cfg(test)]
 mod resume_tests;
+
+#[cfg(test)]
+mod tails_tests;
