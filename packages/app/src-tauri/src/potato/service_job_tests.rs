@@ -729,3 +729,56 @@ fn only_one_job_at_a_time_and_a_new_one_after_it_ends() {
     assert!(ok(&tool(&rig, DM, "j-4", "job_start", json!({"goal": "another"}))));
     assert_eq!(job(&rig).goal, "another");
 }
+
+// ---- a chat turn that ran out of steps becomes a job ----------------------------------------------------------------
+
+/// The goal and the line the brain gives when a chat turn ran out of steps (packages/potato-brain promoteToJob).
+const PROMOTED_GOAL: &str = "Finish the work in progress in this chat. The person last said: continue";
+const PROMOTED_TEXT: &str = "Still working on this as a job \u{2014} I'll keep going. Press Stop to end it.";
+
+fn promoted_reply(id: &str) -> Value {
+    json!({"v":1,"type":"reply","conversationId":DM,"inReplyTo":id,"segments":[PROMOTED_TEXT]})
+}
+
+#[test]
+fn a_chat_turn_that_ran_out_of_steps_starts_a_job_and_the_host_continues_it_by_itself() {
+    let rig = rig("autojob");
+    let sent = rig.svc.send("nimbus", "do the big thing").unwrap();
+    // The brain ran out of steps in this normal turn: it calls job_start, then ends the turn with its short note.
+    let started = tool(&rig, DM, "auto-start", "job_start", json!({"goal": PROMOTED_GOAL}));
+    assert!(ok(&started), "{started:?}");
+    assert_eq!(job(&rig).goal, PROMOTED_GOAL);
+    assert_eq!(job(&rig).status, Status::Running);
+    assert!(continuations(&rig).is_empty(), "nothing starts while the turn runs");
+    rig.post(vec![promoted_reply(&sent.id), usage(10)]);
+    let next = continuations(&rig);
+    assert_eq!(next.len(), 1, "the host starts the next turn by itself: {next:?}");
+    assert!(next[0]["context"].as_str().unwrap().contains(&format!("Goal: {PROMOTED_GOAL}")));
+    assert!(rig.thread().iter().any(|m| m.text == PROMOTED_TEXT), "the person sees the one short note");
+    assert!(!rig.thread().iter().any(|m| m.text.contains("Say continue")));
+    // The job runs under the usual limits and ends the usual way.
+    let second = last_continuation(&rig);
+    let done = tool(&rig, DM, "auto-done", "job_done", json!({"summary": "Done."}));
+    assert!(ok(&done), "{done:?}");
+    end_turn(&rig, &second);
+    assert_eq!(continuations(&rig).len(), 1, "no turn after job_done");
+    assert_eq!(job(&rig).status, Status::Done);
+}
+
+#[test]
+fn a_chat_turn_that_ran_out_of_steps_while_a_job_runs_is_refused_and_starts_no_second_chain() {
+    let rig = rig("autojob-busy");
+    let first = running(&rig);
+    // A person's message in the middle; its turn runs out of steps and the brain tries to promote it.
+    let second = rig.svc.send("nimbus", "do the big thing").unwrap();
+    let refused = tool(&rig, DM, "auto-again", "job_start", json!({"goal": PROMOTED_GOAL}));
+    assert!(!ok(&refused), "{refused:?}");
+    assert!(!code(&refused).is_empty());
+    assert_eq!(job(&rig).goal, "Tidy the project folder", "the running job is untouched");
+    // The brain keeps today's ending for that turn; no second chain starts.
+    end_turn(&rig, &first);
+    let before = continuations(&rig).len();
+    rig.post(vec![json!({"v":1,"type":"reply","conversationId":DM,"inReplyTo":second.id,"segments":["I stopped after 60 steps. Say continue and I will pick it up from where the files are."]}), usage(10)]);
+    assert!(continuations(&rig).len() <= before + 1, "at most the one chain of the running job");
+    assert_eq!(job(&rig).goal, "Tidy the project folder");
+}

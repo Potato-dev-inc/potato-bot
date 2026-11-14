@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.20
+
+- A chat turn that runs out of steps in the middle of work now keeps going on its own as a job, instead of asking you to say continue. You get one note, "Still working on this as a job", and the normal job limits and the Stop button apply. If a job is already running, it asks you to say continue like before.
+
 ## 1.0.19
 
 - Long jobs hold up much better. A job waiting for something (like a video render) is no longer stopped for "no progress", and the bot's computer stays on while a job runs, so background work isn't cut off after 15 quiet minutes.

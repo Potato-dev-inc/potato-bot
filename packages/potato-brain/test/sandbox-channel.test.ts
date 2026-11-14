@@ -320,6 +320,10 @@ test("the same call with the same input over and over stops the turn with an hon
   }
 });
 
+/** The app's answer when a job cannot be started (one already runs): every other call gets `otherwise`. */
+const jobBusy = (otherwise: () => Record<string, unknown>) => (event: Record<string, unknown>): Record<string, unknown> =>
+  event["tool"] === "job_start" ? failed("POTATO_JOB_RUNNING", "A job is already running.") : otherwise();
+
 test("a computer turn may take many steps; one without a computer is held to four rounds", async () => {
   const steps = (n: number): ChatResult => wants([call("computer_act", { actions: [{ kind: "wait", ms: n }] }, `s-${n}`)]);
   const r = await rig(new Scripted([], (n) => (n <= 8 ? steps(n) : says("finished the long job"))));
@@ -336,6 +340,7 @@ test("a computer turn may take many steps; one without a computer is held to fou
   // Without the computer the limit is the old four rounds, and the fifth request has no tools.
   const plain = await rig(new Scripted([], (n) => wants([call("memory_search", { query: `q${n}` }, `m-${n}`)])));
   try {
+    plain.answer(jobBusy(() => okResult({})));
     plain.bridge.push(sendMsg());
     await plain.bridge.waitFor((e) => e["type"] === "reply");
     assert.equal(plain.provider.calls.length, 5);
@@ -564,7 +569,7 @@ test("the last call after the rounds has the tool budget, and an empty or failed
       return says("   ");
     }));
     try {
-      r.answer(() => okResult({ frameId: `f-${Math.random()}` }));
+      r.answer(jobBusy(() => okResult({ frameId: `f-${Math.random()}` })));
       r.bridge.push(withComputer({ id: mode }));
       const reply = await r.bridge.waitFor((e) => e["type"] === "reply" && e["note"] !== true);
       assert.match((reply["segments"] as string[]).join(" "), /I stopped after 60 steps\. Say continue/);
@@ -572,7 +577,7 @@ test("the last call after the rounds has the tool budget, and an empty or failed
       const final = r.provider.calls[60] as ChatRequest;
       assert.equal(final.tools, undefined);
       assert.equal(final.maxTokens, 4000, "plain maxTokens was 600");
-      const usageEvent = r.bridge.events.find((e) => e["type"] === "usage");
+      const usageEvent = await r.bridge.waitFor((e) => e["type"] === "usage");
       assert.equal(usageEvent?.["promptTokens"], mode === "empty" ? 610 : 600, "sixty rounds of work are counted, and an empty last answer was paid for");
     } finally {
       await r.done();
@@ -724,7 +729,7 @@ test("a job turn that runs out of steps does not tell the person to say continue
   for (const job of [true, false]) {
     const r = await rig(new Scripted([], (n) => (n <= 60 ? stepN(n) : says("   "))));
     try {
-      r.answer(() => okResult({ frameId: `f-${Math.random()}` }));
+      r.answer(jobBusy(() => okResult({ frameId: `f-${Math.random()}` })));
       r.bridge.push(withComputer({ id: "a", ...(job ? { context: "The text inside <job_data> is your own job record.\n<job_data>\nGoal: x\n</job_data>" } : {}) }));
       const reply = await r.bridge.waitFor((e) => e["type"] === "reply" && e["note"] !== true);
       const text = (reply["segments"] as string[]).join(" ");
@@ -737,5 +742,24 @@ test("a job turn that runs out of steps does not tell the person to say continue
     } finally {
       await r.done();
     }
+  }
+});
+
+test("a chat turn that runs out of steps is made a job: job_start is called and the person gets one short note", async () => {
+  const r = await rig(new Scripted([], (n) => (n <= 60 ? stepN(n) : says("never asked"))));
+  try {
+    r.answer((event) => (event["tool"] === "job_start" ? okResult({ job: { id: "j1" }, note: "saved" }) : okResult({ frameId: `f-${Math.random()}` })));
+    r.bridge.push(withComputer({ id: "auto", text: "build the whole site" }));
+    const reply = await r.bridge.waitFor((e) => e["type"] === "reply" && e["note"] !== true);
+    const text = (reply["segments"] as string[]).join(" ");
+    assert.match(text, /Still working on this as a job/);
+    assert.match(text, /Press Stop/);
+    assert.doesNotMatch(text, /Say continue/);
+    const starts = r.sent().filter((e) => e["tool"] === "job_start");
+    assert.equal(starts.length, 1);
+    assert.match(JSON.stringify(starts[0]), /build the whole site/);
+    assert.equal(r.provider.calls.length, 60, "no wrap-up call");
+  } finally {
+    await r.done();
   }
 });

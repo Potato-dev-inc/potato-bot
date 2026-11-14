@@ -40,7 +40,7 @@ import { trimTurnToolResults, HARD_TRIM } from "./turn-budget.ts";
 import { pruneSandboxMessages, SANDBOX_TURN_NOTE } from "./sandbox-tools.ts";
 import type { SeenResult } from "./sandbox-tools.ts";
 import { SCRATCHPAD_TURN_NOTE } from "./scratchpad-tools.ts";
-import { JOB_TURN_NOTE } from "./job-tools.ts";
+import { JOB_GOAL_MAX, JOB_TURN_NOTE } from "./job-tools.ts";
 import { stepFacts } from "./step-label.ts";
 import type { StepOutcome } from "./step-label.ts";
 import { MAX_PICTURES, NO_PICTURES_NOTE, STEER_TURN_NOTE, steerMessage } from "./steer.ts";
@@ -335,6 +335,19 @@ export function stoppedAfterStepsText(steps: number): string {
 /** The line a job turn gives when it ran out of steps: the app continues the job by itself. */
 export function jobTurnStepsText(steps: number): string {
   return `Still working (${steps} steps this turn).`;
+}
+
+/** The line a chat turn gives when it ran out of steps and was made into a job: the app goes on by itself. */
+export function promotedToJobText(): string {
+  return "Still working on this as a job — I'll keep going. Press Stop to end it.";
+}
+
+/** The goal a promoted job gets: the work in progress, plus the person's last words (often just "continue"), cut to the job goal limit. */
+export function promotedJobGoal(askText: string): string {
+  const prefix = "Finish the work in progress in this chat. The person last said: ";
+  const room = JOB_GOAL_MAX - prefix.length;
+  const ask = askText.trim().replace(/\s+/g, " ");
+  return `${prefix}${ask.length > room ? `${ask.slice(0, room - 1)}…` : ask}`;
 }
 
 /** The short note a failed turn leaves in the history. Tool names only: never output, args or error text. */
@@ -652,6 +665,8 @@ export class Agent {
   private spaceTainted = false;
   /** this turn was started by the app for a running job (its context holds the job record) */
   private turnJob = false;
+  /** what the person asked this turn (the goal of a job this turn may become) */
+  private turnAsk = "";
   private turnSignal: AbortSignal | undefined;
   private turnHalted: (() => boolean) | undefined;
   private turnNote: ((text: string) => boolean) | undefined;
@@ -1177,6 +1192,11 @@ ${sameResultNudge(seenNow.streak)}`;
       msgs = this.takeSteer(msgs);
     }
 
+    // A chat turn that ran out of steps becomes a job when the app lets it (the same job_start the model could call):
+    // the app then starts the next turn by itself. If it cannot (a job runs, no job tools here), the old line below stands.
+    const promoted = await this.promoteToJob(model);
+    if (promoted) return { text: promotedToJobText(), usage: addUsage(usage, this.takeSubUsage()), model };
+
     // The last call has no tools, but it gets the tool budget. If it fails or comes back empty the work is not thrown away.
     // It writes the wrap-up, so the internal "say something" reminder is taken out first.
     msgs = withoutReminder(msgs);
@@ -1197,6 +1217,20 @@ ${sameResultNudge(seenNow.streak)}`;
     }
     // A job turn does not say "say continue": the app starts the next turn by itself.
     return { text: this.turnJob ? jobTurnStepsText(progress.steps) : stoppedAfterStepsText(progress.steps), usage, model };
+  }
+
+  /** Starts a job for a chat turn that ran out of steps, through the job_start tool. False when it is not allowed or the app refused. */
+  private async promoteToJob(model: string): Promise<boolean> {
+    if (this.turnJob || this.turnAsk.trim() === "") return false;
+    const tool = this.extraTools.find((t) => t.spec.name === "job_start");
+    if (!tool || this.spaceNoHostTools() || !this.spaceAllows("job_start") || this.turnRoom) return false;
+    if (!(this.turnOwner && !this.turnRoutine)) return false;
+    try {
+      const out = await this.runExtra(tool, { goal: promotedJobGoal(this.turnAsk) }, model);
+      return out.isError !== true;
+    } catch {
+      return false;
+    }
   }
 
   /** Posts what the model wrote beside its tool calls, if the talk rules allow it. A refused send is not counted as said. */
@@ -1558,6 +1592,7 @@ ${escapePromptData(body)}
     this.turnRoutine = opts.routine === true && !space;
     this.turnRoom = opts.room === true || space !== null;
     this.turnJob = (opts.context ?? "").includes("<job_data>");
+    this.turnAsk = opts.spontaneous ? "" : userText;
     this.turnSignal = opts.signal;
     this.turnHalted = opts.halted;
     this.turnNote = opts.onNote;
